@@ -1,0 +1,162 @@
+"use server"
+
+import { revalidatePath } from "next/cache"
+import { redirect } from "next/navigation"
+import { getCurrentSession } from "@/lib/auth/session"
+import { createPurchaseRequest, approvePurchaseRequest, rejectPurchaseRequest } from "@/lib/domains/procurement/purchase-requests"
+import { createPurchaseOrder, cancelPurchaseOrder } from "@/lib/domains/procurement/purchase-orders"
+import { createGoodsReceipt } from "@/lib/domains/procurement/goods-receipts"
+import { createSupplierInvoice, recordSupplierPayment } from "@/lib/domains/procurement/supplier-invoices"
+import {
+  purchaseRequestSchema,
+  purchaseOrderSchema,
+  goodsReceiptSchema,
+  supplierInvoiceSchema,
+  supplierPaymentSchema,
+} from "@/lib/domains/procurement/schemas"
+
+export type ActionState = { error?: string; success?: boolean }
+
+async function requireSession() {
+  const session = await getCurrentSession()
+  if (!session) throw new Error("Not authenticated.")
+  return session
+}
+
+export async function createPurchaseRequestAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const session = await requireSession()
+  let rawLines: unknown
+  try {
+    rawLines = JSON.parse(String(formData.get("lines") ?? "[]"))
+  } catch {
+    return { error: "Invalid line list." }
+  }
+  const parsed = purchaseRequestSchema.safeParse({
+    branchId: formData.get("branchId"),
+    notes: formData.get("notes"),
+    lines: rawLines,
+  })
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
+
+  try {
+    await createPurchaseRequest(session, parsed.data)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to create purchase request." }
+  }
+  revalidatePath("/purchasing")
+  return { success: true }
+}
+
+export async function approvePurchaseRequestAction(id: string) {
+  const session = await requireSession()
+  await approvePurchaseRequest(session, id)
+  revalidatePath("/purchasing")
+}
+
+export async function rejectPurchaseRequestAction(id: string, reason: string) {
+  const session = await requireSession()
+  await rejectPurchaseRequest(session, id, reason)
+  revalidatePath("/purchasing")
+}
+
+export async function createPurchaseOrderAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const session = await requireSession()
+  let rawLines: unknown
+  try {
+    rawLines = JSON.parse(String(formData.get("lines") ?? "[]"))
+  } catch {
+    return { error: "Invalid line list." }
+  }
+  const parsed = purchaseOrderSchema.safeParse({
+    branchId: formData.get("branchId"),
+    supplierId: formData.get("supplierId"),
+    purchaseRequestId: formData.get("purchaseRequestId"),
+    expectedDeliveryDate: formData.get("expectedDeliveryDate"),
+    notes: formData.get("notes"),
+    lines: rawLines,
+  })
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
+
+  let po
+  try {
+    po = await createPurchaseOrder(session, parsed.data)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to create purchase order." }
+  }
+  redirect(`/purchasing/orders/${po.id}`)
+}
+
+export async function cancelPurchaseOrderAction(id: string, reason: string) {
+  const session = await requireSession()
+  await cancelPurchaseOrder(session, id, reason)
+  revalidatePath(`/purchasing/orders/${id}`)
+  revalidatePath("/purchasing")
+}
+
+export async function createGoodsReceiptAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const session = await requireSession()
+  const purchaseOrderId = String(formData.get("purchaseOrderId") ?? "")
+  let rawLines: unknown
+  try {
+    rawLines = JSON.parse(String(formData.get("lines") ?? "[]"))
+  } catch {
+    return { error: "Invalid line list." }
+  }
+  const parsed = goodsReceiptSchema.safeParse({
+    purchaseOrderId,
+    notes: formData.get("notes"),
+    lines: rawLines,
+  })
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
+
+  try {
+    await createGoodsReceipt(session, parsed.data)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to record goods receipt." }
+  }
+  revalidatePath(`/purchasing/orders/${purchaseOrderId}`)
+  revalidatePath("/inventory")
+  return { success: true }
+}
+
+export async function createSupplierInvoiceAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const session = await requireSession()
+  const purchaseOrderId = String(formData.get("purchaseOrderId") ?? "") || undefined
+  const parsed = supplierInvoiceSchema.safeParse({
+    supplierId: formData.get("supplierId"),
+    branchId: formData.get("branchId"),
+    purchaseOrderId,
+    invoiceNumber: formData.get("invoiceNumber"),
+    amount: formData.get("amount"),
+    dueDate: formData.get("dueDate"),
+  })
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
+
+  try {
+    await createSupplierInvoice(session, parsed.data)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to record supplier invoice." }
+  }
+  revalidatePath("/purchasing")
+  if (purchaseOrderId) revalidatePath(`/purchasing/orders/${purchaseOrderId}`)
+  return { success: true }
+}
+
+export async function recordSupplierPaymentAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const session = await requireSession()
+  const parsed = supplierPaymentSchema.safeParse({
+    supplierInvoiceId: formData.get("supplierInvoiceId"),
+    method: formData.get("method"),
+    amount: formData.get("amount"),
+    reference: formData.get("reference"),
+  })
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
+
+  try {
+    await recordSupplierPayment(session, parsed.data)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to record payment." }
+  }
+  revalidatePath("/purchasing")
+  return { success: true }
+}

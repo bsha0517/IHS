@@ -1,0 +1,3660 @@
+// Phase 1 — Platform Foundation schema.
+// See DATABASE.md for the human-readable index and forward schema (Phase 2+).
+// Conventions: UUID PKs, snake_case columns via @map, TIMESTAMPTZ everywhere,
+// organization_id/branch_id on every business table, insert-only audit tables.
+
+generator client {
+  provider        = "prisma-client"
+  output          = "../src/generated/prisma"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  extensions = [btree_gist]
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy
+// ---------------------------------------------------------------------------
+
+enum OrgStatus {
+  active
+  suspended
+}
+
+model Organization {
+  id              String    @id @default(uuid())
+  legalName       String    @map("legal_name")
+  displayName     String    @map("display_name")
+  defaultCurrency String    @default("AED") @map("default_currency")
+  defaultTimezone String    @default("Asia/Dubai") @map("default_timezone")
+  status          OrgStatus @default(active)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  branches                Branch[]
+  users                   User[]
+  roles                   Role[]
+  auditLogs               AuditLog[]
+  numberSequences         NumberSequence[]
+  settings                Setting[]
+  notifications           Notification[]
+  outboxEvents            OutboxEvent[]
+  clinicalAccessLogs      ClinicalAccessLog[]
+  patients                Patient[]
+  providers               Provider[]
+  services                Service[]
+  appointments            Appointment[]
+  episodes                Episode[]
+  encounters              Encounter[]
+  clinicalNotes           ClinicalNote[]
+  clinicalOrders          ClinicalOrder[]
+  prescriptions           Prescription[]
+  vitalSigns              VitalSign[]
+  diagnoses               Diagnosis[]
+  followUpRecommendations FollowUpRecommendation[]
+  charges                 Charge[]
+  invoices                Invoice[]
+  payments                Payment[]
+  refunds                 Refund[]
+  cashierSessions         CashierSession[]
+  cashMovements           CashMovement[]
+  packages                Package[]
+  patientPackages         PatientPackage[]
+  patientPackageSessions  PatientPackageSession[]
+  taxRules                TaxRule[]
+  products                Product[]
+  productBatches          ProductBatch[]
+  stockLedgerEntries      StockLedgerEntry[]
+  stockTransfers          StockTransfer[]
+  suppliers               Supplier[]
+  purchaseRequests        PurchaseRequest[]
+  purchaseOrders          PurchaseOrder[]
+  goodsReceipts           GoodsReceipt[]
+  supplierInvoices        SupplierInvoice[]
+  supplierPayments        SupplierPayment[]
+  chartOfAccounts         ChartOfAccount[]
+  accountMappings         AccountMapping[]
+  journals                Journal[]
+  expenses                Expense[]
+  employees               Employee[]
+  employeeDocuments       EmployeeDocument[]
+  shifts                  Shift[]
+  attendanceRecords       AttendanceRecord[]
+  leaveRequests           LeaveRequest[]
+  leaveBalances           LeaveBalance[]
+  payrollRuns             PayrollRun[]
+  commissionRules         CommissionRule[]
+  commissionAccruals      CommissionAccrual[]
+  assets                  Asset[]
+  maintenanceRecords      MaintenanceRecord[]
+  calibrationRecords      CalibrationRecord[]
+  labTests                LabTest[]
+  labPanels               LabPanel[]
+  specimens               Specimen[]
+  labOrderTests           LabOrderTest[]
+  medications             Medication[]
+  dispensingRecords       DispensingRecord[]
+  dispensingReturns       DispensingReturn[]
+  imagingServices         ImagingService[]
+  imagingOrders           ImagingOrder[]
+  payors                  Payor[]
+  insurancePlans          InsurancePlan[]
+  policies                Policy[]
+  patientCoverages        PatientCoverage[]
+  priorAuthorizations     PriorAuthorization[]
+  claims                  Claim[]
+  commTemplates           CommTemplate[]
+  commMessages            CommMessage[]
+  patientPortalAccounts   PatientPortalAccount[]
+
+  @@map("organization")
+}
+
+enum BranchStatus {
+  active
+  inactive
+}
+
+model Branch {
+  id             String       @id @default(uuid())
+  organizationId String       @map("organization_id")
+  name           String
+  code           String
+  timezone       String
+  address        String?
+  phone          String?
+  status         BranchStatus @default(active)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization       Organization        @relation(fields: [organizationId], references: [id])
+  departments        Department[]
+  userAccess         UserBranchAccess[]
+  numberSequences    NumberSequence[]
+  settings           Setting[]
+  sessions           Session[]
+  patients           Patient[]
+  providerBranches   ProviderBranch[]
+  providerSchedules  ProviderSchedule[]
+  appointments       Appointment[]
+  queueEntries       QueueEntry[]
+  episodes           Episode[]
+  encounters         Encounter[]
+  vitalSigns         VitalSign[]
+  clinicalOrders     ClinicalOrder[]
+  charges            Charge[]
+  invoices           Invoice[]
+  payments           Payment[]
+  refunds            Refund[]
+  cashierSessions    CashierSession[]
+  patientPackages    PatientPackage[]
+  stockLedgerEntries StockLedgerEntry[]
+  stockTransfersFrom StockTransfer[]     @relation("StockTransferFrom")
+  stockTransfersTo   StockTransfer[]     @relation("StockTransferTo")
+  purchaseRequests   PurchaseRequest[]
+  purchaseOrders     PurchaseOrder[]
+  goodsReceipts      GoodsReceipt[]
+  supplierInvoices   SupplierInvoice[]
+  supplierPayments   SupplierPayment[]
+  accountMappings    AccountMapping[]
+  journals           Journal[]
+  expenses           Expense[]
+  employees          Employee[]
+  attendanceRecords  AttendanceRecord[]
+  payrollRuns        PayrollRun[]
+  commissionAccruals CommissionAccrual[]
+  assets             Asset[]
+  specimens          Specimen[]
+  dispensingRecords  DispensingRecord[]
+  claims             Claim[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId])
+  @@map("branch")
+}
+
+enum DepartmentStatus {
+  active
+  inactive
+}
+
+model Department {
+  id        String           @id @default(uuid())
+  branchId  String           @map("branch_id")
+  name      String
+  code      String
+  status    DepartmentStatus @default(active)
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  branch              Branch               @relation(fields: [branchId], references: [id])
+  rooms               Room[]
+  providerDepartments ProviderDepartment[]
+  providerSchedules   ProviderSchedule[]
+  services            Service[]
+  appointments        Appointment[]
+  encounters          Encounter[]
+  employees           Employee[]
+  assets              Asset[]
+
+  @@unique([branchId, code])
+  @@index([branchId])
+  @@map("department")
+}
+
+enum RoomStatus {
+  available
+  occupied
+  maintenance
+  inactive
+}
+
+model Room {
+  id           String     @id @default(uuid())
+  departmentId String     @map("department_id")
+  name         String
+  code         String
+  roomType     String     @map("room_type")
+  status       RoomStatus @default(available)
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  department        Department         @relation(fields: [departmentId], references: [id])
+  providerSchedules ProviderSchedule[]
+  appointments      Appointment[]
+  assets            Asset[]
+  imagingOrders     ImagingOrder[]
+
+  @@unique([departmentId, code])
+  @@index([departmentId])
+  @@map("room")
+}
+
+// ---------------------------------------------------------------------------
+// Identity / Auth
+// ---------------------------------------------------------------------------
+
+enum UserStatus {
+  active
+  inactive
+  locked
+}
+
+model User {
+  id               String     @id @default(uuid())
+  organizationId   String     @map("organization_id")
+  email            String
+  username         String?
+  passwordHash     String     @map("password_hash")
+  firstName        String     @map("first_name")
+  lastName         String     @map("last_name")
+  status           UserStatus @default(active)
+  failedLoginCount Int        @default(0) @map("failed_login_count")
+  lockedUntil      DateTime?  @map("locked_until") @db.Timestamptz(3)
+  lastLoginAt      DateTime?  @map("last_login_at") @db.Timestamptz(3)
+  mfaEnabled       Boolean    @default(false) @map("mfa_enabled")
+  createdAt        DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization        Organization         @relation(fields: [organizationId], references: [id])
+  branchAccess        UserBranchAccess[]
+  roles               UserRole[]
+  sessions            Session[]
+  loginHistory        LoginHistory[]
+  passwordResetTokens PasswordResetToken[]
+  notifications       Notification[]
+  providerProfile     Provider?
+  employeeProfile     Employee?
+
+  @@unique([organizationId, email])
+  @@index([organizationId])
+  @@map("user")
+}
+
+model UserBranchAccess {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  branchId  String   @map("branch_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, branchId])
+  @@map("user_branch_access")
+}
+
+model Session {
+  id             String    @id @default(uuid())
+  userId         String    @map("user_id")
+  tokenHash      String    @unique @map("token_hash")
+  activeBranchId String?   @map("active_branch_id")
+  ip             String?
+  userAgent      String?   @map("user_agent")
+  expiresAt      DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt      DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user         User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeBranch Branch? @relation(fields: [activeBranchId], references: [id])
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("session")
+}
+
+model LoginHistory {
+  id             String   @id @default(uuid())
+  userId         String?  @map("user_id")
+  emailAttempted String   @map("email_attempted")
+  success        Boolean
+  ip             String?
+  userAgent      String?  @map("user_agent")
+  reason         String?
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([emailAttempted, createdAt])
+  @@map("login_history")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_token")
+}
+
+// ---------------------------------------------------------------------------
+// RBAC
+// ---------------------------------------------------------------------------
+
+model Role {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  name           String
+  isSystemRole   Boolean  @default(false) @map("is_system_role")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization     @relation(fields: [organizationId], references: [id])
+  permissions  RolePermission[]
+  users        UserRole[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("role")
+}
+
+model Permission {
+  id          String @id @default(uuid())
+  code        String @unique
+  category    String
+  description String
+
+  roles RolePermission[]
+
+  @@map("permission")
+}
+
+model RolePermission {
+  id           String   @id @default(uuid())
+  roleId       String   @map("role_id")
+  permissionId String   @map("permission_id")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permission")
+}
+
+model UserRole {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  roleId    String   @map("role_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@map("user_role")
+}
+
+// ---------------------------------------------------------------------------
+// Platform: audit, access log, sequences, outbox, settings, notifications
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  userId         String?  @map("user_id")
+  action         String
+  entityType     String   @map("entity_type")
+  entityId       String   @map("entity_id")
+  oldValues      Json?    @map("old_values")
+  newValues      Json?    @map("new_values")
+  ip             String?
+  userAgent      String?  @map("user_agent")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId, entityType, entityId, createdAt])
+  @@index([organizationId, createdAt])
+  @@map("audit_log")
+}
+
+// patient_id gained its FK in the Phase 2 migration once `patient` landed —
+// the table itself existed since Phase 1 (see SECURITY.md) so the
+// access-logging discipline was in place before any clinical data existed.
+model ClinicalAccessLog {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  userId         String   @map("user_id")
+  patientId      String   @map("patient_id")
+  resourceType   String   @map("resource_type")
+  resourceId     String?  @map("resource_id")
+  action         String
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  patient      Patient      @relation(fields: [patientId], references: [id])
+
+  @@index([organizationId, patientId, createdAt])
+  @@index([organizationId, userId, createdAt])
+  @@map("clinical_access_log")
+}
+
+enum SequenceResetPeriod {
+  never
+  daily
+}
+
+model NumberSequence {
+  id             String              @id @default(uuid())
+  organizationId String              @map("organization_id")
+  branchId       String?             @map("branch_id")
+  sequenceType   String              @map("sequence_type")
+  prefix         String
+  currentValue   Int                 @default(0) @map("current_value")
+  padding        Int                 @default(6)
+  resetPeriod    SequenceResetPeriod @default(never) @map("reset_period")
+  lastResetAt    DateTime            @default(now()) @map("last_reset_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  branch       Branch?      @relation(fields: [branchId], references: [id])
+
+  @@unique([organizationId, branchId, sequenceType])
+  @@map("number_sequence")
+}
+
+enum OutboxStatus {
+  pending
+  processed
+  failed
+}
+
+model OutboxEvent {
+  id             String       @id @default(uuid())
+  organizationId String       @map("organization_id")
+  eventType      String       @map("event_type")
+  payload        Json
+  status         OutboxStatus @default(pending)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  processedAt    DateTime?    @map("processed_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@index([status, createdAt])
+  @@map("outbox_event")
+}
+
+model Setting {
+  id             String  @id @default(uuid())
+  organizationId String  @map("organization_id")
+  branchId       String? @map("branch_id")
+  key            String
+  value          Json
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  branch       Branch?      @relation(fields: [branchId], references: [id])
+
+  @@unique([organizationId, branchId, key])
+  @@map("setting")
+}
+
+enum NotificationStatus {
+  unread
+  read
+  archived
+}
+
+model Notification {
+  id              String             @id @default(uuid())
+  organizationId  String             @map("organization_id")
+  recipientUserId String             @map("recipient_user_id")
+  type            String
+  title           String
+  body            String
+  referenceType   String?            @map("reference_type")
+  referenceId     String?            @map("reference_id")
+  status          NotificationStatus @default(unread)
+  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  recipient    User         @relation(fields: [recipientUserId], references: [id], onDelete: Cascade)
+
+  @@index([recipientUserId, status])
+  @@map("notification")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — Patient
+// ---------------------------------------------------------------------------
+
+enum Gender {
+  male
+  female
+  other
+  unknown
+}
+
+enum PatientStatus {
+  active
+  inactive
+  deceased
+}
+
+model Patient {
+  id                           String        @id @default(uuid())
+  organizationId               String        @map("organization_id")
+  registrationBranchId         String        @map("registration_branch_id")
+  mrn                          String        @map("mrn")
+  firstName                    String        @map("first_name")
+  middleName                   String?       @map("middle_name")
+  lastName                     String        @map("last_name")
+  profilePhotoUrl              String?       @map("profile_photo_url")
+  dob                          DateTime      @db.Date
+  gender                       Gender
+  nationality                  String?
+  mobile                       String
+  whatsapp                     String?
+  email                        String?
+  addressLine                  String?       @map("address_line")
+  city                         String?
+  country                      String?
+  nationalId                   String?       @map("national_id")
+  passportNumber               String?       @map("passport_number")
+  emergencyContactName         String?       @map("emergency_contact_name")
+  emergencyContactRelationship String?       @map("emergency_contact_relationship")
+  emergencyContactPhone        String?       @map("emergency_contact_phone")
+  preferredLanguage            String?       @map("preferred_language")
+  referralSource               String?       @map("referral_source")
+  preferredProviderId          String?       @map("preferred_provider_id")
+  status                       PatientStatus @default(active)
+  createdBy                    String?       @map("created_by")
+  createdAt                    DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                    DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization            Organization               @relation(fields: [organizationId], references: [id])
+  registrationBranch      Branch                     @relation(fields: [registrationBranchId], references: [id])
+  preferredProvider       Provider?                  @relation("PatientPreferredProvider", fields: [preferredProviderId], references: [id])
+  allergies               PatientAllergy[]
+  conditions              PatientCondition[]
+  medicationHistory       PatientMedicationHistory[]
+  appointments            Appointment[]
+  clinicalAccessLogs      ClinicalAccessLog[]
+  episodes                Episode[]
+  encounters              Encounter[]
+  vitalSigns              VitalSign[]
+  diagnoses               Diagnosis[]
+  clinicalNotes           ClinicalNote[]
+  clinicalOrders          ClinicalOrder[]
+  prescriptions           Prescription[]
+  followUpRecommendations FollowUpRecommendation[]
+  charges                 Charge[]
+  invoices                Invoice[]
+  patientPackages         PatientPackage[]
+  dispensingRecords       DispensingRecord[]
+  coverages               PatientCoverage[]
+  priorAuthorizations     PriorAuthorization[]
+  claims                  Claim[]
+  commMessages            CommMessage[]
+  portalAccount           PatientPortalAccount?
+
+  @@unique([organizationId, mrn])
+  @@index([organizationId, lastName, firstName])
+  @@index([organizationId, mobile])
+  @@index([organizationId, email])
+  @@index([organizationId, nationalId])
+  @@map("patient")
+}
+
+enum AllergySeverity {
+  mild
+  moderate
+  severe
+}
+
+model PatientAllergy {
+  id        String          @id @default(uuid())
+  patientId String          @map("patient_id")
+  allergen  String
+  reaction  String?
+  severity  AllergySeverity
+  isAlert   Boolean         @default(false) @map("is_alert")
+  status    String          @default("active")
+  notedBy   String?         @map("noted_by")
+  notedAt   DateTime        @default(now()) @map("noted_at") @db.Timestamptz(3)
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId])
+  @@map("patient_allergy")
+}
+
+// Covers chronic/active/previous conditions, surgical history, family history,
+// and general medical history (spec.md §12) — one table with a category rather
+// than six near-identical ones; still queryable per category.
+enum PatientConditionCategory {
+  chronic
+  active
+  previous
+  surgical_history
+  family_history
+  medical_history
+}
+
+model PatientCondition {
+  id          String                   @id @default(uuid())
+  patientId   String                   @map("patient_id")
+  category    PatientConditionCategory
+  description String
+  isAlert     Boolean                  @default(false) @map("is_alert")
+  status      String                   @default("active")
+  notedBy     String?                  @map("noted_by")
+  notedAt     DateTime                 @default(now()) @map("noted_at") @db.Timestamptz(3)
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId, category])
+  @@map("patient_condition")
+}
+
+model PatientMedicationHistory {
+  id             String    @id @default(uuid())
+  patientId      String    @map("patient_id")
+  medicationName String    @map("medication_name")
+  dose           String?
+  status         String    @default("current")
+  startDate      DateTime? @map("start_date") @db.Date
+  endDate        DateTime? @map("end_date") @db.Date
+  notedBy        String?   @map("noted_by")
+  notedAt        DateTime  @default(now()) @map("noted_at") @db.Timestamptz(3)
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId])
+  @@map("patient_medication_history")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — Provider
+// ---------------------------------------------------------------------------
+
+enum ProviderType {
+  doctor
+  dentist
+  physiotherapist
+  nurse
+  therapist
+  other
+}
+
+enum ProviderStatus {
+  active
+  inactive
+}
+
+model Provider {
+  id                                String         @id @default(uuid())
+  organizationId                    String         @map("organization_id")
+  // Nullable, optional 1:1 — a provider may have no HR record (e.g. a
+  // visiting contractor never entered as an Employee) or one, wired up now
+  // that Employee exists (Phase 7). Distinct from userId below: an employee
+  // linkage is an HR/payroll concern, a user linkage is a login/access concern.
+  employeeId                        String?        @unique @map("employee_id")
+  // Nullable, optional 1:1 — a provider may have no login (e.g. a visiting
+  // contractor whose schedule staff manage) or one (so they can see their own
+  // Doctor Queue / Doctor Dashboard, spec.md §20/§8).
+  userId                            String?        @unique @map("user_id")
+  providerType                      ProviderType   @map("provider_type")
+  firstName                         String         @map("first_name")
+  lastName                          String         @map("last_name")
+  specialty                         String?
+  qualification                     String?
+  licenseNumber                     String?        @map("license_number")
+  licenseAuthority                  String?        @map("license_authority")
+  licenseIssueDate                  DateTime?      @map("license_issue_date") @db.Date
+  licenseExpiryDate                 DateTime?      @map("license_expiry_date") @db.Date
+  consultationFee                   Decimal        @default(0) @map("consultation_fee") @db.Decimal(14, 2)
+  defaultAppointmentDurationMinutes Int            @default(30) @map("default_appointment_duration_minutes")
+  status                            ProviderStatus @default(active)
+  createdAt                         DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                         DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization        Organization          @relation(fields: [organizationId], references: [id])
+  employee            Employee?             @relation(fields: [employeeId], references: [id])
+  user                User?                 @relation(fields: [userId], references: [id])
+  branches            ProviderBranch[]
+  departments         ProviderDepartment[]
+  services            ServiceProvider[]
+  schedules           ProviderSchedule[]
+  leaveBlocks         ProviderLeaveBlock[]
+  appointments        Appointment[]
+  preferredByPatients Patient[]             @relation("PatientPreferredProvider")
+  primaryEpisodes     Episode[]             @relation("EpisodePrimaryProvider")
+  encounters          Encounter[]
+  clinicalOrders      ClinicalOrder[]
+  referralsReceived   ReferralOrderDetail[] @relation("ReferralTargetProvider")
+  prescriptions       Prescription[]
+  charges             Charge[]
+  invoices            Invoice[]
+  commissionRules     CommissionRule[]
+  commissionAccruals  CommissionAccrual[]
+
+  @@index([organizationId])
+  @@map("provider")
+}
+
+model ProviderBranch {
+  id         String @id @default(uuid())
+  providerId String @map("provider_id")
+  branchId   String @map("branch_id")
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  branch   Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, branchId])
+  @@map("provider_branch")
+}
+
+model ProviderDepartment {
+  id           String @id @default(uuid())
+  providerId   String @map("provider_id")
+  departmentId String @map("department_id")
+
+  provider   Provider   @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, departmentId])
+  @@map("provider_department")
+}
+
+// Weekly recurring working-hours pattern. Multiple rows for the same day
+// represent a break between them (e.g. 09:00-12:00 and 13:00-17:00) rather
+// than a dedicated break table — sufficient for Phase 2's soft-validation use
+// (see providers.ts); the hard constraint is the appointment exclusion index.
+model ProviderSchedule {
+  id                  String  @id @default(uuid())
+  providerId          String  @map("provider_id")
+  branchId            String  @map("branch_id")
+  departmentId        String? @map("department_id")
+  roomId              String? @map("room_id")
+  dayOfWeek           Int     @map("day_of_week") // 0 = Sunday .. 6 = Saturday
+  startTime           String  @map("start_time") // "HH:MM", branch-local
+  endTime             String  @map("end_time")
+  slotDurationMinutes Int     @default(30) @map("slot_duration_minutes")
+  isActive            Boolean @default(true) @map("is_active")
+
+  provider   Provider    @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  branch     Branch      @relation(fields: [branchId], references: [id])
+  department Department? @relation(fields: [departmentId], references: [id])
+  room       Room?       @relation(fields: [roomId], references: [id])
+
+  @@index([providerId, dayOfWeek])
+  @@map("provider_schedule")
+}
+
+// Approved leave automatically blocks appointment availability (spec.md §16).
+// A full HR-driven approval workflow lands in Phase 7; for now these are
+// direct staff entries checked by the appointment service at booking time.
+model ProviderLeaveBlock {
+  id         String   @id @default(uuid())
+  providerId String   @map("provider_id")
+  startAt    DateTime @map("start_at") @db.Timestamptz(3)
+  endAt      DateTime @map("end_at") @db.Timestamptz(3)
+  reason     String?
+  createdBy  String?  @map("created_by")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([providerId, startAt, endAt])
+  @@map("provider_leave_block")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — Service
+// ---------------------------------------------------------------------------
+
+model Service {
+  id               String   @id @default(uuid())
+  organizationId   String   @map("organization_id")
+  code             String
+  name             String
+  category         String
+  departmentId     String?  @map("department_id")
+  description      String?
+  durationMinutes  Int      @map("duration_minutes")
+  price            Decimal  @db.Decimal(14, 2)
+  billable         Boolean  @default(true)
+  isActive         Boolean  @default(true) @map("is_active")
+  requiredRoomType String?  @map("required_room_type")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization    Organization                @relation(fields: [organizationId], references: [id])
+  department      Department?                 @relation(fields: [departmentId], references: [id])
+  providers       ServiceProvider[]
+  appointments    Appointment[]
+  charges         Charge[]
+  packageServices PackageService[]
+  taxRules        TaxRule[]
+  consumptions    ServiceProductConsumption[]
+  commissionRules CommissionRule[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, category])
+  @@map("service")
+}
+
+model ServiceProvider {
+  id         String @id @default(uuid())
+  serviceId  String @map("service_id")
+  providerId String @map("provider_id")
+
+  service  Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([serviceId, providerId])
+  @@map("service_provider")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — Appointment & Queue
+// ---------------------------------------------------------------------------
+
+enum AppointmentStatus {
+  scheduled
+  confirmed
+  arrived
+  checked_in
+  waiting
+  in_consultation
+  completed
+  cancelled
+  rescheduled
+  no_show
+}
+
+enum BookingSource {
+  walk_in
+  phone
+  online
+  staff
+}
+
+model Appointment {
+  id                String            @id @default(uuid())
+  organizationId    String            @map("organization_id")
+  branchId          String            @map("branch_id")
+  appointmentNumber String            @map("appointment_number")
+  patientId         String            @map("patient_id")
+  providerId        String            @map("provider_id")
+  serviceId         String?           @map("service_id")
+  departmentId      String?           @map("department_id")
+  roomId            String?           @map("room_id")
+  startTime         DateTime          @map("start_time") @db.Timestamptz(3)
+  endTime           DateTime          @map("end_time") @db.Timestamptz(3)
+  bookingSource     BookingSource     @default(staff) @map("booking_source")
+  notes             String?
+  status            AppointmentStatus @default(scheduled)
+  // Reschedule = the original row moves to status 'rescheduled' (freeing its
+  // slot from the exclusion constraint) and a new row is created for the new
+  // time, linked back here — preserves the original as real history instead
+  // of overwriting its time in place.
+  rescheduledFromId String?           @map("rescheduled_from_id")
+  createdBy         String?           @map("created_by")
+  createdAt         DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization            Organization               @relation(fields: [organizationId], references: [id])
+  branch                  Branch                     @relation(fields: [branchId], references: [id])
+  patient                 Patient                    @relation(fields: [patientId], references: [id])
+  provider                Provider                   @relation(fields: [providerId], references: [id])
+  service                 Service?                   @relation(fields: [serviceId], references: [id])
+  department              Department?                @relation(fields: [departmentId], references: [id])
+  room                    Room?                      @relation(fields: [roomId], references: [id])
+  statusHistory           AppointmentStatusHistory[]
+  queueEntry              QueueEntry?
+  rescheduledFrom         Appointment?               @relation("AppointmentReschedule", fields: [rescheduledFromId], references: [id])
+  rescheduledTo           Appointment[]              @relation("AppointmentReschedule")
+  encounter               Encounter?
+  followUpRecommendations FollowUpRecommendation[]
+
+  @@unique([organizationId, appointmentNumber])
+  @@index([organizationId, branchId, startTime])
+  @@index([providerId, startTime])
+  @@index([patientId])
+  @@index([serviceId])
+  @@map("appointment")
+}
+
+model AppointmentStatusHistory {
+  id            String             @id @default(uuid())
+  appointmentId String             @map("appointment_id")
+  fromStatus    AppointmentStatus? @map("from_status")
+  toStatus      AppointmentStatus  @map("to_status")
+  changedBy     String?            @map("changed_by")
+  changedAt     DateTime           @default(now()) @map("changed_at") @db.Timestamptz(3)
+  reason        String?
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  @@index([appointmentId])
+  @@map("appointment_status_history")
+}
+
+model QueueEntry {
+  id                  String    @id @default(uuid())
+  appointmentId       String    @unique @map("appointment_id")
+  branchId            String    @map("branch_id")
+  tokenNumber         String    @map("token_number")
+  arrivedAt           DateTime? @map("arrived_at") @db.Timestamptz(3)
+  checkedInAt         DateTime? @map("checked_in_at") @db.Timestamptz(3)
+  calledAt            DateTime? @map("called_at") @db.Timestamptz(3)
+  consultationStartAt DateTime? @map("consultation_start_at") @db.Timestamptz(3)
+  consultationEndAt   DateTime? @map("consultation_end_at") @db.Timestamptz(3)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  branch      Branch      @relation(fields: [branchId], references: [id])
+
+  @@index([branchId, createdAt])
+  @@map("queue_entry")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — Core EMR
+// ---------------------------------------------------------------------------
+
+enum EpisodeStatus {
+  open
+  active
+  completed
+  cancelled
+}
+
+// episode_type is deliberately a free-text string, not an enum — spec.md §92
+// bans hardcoding business configuration, and unlike encounter_type (a fixed,
+// small clinical taxonomy) episode categorization is organization-specific.
+model Episode {
+  id                String        @id @default(uuid())
+  organizationId    String        @map("organization_id")
+  branchId          String        @map("branch_id")
+  patientId         String        @map("patient_id")
+  episodeNumber     String        @map("episode_number")
+  episodeType       String        @map("episode_type")
+  title             String
+  description       String?
+  startDate         DateTime      @map("start_date") @db.Date
+  endDate           DateTime?     @map("end_date") @db.Date
+  primaryProviderId String?       @map("primary_provider_id")
+  status            EpisodeStatus @default(open)
+  createdBy         String?       @map("created_by")
+  createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  branch          Branch       @relation(fields: [branchId], references: [id])
+  patient         Patient      @relation(fields: [patientId], references: [id])
+  primaryProvider Provider?    @relation("EpisodePrimaryProvider", fields: [primaryProviderId], references: [id])
+  encounters      Encounter[]
+  diagnoses       Diagnosis[]
+
+  @@unique([organizationId, episodeNumber])
+  @@index([patientId])
+  @@map("episode")
+}
+
+enum EncounterType {
+  consultation
+  follow_up
+  procedure
+  therapy
+  emergency_walk_in
+  diagnostic
+  teleconsultation
+}
+
+enum EncounterStatus {
+  draft
+  active
+  completed
+  finalized
+}
+
+model Encounter {
+  id              String          @id @default(uuid())
+  organizationId  String          @map("organization_id")
+  branchId        String          @map("branch_id")
+  departmentId    String?         @map("department_id")
+  patientId       String          @map("patient_id")
+  episodeId       String?         @map("episode_id")
+  appointmentId   String?         @unique @map("appointment_id")
+  providerId      String          @map("provider_id")
+  encounterNumber String          @map("encounter_number")
+  encounterType   EncounterType   @default(consultation) @map("encounter_type")
+  startAt         DateTime        @default(now()) @map("start_at") @db.Timestamptz(3)
+  endAt           DateTime?       @map("end_at") @db.Timestamptz(3)
+  status          EncounterStatus @default(draft)
+  createdBy       String?         @map("created_by")
+  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization           Organization             @relation(fields: [organizationId], references: [id])
+  branch                 Branch                   @relation(fields: [branchId], references: [id])
+  department             Department?              @relation(fields: [departmentId], references: [id])
+  patient                Patient                  @relation(fields: [patientId], references: [id])
+  episode                Episode?                 @relation(fields: [episodeId], references: [id])
+  appointment            Appointment?             @relation(fields: [appointmentId], references: [id])
+  provider               Provider                 @relation(fields: [providerId], references: [id])
+  vitalSigns             VitalSign[]
+  notes                  ClinicalNote[]
+  diagnoses              Diagnosis[]
+  orders                 ClinicalOrder[]
+  prescriptions          Prescription[]
+  followUps              FollowUpRecommendation[]
+  charges                Charge[]
+  patientPackageSessions PatientPackageSession[]
+  priorAuthorizations    PriorAuthorization[]
+  claims                 Claim[]
+
+  @@unique([organizationId, encounterNumber])
+  @@index([patientId])
+  @@index([providerId, startAt])
+  @@index([branchId])
+  @@index([episodeId])
+  @@map("encounter")
+}
+
+model VitalSign {
+  id                      String   @id @default(uuid())
+  organizationId          String   @map("organization_id")
+  patientId               String   @map("patient_id")
+  encounterId             String   @map("encounter_id")
+  branchId                String   @map("branch_id")
+  recordedBy              String?  @map("recorded_by")
+  recordedAt              DateTime @default(now()) @map("recorded_at") @db.Timestamptz(3)
+  heightCm                Decimal? @map("height_cm") @db.Decimal(6, 2)
+  weightKg                Decimal? @map("weight_kg") @db.Decimal(6, 2)
+  bmi                     Decimal? @db.Decimal(5, 2)
+  bloodPressureSystolic   Int?     @map("blood_pressure_systolic")
+  bloodPressureDiastolic  Int?     @map("blood_pressure_diastolic")
+  pulseBpm                Int?     @map("pulse_bpm")
+  temperatureCelsius      Decimal? @map("temperature_celsius") @db.Decimal(4, 1)
+  oxygenSaturationPercent Int?     @map("oxygen_saturation_percent")
+  respiratoryRatePerMin   Int?     @map("respiratory_rate_per_min")
+  bloodGlucoseMgDl        Decimal? @map("blood_glucose_mg_dl") @db.Decimal(6, 2)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  patient      Patient      @relation(fields: [patientId], references: [id])
+  encounter    Encounter    @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [branchId], references: [id])
+
+  @@index([organizationId, patientId, recordedAt])
+  @@index([encounterId])
+  @@index([branchId])
+  @@map("vital_sign")
+}
+
+// Seeded with a small common subset and admin-importable (BLUEPRINT.md §43) —
+// never the full ICD terminology hardcoded into application logic (spec.md §24).
+// The code itself is the natural key; no surrogate UUID needed for a lookup table.
+model DiagnosisCode {
+  code        String  @id
+  description String
+  category    String?
+  isActive    Boolean @default(true) @map("is_active")
+
+  diagnoses Diagnosis[]
+
+  @@map("diagnosis_code")
+}
+
+enum DiagnosisStatus {
+  active
+  resolved
+  ruled_out
+}
+
+model Diagnosis {
+  id             String          @id @default(uuid())
+  organizationId String          @map("organization_id")
+  patientId      String          @map("patient_id")
+  encounterId    String          @map("encounter_id")
+  episodeId      String?         @map("episode_id")
+  diagnosisCode  String?         @map("diagnosis_code")
+  // Snapshot of the code's description at diagnosis time — an admin editing
+  // DiagnosisCode.description later must not silently rewrite historical
+  // clinical records.
+  description    String
+  isPrimary      Boolean         @default(false) @map("is_primary")
+  status         DiagnosisStatus @default(active)
+  diagnosedBy    String?         @map("diagnosed_by")
+  diagnosedAt    DateTime        @default(now()) @map("diagnosed_at") @db.Timestamptz(3)
+
+  organization Organization   @relation(fields: [organizationId], references: [id])
+  patient      Patient        @relation(fields: [patientId], references: [id])
+  encounter    Encounter      @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  episode      Episode?       @relation(fields: [episodeId], references: [id])
+  code         DiagnosisCode? @relation(fields: [diagnosisCode], references: [code])
+  claimItems   ClaimItem[]
+
+  @@index([organizationId, patientId])
+  @@index([encounterId])
+  @@map("diagnosis")
+}
+
+enum ClinicalNoteType {
+  consultation
+  progress
+  nursing
+  procedure
+  follow_up
+}
+
+enum ClinicalNoteStatus {
+  draft
+  finalized
+}
+
+// Finalized notes are never edited in place (spec.md §25/§92). A correction
+// creates a new row with amendsId pointing at the row it supersedes; isCurrent
+// is maintained by the service layer so "the note as it stands today" is a
+// plain WHERE isCurrent=true lookup without walking the chain.
+model ClinicalNote {
+  id             String             @id @default(uuid())
+  organizationId String             @map("organization_id")
+  encounterId    String             @map("encounter_id")
+  patientId      String             @map("patient_id")
+  noteType       ClinicalNoteType   @map("note_type")
+  status         ClinicalNoteStatus @default(draft)
+
+  chiefComplaint          String? @map("chief_complaint")
+  historyOfPresentIllness String? @map("history_of_present_illness")
+  reviewOfSystems         String? @map("review_of_systems")
+  examinationFindings     String? @map("examination_findings")
+  assessment              String?
+  treatmentPlan           String? @map("treatment_plan")
+  content                 String?
+
+  amendsId    String?   @map("amends_id")
+  isCurrent   Boolean   @default(true) @map("is_current")
+  authoredBy  String?   @map("authored_by")
+  finalizedBy String?   @map("finalized_by")
+  finalizedAt DateTime? @map("finalized_at") @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization   @relation(fields: [organizationId], references: [id])
+  encounter    Encounter      @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  patient      Patient        @relation(fields: [patientId], references: [id])
+  amends       ClinicalNote?  @relation("ClinicalNoteAmendment", fields: [amendsId], references: [id])
+  amendments   ClinicalNote[] @relation("ClinicalNoteAmendment")
+
+  @@index([encounterId, noteType, isCurrent])
+  @@index([patientId])
+  @@map("clinical_note")
+}
+
+enum ClinicalOrderType {
+  lab
+  imaging
+  procedure
+  referral
+  other
+}
+
+enum ClinicalOrderPriority {
+  routine
+  urgent
+  stat
+}
+
+enum ClinicalOrderStatus {
+  draft
+  ordered
+  acknowledged
+  in_progress
+  completed
+  cancelled
+}
+
+// The bridge between the EMR and future clinical support systems (spec.md
+// §26). One shared parent + a concrete detail table per type (not a generic
+// EAV blob) per BLUEPRINT.md §6 — "medication" isn't a type here because
+// Prescription already is the medication-order document (Phase 9 Pharmacy
+// consumes Prescription directly, per the PIS workflow in spec.md §29).
+model ClinicalOrder {
+  id                 String                @id @default(uuid())
+  organizationId     String                @map("organization_id")
+  branchId           String                @map("branch_id")
+  patientId          String                @map("patient_id")
+  encounterId        String                @map("encounter_id")
+  orderNumber        String                @map("order_number")
+  orderType          ClinicalOrderType     @map("order_type")
+  priority           ClinicalOrderPriority @default(routine)
+  instructions       String?
+  status             ClinicalOrderStatus   @default(draft)
+  orderingProviderId String                @map("ordering_provider_id")
+  orderedAt          DateTime              @default(now()) @map("ordered_at") @db.Timestamptz(3)
+  createdBy          String?               @map("created_by")
+
+  organization     Organization          @relation(fields: [organizationId], references: [id])
+  branch           Branch                @relation(fields: [branchId], references: [id])
+  patient          Patient               @relation(fields: [patientId], references: [id])
+  encounter        Encounter             @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  orderingProvider Provider              @relation(fields: [orderingProviderId], references: [id])
+  labDetail        LabOrderDetail?
+  imagingDetail    ImagingOrderDetail?
+  procedureDetail  ProcedureOrderDetail?
+  referralDetail   ReferralOrderDetail?
+  specimens        Specimen[]
+  labOrderTests    LabOrderTest[]
+  imagingOrder     ImagingOrder?
+
+  @@unique([organizationId, orderNumber])
+  @@index([patientId])
+  @@index([encounterId])
+  @@index([branchId])
+  @@index([orderingProviderId])
+  @@map("clinical_order")
+}
+
+model LabOrderDetail {
+  clinicalOrderId String  @id @map("clinical_order_id")
+  testName        String  @map("test_name")
+  specimenType    String? @map("specimen_type")
+  clinicalNotes   String? @map("clinical_notes")
+
+  order ClinicalOrder @relation(fields: [clinicalOrderId], references: [id], onDelete: Cascade)
+
+  @@map("lab_order_detail")
+}
+
+model ImagingOrderDetail {
+  clinicalOrderId String  @id @map("clinical_order_id")
+  imagingType     String  @map("imaging_type")
+  bodyPart        String? @map("body_part")
+  clinicalNotes   String? @map("clinical_notes")
+
+  order ClinicalOrder @relation(fields: [clinicalOrderId], references: [id], onDelete: Cascade)
+
+  @@map("imaging_order_detail")
+}
+
+model ProcedureOrderDetail {
+  clinicalOrderId String  @id @map("clinical_order_id")
+  procedureName   String  @map("procedure_name")
+  notes           String?
+
+  order ClinicalOrder @relation(fields: [clinicalOrderId], references: [id], onDelete: Cascade)
+
+  @@map("procedure_order_detail")
+}
+
+enum ReferralScope {
+  internal
+  external
+}
+
+enum ReferralStatus {
+  issued
+  acknowledged
+  seen
+  closed
+}
+
+model ReferralOrderDetail {
+  clinicalOrderId      String         @id @map("clinical_order_id")
+  referralScope        ReferralScope  @map("referral_scope")
+  referredToProviderId String?        @map("referred_to_provider_id")
+  referredToExternal   String?        @map("referred_to_external")
+  reason               String?
+  referralStatus       ReferralStatus @default(issued) @map("referral_status")
+
+  order              ClinicalOrder @relation(fields: [clinicalOrderId], references: [id], onDelete: Cascade)
+  referredToProvider Provider?     @relation("ReferralTargetProvider", fields: [referredToProviderId], references: [id])
+
+  @@map("referral_order_detail")
+}
+
+enum PrescriptionStatus {
+  active
+  completed
+  cancelled
+}
+
+model Prescription {
+  id                 String             @id @default(uuid())
+  organizationId     String             @map("organization_id")
+  patientId          String             @map("patient_id")
+  encounterId        String             @map("encounter_id")
+  providerId         String             @map("provider_id")
+  prescriptionNumber String             @map("prescription_number")
+  status             PrescriptionStatus @default(active)
+  issuedAt           DateTime           @default(now()) @map("issued_at") @db.Timestamptz(3)
+  createdBy          String?            @map("created_by")
+
+  organization      Organization       @relation(fields: [organizationId], references: [id])
+  patient           Patient            @relation(fields: [patientId], references: [id])
+  encounter         Encounter          @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  provider          Provider           @relation(fields: [providerId], references: [id])
+  items             PrescriptionItem[]
+  dispensingRecords DispensingRecord[]
+
+  @@unique([organizationId, prescriptionNumber])
+  @@index([patientId])
+  @@index([encounterId])
+  @@index([providerId])
+  @@map("prescription")
+}
+
+model PrescriptionItem {
+  id             String  @id @default(uuid())
+  prescriptionId String  @map("prescription_id")
+  medicationName String  @map("medication_name")
+  genericName    String? @map("generic_name")
+  strength       String?
+  dose           String
+  frequency      String
+  route          String
+  durationDays   Int?    @map("duration_days")
+  quantity       Int?
+  instructions   String?
+
+  prescription      Prescription       @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+  dispensingRecords DispensingRecord[]
+
+  @@map("prescription_item")
+}
+
+enum FollowUpStatus {
+  open
+  scheduled
+  dismissed
+}
+
+// Explicit entity for "follow-up due" (spec.md §64) rather than inferring
+// meaning from a plain future-dated appointment (BLUEPRINT.md correction #1).
+model FollowUpRecommendation {
+  id              String         @id @default(uuid())
+  organizationId  String         @map("organization_id")
+  encounterId     String         @map("encounter_id")
+  patientId       String         @map("patient_id")
+  recommendedDate DateTime       @map("recommended_date") @db.Date
+  reason          String?
+  status          FollowUpStatus @default(open)
+  appointmentId   String?        @map("appointment_id")
+  createdBy       String?        @map("created_by")
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  encounter    Encounter    @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  patient      Patient      @relation(fields: [patientId], references: [id])
+  appointment  Appointment? @relation(fields: [appointmentId], references: [id])
+
+  @@index([organizationId, patientId, status])
+  @@index([encounterId])
+  @@map("follow_up_recommendation")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Revenue: Charges, POS, Invoice, Payment, Refund, Cashier, Packages
+// ---------------------------------------------------------------------------
+
+enum ChargeSourceType {
+  consultation
+  procedure
+  lab
+  imaging
+  pharmacy
+  product
+  package
+  other
+}
+
+enum ChargeStatus {
+  pending
+  invoiced
+  void
+}
+
+// The centralized billing engine's single entry point (spec.md §33) — nothing
+// else is allowed to write invoice lines directly, including the POS UI.
+// `encounterId`/`serviceId`/`providerId` are real FKs for the common,
+// type-safe cases; `sourceReferenceId` is a loose polymorphic pointer (same
+// convention as Notification.referenceId) for origins that don't have a
+// dedicated FK slot here (e.g. the originating ClinicalOrder for a procedure
+// charge, or the PatientPackage for a package sale) — interpretation depends
+// on sourceType. `amount` is always quantity*unitPrice computed server-side;
+// never accept a client-submitted total (spec.md §92 "never trust frontend
+// totals").
+model Charge {
+  id                String           @id @default(uuid())
+  organizationId    String           @map("organization_id")
+  branchId          String           @map("branch_id")
+  patientId         String           @map("patient_id")
+  encounterId       String?          @map("encounter_id")
+  serviceId         String?          @map("service_id")
+  providerId        String?          @map("provider_id")
+  sourceType        ChargeSourceType @map("source_type")
+  sourceReferenceId String?          @map("source_reference_id")
+  description       String
+  quantity          Int              @default(1)
+  unitPrice         Decimal          @map("unit_price") @db.Decimal(14, 2)
+  amount            Decimal          @db.Decimal(14, 2)
+  status            ChargeStatus     @default(pending)
+  voidReason        String?          @map("void_reason")
+  createdBy         String?          @map("created_by")
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization       Organization        @relation(fields: [organizationId], references: [id])
+  branch             Branch              @relation(fields: [branchId], references: [id])
+  patient            Patient             @relation(fields: [patientId], references: [id])
+  encounter          Encounter?          @relation(fields: [encounterId], references: [id])
+  service            Service?            @relation(fields: [serviceId], references: [id])
+  provider           Provider?           @relation(fields: [providerId], references: [id])
+  invoiceLine        InvoiceLine?
+  commissionAccruals CommissionAccrual[]
+  labOrderTest       LabOrderTest?
+  dispensingRecord   DispensingRecord?
+  imagingOrder       ImagingOrder?
+
+  @@index([organizationId, patientId, status])
+  @@index([encounterId])
+  @@index([branchId])
+  @@index([providerId])
+  @@index([serviceId])
+  @@map("charge")
+}
+
+enum InvoiceStatus {
+  draft
+  issued
+  partially_paid
+  paid
+  void
+}
+
+// Aggregates pending Charges at issue time (spec.md §33 flow: Charge -> Invoice
+// -> Payment). subtotal/discountAmount/taxAmount/totalAmount are computed
+// once, server-side, from the selected charges + tax_rule lookups — never
+// accepted as input. paidAmount is maintained exclusively by the payments/
+// refunds services via PaymentAllocation, never set directly here.
+model Invoice {
+  id                             String        @id @default(uuid())
+  organizationId                 String        @map("organization_id")
+  branchId                       String        @map("branch_id")
+  invoiceNumber                  String        @map("invoice_number")
+  patientId                      String        @map("patient_id")
+  providerId                     String?       @map("provider_id")
+  status                         InvoiceStatus @default(issued)
+  subtotal                       Decimal       @db.Decimal(14, 2)
+  discountAmount                 Decimal       @default(0) @map("discount_amount") @db.Decimal(14, 2)
+  taxAmount                      Decimal       @default(0) @map("tax_amount") @db.Decimal(14, 2)
+  totalAmount                    Decimal       @map("total_amount") @db.Decimal(14, 2)
+  paidAmount                     Decimal       @default(0) @map("paid_amount") @db.Decimal(14, 2)
+  voidReason                     String?       @map("void_reason")
+  createdBy                      String?       @map("created_by")
+  createdAt                      DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  issuedAt                       DateTime      @default(now()) @map("issued_at") @db.Timestamptz(3)
+  // Insurance path (spec.md §38/§40, Phase 11) — all six nullable: self-pay
+  // invoices (the vast majority until a real payor is configured) leave every
+  // one of these null, per spec.md §38's "self-pay patients should work
+  // without insurance configuration." estimated* is computed at issue time
+  // from the linked PatientCoverage's copay/deductible; final* is set only
+  // once a Claim tied to this invoice reaches `remitted`, as a separate
+  // write, never an in-place edit of the original estimate (ARCHITECTURE.md
+  // §5).
+  payorId                        String?       @map("payor_id")
+  patientCoverageId              String?       @map("patient_coverage_id")
+  estimatedPatientResponsibility Decimal?      @map("estimated_patient_responsibility") @db.Decimal(14, 2)
+  estimatedPayorResponsibility   Decimal?      @map("estimated_payor_responsibility") @db.Decimal(14, 2)
+  finalPatientResponsibility     Decimal?      @map("final_patient_responsibility") @db.Decimal(14, 2)
+  finalPayorResponsibility       Decimal?      @map("final_payor_responsibility") @db.Decimal(14, 2)
+
+  organization       Organization        @relation(fields: [organizationId], references: [id])
+  branch             Branch              @relation(fields: [branchId], references: [id])
+  patient            Patient             @relation(fields: [patientId], references: [id])
+  provider           Provider?           @relation(fields: [providerId], references: [id])
+  payor              Payor?              @relation(fields: [payorId], references: [id])
+  patientCoverage    PatientCoverage?    @relation(fields: [patientCoverageId], references: [id])
+  lines              InvoiceLine[]
+  paymentAllocations PaymentAllocation[]
+  refunds            Refund[]
+  patientPackages    PatientPackage[]
+  commissionAccruals CommissionAccrual[]
+  claims             Claim[]
+
+  @@unique([organizationId, invoiceNumber])
+  @@index([organizationId, patientId, status])
+  @@index([branchId])
+  @@index([providerId])
+  @@index([payorId])
+  @@map("invoice")
+}
+
+// One line per consumed Charge (@@unique enforces this — invoicing a charge
+// is what flips it to `invoiced`). Snapshots description/quantity/unitPrice
+// at invoice time and adds the invoice-time-only concepts (discount, tax)
+// that Charge itself has no notion of.
+model InvoiceLine {
+  id             String  @id @default(uuid())
+  invoiceId      String  @map("invoice_id")
+  chargeId       String  @unique @map("charge_id")
+  description    String
+  quantity       Int
+  unitPrice      Decimal @map("unit_price") @db.Decimal(14, 2)
+  discountAmount Decimal @default(0) @map("discount_amount") @db.Decimal(14, 2)
+  taxAmount      Decimal @default(0) @map("tax_amount") @db.Decimal(14, 2)
+  lineTotal      Decimal @map("line_total") @db.Decimal(14, 2)
+
+  invoice    Invoice     @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  charge     Charge      @relation(fields: [chargeId], references: [id])
+  claimItems ClaimItem[]
+
+  @@index([invoiceId])
+  @@map("invoice_line")
+}
+
+enum PaymentMethod {
+  cash
+  card
+  bank
+  online
+  insurance
+  credit
+  other
+}
+
+enum PaymentStatus {
+  completed
+  reversed
+}
+
+// One row per tender (spec.md §35 split-payment example: Cash 200 + Card 500
+// + Insurance 300 against one invoice = 3 Payment rows). Never deleted to
+// reverse a mistake (spec.md §92) — a reversal is a Refund against it.
+model Payment {
+  id               String        @id @default(uuid())
+  organizationId   String        @map("organization_id")
+  branchId         String        @map("branch_id")
+  receiptNumber    String        @map("receipt_number")
+  method           PaymentMethod
+  amount           Decimal       @db.Decimal(14, 2)
+  reference        String?
+  cashierSessionId String?       @map("cashier_session_id")
+  status           PaymentStatus @default(completed)
+  receivedBy       String?       @map("received_by")
+  receivedAt       DateTime      @default(now()) @map("received_at") @db.Timestamptz(3)
+  // Traceability for an insurance-tender payment recorded as a claim's
+  // remittance (spec.md §39's "Remittance" step) — reuses the existing
+  // recordPayment() path (spec.md §35 already lists "Insurance" as a tender)
+  // rather than a second, parallel remittance-recording mechanism.
+  claimId          String?       @map("claim_id")
+
+  organization       Organization        @relation(fields: [organizationId], references: [id])
+  branch             Branch              @relation(fields: [branchId], references: [id])
+  cashierSession     CashierSession?     @relation(fields: [cashierSessionId], references: [id])
+  claim              Claim?              @relation(fields: [claimId], references: [id])
+  allocations        PaymentAllocation[]
+  refunds            Refund[]
+  commissionAccruals CommissionAccrual[]
+
+  @@unique([organizationId, receiptNumber])
+  @@index([cashierSessionId])
+  @@index([branchId])
+  @@index([claimId])
+  @@map("payment")
+}
+
+// Payment:Invoice is many-to-many via allocation (ARCHITECTURE.md §5) so a
+// single payment can eventually be applied across multiple invoices (AR
+// settlement) even though Phase 4's UI only ever exercises the 1-payment-
+// 1-invoice path — the schema doesn't need a breaking migration when that
+// broader flow is built later.
+model PaymentAllocation {
+  id        String  @id @default(uuid())
+  paymentId String  @map("payment_id")
+  invoiceId String  @map("invoice_id")
+  amount    Decimal @db.Decimal(14, 2)
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoice Invoice @relation(fields: [invoiceId], references: [id])
+
+  @@unique([paymentId, invoiceId])
+  @@index([invoiceId])
+  @@map("payment_allocation")
+}
+
+enum RefundStatus {
+  requested
+  authorized
+  completed
+  rejected
+}
+
+// Request -> Authorization -> Refund/Credit Note -> Payment Reversal (where
+// appropriate) -> Accounting Adjustment (spec.md §36). `paymentId` is
+// nullable because a refund is "where appropriate" tied to a specific prior
+// Payment being reversed, but a credit-note-style adjustment against an
+// invoice with no completed payment yet is also valid. Authorization is a
+// distinct permission from request (segregation of duties, same pattern as
+// lab_result.enter/verify).
+model Refund {
+  id               String        @id @default(uuid())
+  organizationId   String        @map("organization_id")
+  branchId         String        @map("branch_id")
+  invoiceId        String        @map("invoice_id")
+  paymentId        String?       @map("payment_id")
+  method           PaymentMethod
+  amount           Decimal       @db.Decimal(14, 2)
+  reason           String
+  status           RefundStatus  @default(requested)
+  cashierSessionId String?       @map("cashier_session_id")
+  requestedBy      String?       @map("requested_by")
+  requestedAt      DateTime      @default(now()) @map("requested_at") @db.Timestamptz(3)
+  authorizedBy     String?       @map("authorized_by")
+  authorizedAt     DateTime?     @map("authorized_at") @db.Timestamptz(3)
+  rejectionReason  String?       @map("rejection_reason")
+  completedAt      DateTime?     @map("completed_at") @db.Timestamptz(3)
+
+  organization   Organization    @relation(fields: [organizationId], references: [id])
+  branch         Branch          @relation(fields: [branchId], references: [id])
+  invoice        Invoice         @relation(fields: [invoiceId], references: [id])
+  payment        Payment?        @relation(fields: [paymentId], references: [id])
+  cashierSession CashierSession? @relation(fields: [cashierSessionId], references: [id])
+
+  @@index([organizationId, status])
+  @@index([invoiceId])
+  @@index([branchId])
+  @@index([paymentId])
+  @@map("refund")
+}
+
+enum CashierSessionStatus {
+  open
+  closed
+}
+
+// Open Register -> Transactions -> Cash Movements -> Close Register (spec.md
+// §37). expectedCash/variance are computed at close time from openingCash +
+// cash Payments/Refunds recorded during the session + CashMovement entries —
+// never a directly-mutable running balance.
+model CashierSession {
+  id             String               @id @default(uuid())
+  organizationId String               @map("organization_id")
+  branchId       String               @map("branch_id")
+  cashierUserId  String               @map("cashier_user_id")
+  openingCash    Decimal              @map("opening_cash") @db.Decimal(14, 2)
+  expectedCash   Decimal?             @map("expected_cash") @db.Decimal(14, 2)
+  actualCash     Decimal?             @map("actual_cash") @db.Decimal(14, 2)
+  variance       Decimal?             @db.Decimal(14, 2)
+  status         CashierSessionStatus @default(open)
+  notes          String?
+  openedAt       DateTime             @default(now()) @map("opened_at") @db.Timestamptz(3)
+  closedAt       DateTime?            @map("closed_at") @db.Timestamptz(3)
+
+  organization  Organization   @relation(fields: [organizationId], references: [id])
+  branch        Branch         @relation(fields: [branchId], references: [id])
+  payments      Payment[]
+  refunds       Refund[]
+  cashMovements CashMovement[]
+
+  @@index([organizationId, branchId, status])
+  @@index([cashierUserId, status])
+  @@map("cashier_session")
+}
+
+enum CashMovementDirection {
+  in
+  out
+}
+
+model CashMovement {
+  id               String                @id @default(uuid())
+  organizationId   String                @map("organization_id")
+  cashierSessionId String                @map("cashier_session_id")
+  direction        CashMovementDirection
+  amount           Decimal               @db.Decimal(14, 2)
+  reason           String
+  recordedBy       String?               @map("recorded_by")
+  recordedAt       DateTime              @default(now()) @map("recorded_at") @db.Timestamptz(3)
+
+  organization   Organization   @relation(fields: [organizationId], references: [id])
+  cashierSession CashierSession @relation(fields: [cashierSessionId], references: [id], onDelete: Cascade)
+
+  @@index([cashierSessionId])
+  @@map("cash_movement")
+}
+
+// Package master (spec.md §32) — organization-wide catalog, no branchId, same
+// as Service. A package bundles N sessions of one or more Services.
+model Package {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  code           String
+  name           String
+  description    String?
+  price          Decimal  @db.Decimal(14, 2)
+  discountAmount Decimal  @default(0) @map("discount_amount") @db.Decimal(14, 2)
+  validityDays   Int?     @map("validity_days")
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization    Organization     @relation(fields: [organizationId], references: [id])
+  services        PackageService[]
+  patientPackages PatientPackage[]
+
+  @@unique([organizationId, code])
+  @@map("package")
+}
+
+model PackageService {
+  id                String @id @default(uuid())
+  packageId         String @map("package_id")
+  serviceId         String @map("service_id")
+  sessionsAllocated Int    @map("sessions_allocated")
+
+  package  Package                 @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  service  Service                 @relation(fields: [serviceId], references: [id])
+  sessions PatientPackageSession[]
+
+  @@unique([packageId, serviceId])
+  @@map("package_service")
+}
+
+enum PatientPackageStatus {
+  active
+  expired
+  exhausted
+  cancelled
+}
+
+// Purchased instance of a Package for one patient. Sold through the same
+// Charge -> Invoice -> Payment path as everything else (source=package) —
+// remaining sessions are always derived by counting PatientPackageSession
+// rows against each PackageService's sessionsAllocated, never a mutable
+// counter (same discipline as the future inventory stock ledger,
+// ARCHITECTURE.md §7).
+model PatientPackage {
+  id             String               @id @default(uuid())
+  organizationId String               @map("organization_id")
+  branchId       String               @map("branch_id")
+  patientId      String               @map("patient_id")
+  packageId      String               @map("package_id")
+  invoiceId      String?              @map("invoice_id")
+  purchasePrice  Decimal              @map("purchase_price") @db.Decimal(14, 2)
+  purchasedAt    DateTime             @default(now()) @map("purchased_at") @db.Timestamptz(3)
+  expiresAt      DateTime?            @map("expires_at") @db.Timestamptz(3)
+  status         PatientPackageStatus @default(active)
+  createdBy      String?              @map("created_by")
+
+  organization Organization            @relation(fields: [organizationId], references: [id])
+  branch       Branch                  @relation(fields: [branchId], references: [id])
+  patient      Patient                 @relation(fields: [patientId], references: [id])
+  package      Package                 @relation(fields: [packageId], references: [id])
+  invoice      Invoice?                @relation(fields: [invoiceId], references: [id])
+  sessions     PatientPackageSession[]
+
+  @@index([organizationId, patientId, status])
+  @@index([branchId])
+  @@index([invoiceId])
+  @@map("patient_package")
+}
+
+// "Every session consumption requires history" (spec.md §32) — this table is
+// that history; there is deliberately no mutable "sessions used" counter
+// anywhere else.
+model PatientPackageSession {
+  id               String   @id @default(uuid())
+  organizationId   String   @map("organization_id")
+  patientPackageId String   @map("patient_package_id")
+  packageServiceId String   @map("package_service_id")
+  encounterId      String?  @map("encounter_id")
+  notes            String?
+  consumedBy       String?  @map("consumed_by")
+  consumedAt       DateTime @default(now()) @map("consumed_at") @db.Timestamptz(3)
+
+  organization   Organization   @relation(fields: [organizationId], references: [id])
+  patientPackage PatientPackage @relation(fields: [patientPackageId], references: [id], onDelete: Cascade)
+  packageService PackageService @relation(fields: [packageServiceId], references: [id])
+  encounter      Encounter?     @relation(fields: [encounterId], references: [id])
+
+  @@index([patientPackageId])
+  @@map("patient_package_session")
+}
+
+// Rate attached per Service (or an org-wide default when serviceId is null),
+// not a hardcoded percentage (spec.md §92, ARCHITECTURE.md §6). Uniqueness
+// ("only one default, only one rule per service") is enforced at the service
+// layer rather than a DB constraint — Postgres treats NULL as distinct in a
+// unique index (the exact bug already hit once with NumberSequence in Phase
+// 1), and TaxRule is a low-volume admin-managed config table where an
+// app-layer check-before-insert is the simpler, equally-safe choice.
+model TaxRule {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  name           String
+  rate           Decimal  @db.Decimal(14, 4)
+  serviceId      String?  @map("service_id")
+  productId      String?  @map("product_id")
+  isDefault      Boolean  @default(false) @map("is_default")
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  service      Service?     @relation(fields: [serviceId], references: [id])
+  product      Product?     @relation(fields: [productId], references: [id])
+
+  @@index([organizationId, serviceId])
+  @@index([organizationId, productId])
+  @@map("tax_rule")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — Inventory & Procurement
+// ---------------------------------------------------------------------------
+
+// Organization-wide catalog, same precedent as Service/Package — purchase
+// cost/selling price/reorder thresholds are master-data defaults, not
+// per-branch (spec.md §41). Actual on-hand quantity is never stored here —
+// always derived from StockLedgerEntry (spec.md §43: "never directly
+// manipulate inventory without a ledger").
+model Product {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  sku            String
+  barcode        String?
+  name           String
+  category       String
+  brand          String?
+  unit           String
+  purchaseCost   Decimal  @map("purchase_cost") @db.Decimal(14, 2)
+  sellingPrice   Decimal? @map("selling_price") @db.Decimal(14, 2)
+  reorderLevel   Int      @default(0) @map("reorder_level")
+  minimumStock   Int      @default(0) @map("minimum_stock")
+  maximumStock   Int?     @map("maximum_stock")
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization         Organization                @relation(fields: [organizationId], references: [id])
+  batches              ProductBatch[]
+  stockLedgerEntries   StockLedgerEntry[]
+  purchaseRequestLines PurchaseRequestLine[]
+  purchaseOrderLines   PurchaseOrderLine[]
+  goodsReceiptLines    GoodsReceiptLine[]
+  stockTransfers       StockTransfer[]
+  taxRules             TaxRule[]
+  serviceConsumptions  ServiceProductConsumption[]
+  commissionRules      CommissionRule[]
+  medication           Medication?
+
+  @@unique([organizationId, sku])
+  @@index([organizationId, category])
+  @@map("product")
+}
+
+// One row per physical receipt of a product — batchNumber is supplier-
+// assigned, not generated here. `receivedQuantity` is the original received
+// amount (a historical fact, spec.md §42's Batch field); remaining balance is
+// always derived by summing this batch's StockLedgerEntry rows, never a
+// mutable counter on this row.
+model ProductBatch {
+  id                String    @id @default(uuid())
+  organizationId    String    @map("organization_id")
+  productId         String    @map("product_id")
+  batchNumber       String    @map("batch_number")
+  manufacturingDate DateTime? @map("manufacturing_date") @db.Date
+  expiryDate        DateTime? @map("expiry_date") @db.Date
+  supplierId        String?   @map("supplier_id")
+  purchaseCost      Decimal   @map("purchase_cost") @db.Decimal(14, 2)
+  receivedQuantity  Int       @map("received_quantity")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization       Organization       @relation(fields: [organizationId], references: [id])
+  product            Product            @relation(fields: [productId], references: [id])
+  supplier           Supplier?          @relation(fields: [supplierId], references: [id])
+  stockLedgerEntries StockLedgerEntry[]
+  stockTransfers     StockTransfer[]
+
+  @@unique([productId, batchNumber])
+  @@index([organizationId, expiryDate])
+  @@map("product_batch")
+}
+
+enum StockTransactionType {
+  purchase
+  sale
+  dispensing
+  treatment_consumption
+  adjustment
+  transfer_in
+  transfer_out
+  damage
+  expiry
+  return
+}
+
+// The single source of truth for stock quantity (spec.md §43) — nothing else
+// stores an on-hand count. `quantity` is signed (positive = in, negative =
+// out); on-hand balance for a product/batch/branch is always SUM(quantity).
+// A single signed column carries the same information as separate "quantity
+// in/out" columns spec.md's wording suggests, with simpler aggregation.
+// `referenceType`/`referenceId` are a loose polymorphic pointer (same
+// convention as Notification/Charge) back to whatever caused the movement —
+// GoodsReceipt, StockTransfer, Charge (treatment consumption), or a manual
+// adjustment with no other record.
+model StockLedgerEntry {
+  id              String               @id @default(uuid())
+  organizationId  String               @map("organization_id")
+  branchId        String               @map("branch_id")
+  productId       String               @map("product_id")
+  batchId         String?              @map("batch_id")
+  transactionType StockTransactionType @map("transaction_type")
+  quantity        Decimal              @db.Decimal(14, 3)
+  referenceType   String?              @map("reference_type")
+  referenceId     String?              @map("reference_id")
+  reason          String?
+  performedBy     String?              @map("performed_by")
+  createdAt       DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  branch       Branch        @relation(fields: [branchId], references: [id])
+  product      Product       @relation(fields: [productId], references: [id])
+  batch        ProductBatch? @relation(fields: [batchId], references: [id])
+
+  @@index([organizationId, branchId, productId])
+  @@index([batchId])
+  @@map("stock_ledger_entry")
+}
+
+enum StockTransferStatus {
+  pending
+  in_transit
+  completed
+  cancelled
+}
+
+// Branch-to-branch movement (spec.md §41's "Transfers"). Completing one
+// writes the matching transfer_out/transfer_in StockLedgerEntry pair, both
+// referencing this row — never a single ledger entry that implicitly moves
+// stock between branches.
+model StockTransfer {
+  id             String              @id @default(uuid())
+  organizationId String              @map("organization_id")
+  fromBranchId   String              @map("from_branch_id")
+  toBranchId     String              @map("to_branch_id")
+  productId      String              @map("product_id")
+  batchId        String?             @map("batch_id")
+  quantity       Decimal             @db.Decimal(14, 3)
+  status         StockTransferStatus @default(pending)
+  notes          String?
+  requestedBy    String?             @map("requested_by")
+  requestedAt    DateTime            @default(now()) @map("requested_at") @db.Timestamptz(3)
+  completedAt    DateTime?           @map("completed_at") @db.Timestamptz(3)
+
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  fromBranch   Branch        @relation("StockTransferFrom", fields: [fromBranchId], references: [id])
+  toBranch     Branch        @relation("StockTransferTo", fields: [toBranchId], references: [id])
+  product      Product       @relation(fields: [productId], references: [id])
+  batch        ProductBatch? @relation(fields: [batchId], references: [id])
+
+  @@index([organizationId, status])
+  @@map("stock_transfer")
+}
+
+enum SupplierStatus {
+  active
+  inactive
+}
+
+model Supplier {
+  id             String         @id @default(uuid())
+  organizationId String         @map("organization_id")
+  code           String
+  companyName    String         @map("company_name")
+  contactName    String?        @map("contact_name")
+  phone          String?
+  email          String?
+  address        String?
+  taxNumber      String?        @map("tax_number")
+  paymentTerms   String?        @map("payment_terms")
+  bankDetails    String?        @map("bank_details")
+  status         SupplierStatus @default(active)
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization     Organization      @relation(fields: [organizationId], references: [id])
+  batches          ProductBatch[]
+  purchaseOrders   PurchaseOrder[]
+  goodsReceipts    GoodsReceipt[]
+  supplierInvoices SupplierInvoice[]
+  assets           Asset[]
+
+  @@unique([organizationId, code])
+  @@map("supplier")
+}
+
+enum PurchaseRequestStatus {
+  draft
+  submitted
+  approved
+  rejected
+  converted
+}
+
+// Purchase Request -> Approval -> Purchase Order (spec.md §46). Approval is a
+// distinct permission from creation (segregation of duties, same pattern as
+// Phase 4's refund.request/refund.authorize).
+model PurchaseRequest {
+  id              String                @id @default(uuid())
+  organizationId  String                @map("organization_id")
+  branchId        String                @map("branch_id")
+  requestNumber   String                @map("request_number")
+  status          PurchaseRequestStatus @default(submitted)
+  notes           String?
+  requestedBy     String?               @map("requested_by")
+  createdAt       DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+  approvedBy      String?               @map("approved_by")
+  approvedAt      DateTime?             @map("approved_at") @db.Timestamptz(3)
+  rejectionReason String?               @map("rejection_reason")
+
+  organization   Organization          @relation(fields: [organizationId], references: [id])
+  branch         Branch                @relation(fields: [branchId], references: [id])
+  lines          PurchaseRequestLine[]
+  purchaseOrders PurchaseOrder[]
+
+  @@unique([organizationId, requestNumber])
+  @@index([organizationId, status])
+  @@map("purchase_request")
+}
+
+model PurchaseRequestLine {
+  id                String  @id @default(uuid())
+  purchaseRequestId String  @map("purchase_request_id")
+  productId         String  @map("product_id")
+  quantity          Int
+  notes             String?
+
+  purchaseRequest PurchaseRequest @relation(fields: [purchaseRequestId], references: [id], onDelete: Cascade)
+  product         Product         @relation(fields: [productId], references: [id])
+
+  @@map("purchase_request_line")
+}
+
+enum PurchaseOrderStatus {
+  draft
+  issued
+  partially_received
+  received
+  cancelled
+}
+
+model PurchaseOrder {
+  id                   String              @id @default(uuid())
+  organizationId       String              @map("organization_id")
+  branchId             String              @map("branch_id")
+  poNumber             String              @map("po_number")
+  supplierId           String              @map("supplier_id")
+  purchaseRequestId    String?             @map("purchase_request_id")
+  status               PurchaseOrderStatus @default(draft)
+  expectedDeliveryDate DateTime?           @map("expected_delivery_date") @db.Date
+  notes                String?
+  createdBy            String?             @map("created_by")
+  createdAt            DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  issuedAt             DateTime?           @map("issued_at") @db.Timestamptz(3)
+
+  organization     Organization        @relation(fields: [organizationId], references: [id])
+  branch           Branch              @relation(fields: [branchId], references: [id])
+  supplier         Supplier            @relation(fields: [supplierId], references: [id])
+  purchaseRequest  PurchaseRequest?    @relation(fields: [purchaseRequestId], references: [id])
+  lines            PurchaseOrderLine[]
+  goodsReceipts    GoodsReceipt[]
+  supplierInvoices SupplierInvoice[]
+
+  @@unique([organizationId, poNumber])
+  @@index([organizationId, status])
+  @@map("purchase_order")
+}
+
+// receivedQuantity is NOT stored — always derived by summing this line's
+// GoodsReceiptLine rows, so "support partial receiving" (spec.md §46) never
+// risks the derived and stored numbers drifting apart.
+model PurchaseOrderLine {
+  id              String  @id @default(uuid())
+  purchaseOrderId String  @map("purchase_order_id")
+  productId       String  @map("product_id")
+  quantity        Int
+  unitCost        Decimal @map("unit_cost") @db.Decimal(14, 2)
+
+  purchaseOrder     PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product           Product            @relation(fields: [productId], references: [id])
+  goodsReceiptLines GoodsReceiptLine[]
+
+  @@map("purchase_order_line")
+}
+
+enum GoodsReceiptStatus {
+  draft
+  completed
+}
+
+// Completing a receipt creates the ProductBatch rows (one per line — batch
+// numbers are supplier-assigned/receipt-specific) and the corresponding
+// `purchase` StockLedgerEntry rows in one transaction, and updates the
+// parent PurchaseOrder's status (spec.md §46: "goods receipt should create
+// inventory movements").
+model GoodsReceipt {
+  id              String             @id @default(uuid())
+  organizationId  String             @map("organization_id")
+  branchId        String             @map("branch_id")
+  receiptNumber   String             @map("receipt_number")
+  purchaseOrderId String             @map("purchase_order_id")
+  supplierId      String             @map("supplier_id")
+  status          GoodsReceiptStatus @default(completed)
+  notes           String?
+  receivedBy      String?            @map("received_by")
+  receivedAt      DateTime           @default(now()) @map("received_at") @db.Timestamptz(3)
+
+  organization  Organization       @relation(fields: [organizationId], references: [id])
+  branch        Branch             @relation(fields: [branchId], references: [id])
+  purchaseOrder PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id])
+  supplier      Supplier           @relation(fields: [supplierId], references: [id])
+  lines         GoodsReceiptLine[]
+
+  @@unique([organizationId, receiptNumber])
+  @@map("goods_receipt")
+}
+
+model GoodsReceiptLine {
+  id                  String    @id @default(uuid())
+  goodsReceiptId      String    @map("goods_receipt_id")
+  purchaseOrderLineId String    @map("purchase_order_line_id")
+  productId           String    @map("product_id")
+  batchNumber         String    @map("batch_number")
+  manufacturingDate   DateTime? @map("manufacturing_date") @db.Date
+  expiryDate          DateTime? @map("expiry_date") @db.Date
+  quantityReceived    Int       @map("quantity_received")
+  unitCost            Decimal   @map("unit_cost") @db.Decimal(14, 2)
+
+  goodsReceipt      GoodsReceipt      @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+  purchaseOrderLine PurchaseOrderLine @relation(fields: [purchaseOrderLineId], references: [id])
+  product           Product           @relation(fields: [productId], references: [id])
+
+  @@map("goods_receipt_line")
+}
+
+enum SupplierInvoiceStatus {
+  pending
+  partially_paid
+  paid
+  cancelled
+}
+
+// Supplier invoice creates the accounts-payable obligation (spec.md §46) —
+// the obligation itself is recorded here; the actual AP ledger/journal
+// posting is Phase 6's central accounting engine, same deferred-accounting
+// pattern as Phase 4's revenue side.
+model SupplierInvoice {
+  id              String                @id @default(uuid())
+  organizationId  String                @map("organization_id")
+  branchId        String                @map("branch_id")
+  supplierId      String                @map("supplier_id")
+  purchaseOrderId String?               @map("purchase_order_id")
+  invoiceNumber   String                @map("invoice_number")
+  amount          Decimal               @db.Decimal(14, 2)
+  paidAmount      Decimal               @default(0) @map("paid_amount") @db.Decimal(14, 2)
+  status          SupplierInvoiceStatus @default(pending)
+  dueDate         DateTime?             @map("due_date") @db.Date
+  createdBy       String?               @map("created_by")
+  createdAt       DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization  Organization      @relation(fields: [organizationId], references: [id])
+  branch        Branch            @relation(fields: [branchId], references: [id])
+  supplier      Supplier          @relation(fields: [supplierId], references: [id])
+  purchaseOrder PurchaseOrder?    @relation(fields: [purchaseOrderId], references: [id])
+  payments      SupplierPayment[]
+
+  @@unique([organizationId, supplierId, invoiceNumber])
+  @@index([organizationId, status])
+  @@map("supplier_invoice")
+}
+
+// Simpler than the revenue side's Payment/PaymentAllocation many-to-many —
+// spec.md §46 describes one invoice paid at a time ("Supplier Invoice ->
+// Payment"), not a batched one-payment-covers-many-invoices AP settlement
+// flow, so this is a direct 1:N against SupplierInvoice rather than
+// mechanically copying the revenue-side bridge-table shape where nothing
+// calls for the extra generality.
+model SupplierPayment {
+  id                String        @id @default(uuid())
+  organizationId    String        @map("organization_id")
+  branchId          String        @map("branch_id")
+  supplierInvoiceId String        @map("supplier_invoice_id")
+  method            PaymentMethod
+  amount            Decimal       @db.Decimal(14, 2)
+  reference         String?
+  paidBy            String?       @map("paid_by")
+  paidAt            DateTime      @default(now()) @map("paid_at") @db.Timestamptz(3)
+
+  organization    Organization    @relation(fields: [organizationId], references: [id])
+  branch          Branch          @relation(fields: [branchId], references: [id])
+  supplierInvoice SupplierInvoice @relation(fields: [supplierInvoiceId], references: [id])
+
+  @@index([supplierInvoiceId])
+  @@map("supplier_payment")
+}
+
+// Service consumption templates (spec.md §44) — "Wound Dressing consumes:
+// Gauze x2, Gloves x1, Antiseptic 5ml". Hooked into the billing engine at
+// Charge-creation time (not into CPOE) since Charge is already the one place
+// that captures "this service was delivered" with the right service/branch/
+// patient context, regardless of whether the charge came from an automatic
+// trigger or a POS-entered ad-hoc line.
+model ServiceProductConsumption {
+  id              String  @id @default(uuid())
+  serviceId       String  @map("service_id")
+  productId       String  @map("product_id")
+  quantityPerUnit Decimal @map("quantity_per_unit") @db.Decimal(14, 3)
+
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@unique([serviceId, productId])
+  @@map("service_product_consumption")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 — Finance & Accounting
+// ---------------------------------------------------------------------------
+
+enum AccountType {
+  asset
+  liability
+  equity
+  revenue
+  expense
+}
+
+// Organization-wide, no branchId — same precedent as Service/Package/Product.
+// Self-referencing parent supports a simple hierarchy (e.g. "1000 Cash" under
+// "1000-1999 Current Assets") without a separate account-group table.
+model ChartOfAccount {
+  id              String      @id @default(uuid())
+  organizationId  String      @map("organization_id")
+  code            String
+  name            String
+  type            AccountType
+  parentAccountId String?     @map("parent_account_id")
+  isActive        Boolean     @default(true) @map("is_active")
+  createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization    Organization     @relation(fields: [organizationId], references: [id])
+  parentAccount   ChartOfAccount?  @relation("AccountHierarchy", fields: [parentAccountId], references: [id])
+  childAccounts   ChartOfAccount[] @relation("AccountHierarchy")
+  journalLines    JournalLine[]
+  accountMappings AccountMapping[]
+  expenses        Expense[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, type])
+  @@map("chart_of_account")
+}
+
+// "Use configurable account mappings" (spec.md §55) — the posting service
+// never hardcodes an account number, it resolves one of these fixed intents
+// (see PostingIntent in posting-service.ts) to a real account. branchId
+// nullable = org-wide default, overridable per branch. Uniqueness ("one
+// mapping per intent per branch, one org-wide default per intent") is
+// enforced at the service layer, not a DB constraint — same reasoning as
+// Phase 4/5's TaxRule (NULL is distinct in a unique index, and this is a
+// low-volume, admin-only config table where the COALESCE-sentinel workaround
+// isn't worth repeating a third time).
+model AccountMapping {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  branchId       String?  @map("branch_id")
+  intent         String
+  accountId      String   @map("account_id")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization   @relation(fields: [organizationId], references: [id])
+  branch       Branch?        @relation(fields: [branchId], references: [id])
+  account      ChartOfAccount @relation(fields: [accountId], references: [id])
+
+  @@index([organizationId, intent, branchId])
+  @@map("account_mapping")
+}
+
+// Every journal is posted by the central accounting posting service
+// (spec.md §55) — "operational modules should NOT independently invent
+// journal logic." referenceType/referenceId trace back to what caused the
+// posting (invoice, payment, refund, goods_receipt, supplier_payment,
+// expense, patient_package_session, or "manual" for a hand-entered
+// correction). postedBy is null for system-generated postings (the vast
+// majority) and set only for manual entries — mirroring the
+// createdBy-nullable convention already used for Charge/system events.
+model Journal {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  branchId       String   @map("branch_id")
+  journalNumber  String   @map("journal_number")
+  journalDate    DateTime @map("journal_date") @db.Timestamptz(3)
+  referenceType  String   @map("reference_type")
+  referenceId    String?  @map("reference_id")
+  description    String
+  postedBy       String?  @map("posted_by")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  branch       Branch        @relation(fields: [branchId], references: [id])
+  lines        JournalLine[]
+
+  @@unique([organizationId, journalNumber])
+  @@index([organizationId, referenceType, referenceId])
+  @@index([organizationId, journalDate])
+  @@index([branchId])
+  @@map("journal")
+}
+
+// Balance enforcement (SUM(debit) = SUM(credit) per journal, spec.md §54/§92)
+// is a DEFERRABLE CONSTRAINT TRIGGER added by raw SQL in this phase's
+// migration — Prisma's schema language can't express a cross-row trigger,
+// so the CreateTable comes from `migrate diff` as usual and the trigger is
+// appended by hand before applying, same technique DATABASE.md's Conventions
+// section already promised for this exact table. A line is exactly one side
+// (checked in the application layer, not a DB CHECK, to keep the generated
+// migration simple) — never both debit and credit non-zero on one line.
+model JournalLine {
+  id          String  @id @default(uuid())
+  journalId   String  @map("journal_id")
+  accountId   String  @map("account_id")
+  debit       Decimal @default(0) @db.Decimal(14, 2)
+  credit      Decimal @default(0) @db.Decimal(14, 2)
+  description String?
+
+  journal Journal        @relation(fields: [journalId], references: [id], onDelete: Cascade)
+  account ChartOfAccount @relation(fields: [accountId], references: [id])
+
+  @@index([journalId])
+  @@index([accountId])
+  @@map("journal_line")
+}
+
+// A staff-facing "record an expense" action that posts Dr [expenseAccount] /
+// Cr [Cash or Bank, resolved from paidVia] through the same central posting
+// service as everything else — never a raw journal entry exposed to non-
+// accountant roles.
+model Expense {
+  id               String        @id @default(uuid())
+  organizationId   String        @map("organization_id")
+  branchId         String        @map("branch_id")
+  expenseAccountId String        @map("expense_account_id")
+  description      String
+  amount           Decimal       @db.Decimal(14, 2)
+  paidVia          PaymentMethod @map("paid_via")
+  expenseDate      DateTime      @map("expense_date") @db.Date
+  paidBy           String?       @map("paid_by")
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization   Organization   @relation(fields: [organizationId], references: [id])
+  branch         Branch         @relation(fields: [branchId], references: [id])
+  expenseAccount ChartOfAccount @relation(fields: [expenseAccountId], references: [id])
+
+  @@index([organizationId, branchId, expenseDate])
+  @@map("expense")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 — HR, Payroll & Commissions, Assets
+// ---------------------------------------------------------------------------
+
+enum EmploymentType {
+  full_time
+  part_time
+  contract
+  intern
+}
+
+enum EmployeeStatus {
+  active
+  on_leave
+  terminated
+}
+
+// Employee is the HR master; Provider.employeeId (added this phase) links a
+// clinical practitioner's schedule/billing identity to their HR record —
+// two separate, both-optional concerns (spec.md §14's Provider field list
+// names "Employee" as one of several Provider fields, not the other way
+// around). employeeNumber uses the existing "EMP" sequence reserved back in
+// Phase 1's SequenceType union but never used until now.
+model Employee {
+  id             String         @id @default(uuid())
+  organizationId String         @map("organization_id")
+  branchId       String         @map("branch_id")
+  departmentId   String?        @map("department_id")
+  userId         String?        @unique @map("user_id")
+  employeeNumber String         @map("employee_number")
+  firstName      String         @map("first_name")
+  lastName       String         @map("last_name")
+  designation    String
+  managerId      String?        @map("manager_id")
+  joiningDate    DateTime       @map("joining_date") @db.Date
+  employmentType EmploymentType @map("employment_type")
+  basicSalary    Decimal        @default(0) @map("basic_salary") @db.Decimal(14, 2)
+  bankDetails    String?        @map("bank_details")
+  status         EmployeeStatus @default(active)
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization      Organization       @relation(fields: [organizationId], references: [id])
+  branch            Branch             @relation(fields: [branchId], references: [id])
+  department        Department?        @relation(fields: [departmentId], references: [id])
+  user              User?              @relation(fields: [userId], references: [id])
+  manager           Employee?          @relation("EmployeeManager", fields: [managerId], references: [id])
+  reports           Employee[]         @relation("EmployeeManager")
+  providerProfile   Provider?
+  documents         EmployeeDocument[]
+  attendanceRecords AttendanceRecord[]
+  leaveRequests     LeaveRequest[]
+  leaveBalances     LeaveBalance[]
+  payrollRunLines   PayrollRunLine[]
+  assignedAssets    Asset[]
+
+  @@unique([organizationId, employeeNumber])
+  @@index([organizationId, branchId, status])
+  @@map("employee")
+}
+
+enum EmployeeDocumentType {
+  id_document
+  passport
+  visa
+  contract
+  professional_license
+  certification
+}
+
+// Metadata + expiry tracking only, matching the codebase's standing decision
+// not to build generic file storage until a real need names it (see
+// DATABASE.md's Phase 2 note on patient_document being deliberately deferred
+// for the same reason) — "Track expiry" (spec.md §49) is the actual
+// requirement, not a document management system.
+model EmployeeDocument {
+  id             String               @id @default(uuid())
+  organizationId String               @map("organization_id")
+  employeeId     String               @map("employee_id")
+  documentType   EmployeeDocumentType @map("document_type")
+  documentNumber String?              @map("document_number")
+  issueDate      DateTime?            @map("issue_date") @db.Date
+  expiryDate     DateTime?            @map("expiry_date") @db.Date
+  notes          String?
+  createdAt      DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  employee     Employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId])
+  @@index([organizationId, expiryDate])
+  @@map("employee_document")
+}
+
+// A named work shift ("Morning", "Night") distinct from a provider's
+// recurring weekly working-hours pattern (ProviderSchedule) — attendance
+// tags each day against one of these, branch-local "HH:MM" strings, same
+// convention as ProviderSchedule.startTime/endTime.
+model Shift {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  name           String
+  startTime      String   @map("start_time")
+  endTime        String   @map("end_time")
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization      Organization       @relation(fields: [organizationId], references: [id])
+  attendanceRecords AttendanceRecord[]
+
+  @@unique([organizationId, name])
+  @@map("shift")
+}
+
+enum AttendanceStatus {
+  present
+  absent
+  half_day
+  on_leave
+  holiday
+}
+
+// One row per employee per date (@@unique below) — check-in/out/adjustments
+// all update the same row in place, with the standing audit_log mechanism
+// (not a bespoke second log table) satisfying spec.md §50's "maintain
+// adjustment audit trail", the same reasoning already applied to every other
+// mutation in this codebase. workingMinutes/lateMinutes/earlyDepartureMinutes/
+// overtimeMinutes are always server-computed at check-out against the
+// assigned Shift's times — never accepted as a client-submitted value (same
+// discipline as VitalSign.bmi).
+model AttendanceRecord {
+  id                    String           @id @default(uuid())
+  organizationId        String           @map("organization_id")
+  branchId              String           @map("branch_id")
+  employeeId            String           @map("employee_id")
+  shiftId               String?          @map("shift_id")
+  date                  DateTime         @db.Date
+  checkInAt             DateTime?        @map("check_in_at") @db.Timestamptz(3)
+  checkOutAt            DateTime?        @map("check_out_at") @db.Timestamptz(3)
+  breakMinutes          Int              @default(0) @map("break_minutes")
+  workingMinutes        Int?             @map("working_minutes")
+  lateMinutes           Int              @default(0) @map("late_minutes")
+  earlyDepartureMinutes Int              @default(0) @map("early_departure_minutes")
+  overtimeMinutes       Int              @default(0) @map("overtime_minutes")
+  status                AttendanceStatus @default(present)
+  notes                 String?
+  recordedBy            String?          @map("recorded_by")
+  createdAt             DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  branch       Branch       @relation(fields: [branchId], references: [id])
+  employee     Employee     @relation(fields: [employeeId], references: [id])
+  shift        Shift?       @relation(fields: [shiftId], references: [id])
+
+  @@unique([employeeId, date])
+  @@index([organizationId, branchId, date])
+  @@map("attendance_record")
+}
+
+enum LeaveType {
+  annual
+  sick
+  unpaid
+  emergency
+  other
+}
+
+enum LeaveRequestStatus {
+  requested
+  approved
+  rejected
+  cancelled
+}
+
+// Employee -> Request -> Manager Approval -> HR (spec.md §51). Approving a
+// request for an employee linked to a Provider creates a matching
+// ProviderLeaveBlock (the EmployeeLeaveApproved event's real handler this
+// phase) — "doctor leave must affect scheduling" is not optional per spec.
+model LeaveRequest {
+  id              String             @id @default(uuid())
+  organizationId  String             @map("organization_id")
+  employeeId      String             @map("employee_id")
+  leaveType       LeaveType          @map("leave_type")
+  startDate       DateTime           @map("start_date") @db.Date
+  endDate         DateTime           @map("end_date") @db.Date
+  days            Int
+  reason          String?
+  status          LeaveRequestStatus @default(requested)
+  requestedAt     DateTime           @default(now()) @map("requested_at") @db.Timestamptz(3)
+  decidedBy       String?            @map("decided_by")
+  decidedAt       DateTime?          @map("decided_at") @db.Timestamptz(3)
+  rejectionReason String?            @map("rejection_reason")
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  employee     Employee     @relation(fields: [employeeId], references: [id])
+
+  @@index([organizationId, employeeId, status])
+  @@map("leave_request")
+}
+
+// Entitlement only (allocatedDays) — usedDays/remaining are always derived
+// live by summing approved LeaveRequest.days for the same employee/type/year,
+// never a stored running balance (same discipline as every ledger in this
+// codebase since Phase 5's stock_ledger_entry).
+model LeaveBalance {
+  id             String    @id @default(uuid())
+  organizationId String    @map("organization_id")
+  employeeId     String    @map("employee_id")
+  leaveType      LeaveType @map("leave_type")
+  year           Int
+  allocatedDays  Int       @map("allocated_days")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  employee     Employee     @relation(fields: [employeeId], references: [id])
+
+  @@unique([employeeId, leaveType, year])
+  @@map("leave_balance")
+}
+
+enum PayrollRunStatus {
+  draft
+  review
+  approved
+  paid
+}
+
+// Draft -> Review -> Approved -> Paid (spec.md §52). Approved posts
+// Dr Salary Expense / Cr Payroll Payable (spec.md §55's own named example);
+// Paid posts Dr Payroll Payable / Cr [paidVia's resolved account] — both via
+// the central posting service, see posting-service.ts.
+model PayrollRun {
+  id             String           @id @default(uuid())
+  organizationId String           @map("organization_id")
+  branchId       String           @map("branch_id")
+  periodStart    DateTime         @map("period_start") @db.Date
+  periodEnd      DateTime         @map("period_end") @db.Date
+  status         PayrollRunStatus @default(draft)
+  paidVia        PaymentMethod?   @map("paid_via")
+  createdBy      String?          @map("created_by")
+  approvedBy     String?          @map("approved_by")
+  approvedAt     DateTime?        @map("approved_at") @db.Timestamptz(3)
+  paidAt         DateTime?        @map("paid_at") @db.Timestamptz(3)
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization     @relation(fields: [organizationId], references: [id])
+  branch       Branch           @relation(fields: [branchId], references: [id])
+  lines        PayrollRunLine[]
+
+  @@index([organizationId, status])
+  @@map("payroll_run")
+}
+
+// Basic Salary + Allowances + Overtime + Commission + Bonus - Advances -
+// Unpaid Leave - Other Deductions = Net Salary (spec.md §52's formula).
+// grossPay is deliberately not stored — it's a trivial sum of columns
+// already on this same row, computed at the view/print layer rather than
+// duplicated. netSalary IS stored, same precedent as Invoice.totalAmount:
+// a fixed historical fact once the run is approved, not a derived value
+// recomputed from elsewhere. Also serves as the payslip's data source —
+// no separate payslip table, matching how Invoice/Payment already are their
+// own printable documents rather than redundant money-shaped tables.
+model PayrollRunLine {
+  id                   String  @id @default(uuid())
+  payrollRunId         String  @map("payroll_run_id")
+  employeeId           String  @map("employee_id")
+  basicSalary          Decimal @map("basic_salary") @db.Decimal(14, 2)
+  allowances           Decimal @default(0) @db.Decimal(14, 2)
+  overtime             Decimal @default(0) @db.Decimal(14, 2)
+  commission           Decimal @default(0) @db.Decimal(14, 2)
+  bonus                Decimal @default(0) @db.Decimal(14, 2)
+  advances             Decimal @default(0) @db.Decimal(14, 2)
+  unpaidLeaveDeduction Decimal @default(0) @map("unpaid_leave_deduction") @db.Decimal(14, 2)
+  otherDeductions      Decimal @default(0) @map("other_deductions") @db.Decimal(14, 2)
+  netSalary            Decimal @map("net_salary") @db.Decimal(14, 2)
+
+  payrollRun         PayrollRun          @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  employee           Employee            @relation(fields: [employeeId], references: [id])
+  commissionAccruals CommissionAccrual[]
+
+  @@unique([payrollRunId, employeeId])
+  @@map("payroll_run_line")
+}
+
+enum CommissionType {
+  fixed
+  percentage
+  tiered
+}
+
+enum CommissionBasis {
+  gross_invoice
+  net_invoice
+  collected_revenue
+}
+
+// Resolution is most-specific-wins: (providerId, serviceId) > (providerId,
+// null) > (null, serviceId) > (null, null) org-wide default — same pattern
+// as AccountMapping's branch-then-org-default resolution. productId exists
+// alongside serviceId per spec.md §53's explicit "Product-specific" support
+// (e.g. commission on a retail product sale, not just a service). tiers is a
+// JSON array of {minAmount, maxAmount, rate} brackets for type=tiered —
+// bracket lookup (the whole basisAmount priced at whichever bracket it falls
+// into), not cumulative marginal-bracket calculation, as the simpler and
+// still spec-compliant v1 reading of "Tiered" support.
+model CommissionRule {
+  id             String          @id @default(uuid())
+  organizationId String          @map("organization_id")
+  providerId     String?         @map("provider_id")
+  serviceId      String?         @map("service_id")
+  productId      String?         @map("product_id")
+  type           CommissionType
+  basis          CommissionBasis
+  fixedAmount    Decimal?        @map("fixed_amount") @db.Decimal(14, 2)
+  percentageRate Decimal?        @map("percentage_rate") @db.Decimal(6, 4)
+  tiers          Json?
+  isActive       Boolean         @default(true) @map("is_active")
+  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization        @relation(fields: [organizationId], references: [id])
+  provider     Provider?           @relation(fields: [providerId], references: [id])
+  service      Service?            @relation(fields: [serviceId], references: [id])
+  product      Product?            @relation(fields: [productId], references: [id])
+  accruals     CommissionAccrual[]
+
+  @@index([organizationId, providerId, serviceId])
+  @@map("commission_rule")
+}
+
+enum CommissionAccrualStatus {
+  pending
+  included_in_payroll
+  paid
+}
+
+// One row per (charge, basis-event). gross_invoice/net_invoice-basis rules
+// accrue once, at InvoiceIssued time (paymentId null, idempotency via a
+// service-layer check-before-insert on chargeId — same accepted tradeoff as
+// TaxRule/AccountMapping, since NULL is distinct in a unique index and this
+// is a comparatively low-volume table). collected_revenue-basis rules accrue
+// per payment, proportional to what that payment actually collected against
+// the charge — paymentId is always set for these rows, so @@unique below
+// genuinely prevents double-accrual on outbox at-least-once redelivery
+// without the NULL-uniqueness problem.
+model CommissionAccrual {
+  id               String                  @id @default(uuid())
+  organizationId   String                  @map("organization_id")
+  branchId         String                  @map("branch_id")
+  providerId       String                  @map("provider_id")
+  chargeId         String                  @map("charge_id")
+  invoiceId        String                  @map("invoice_id")
+  paymentId        String?                 @map("payment_id")
+  commissionRuleId String                  @map("commission_rule_id")
+  basisAmount      Decimal                 @map("basis_amount") @db.Decimal(14, 2)
+  amount           Decimal                 @db.Decimal(14, 2)
+  status           CommissionAccrualStatus @default(pending)
+  payrollRunLineId String?                 @map("payroll_run_line_id")
+  accruedAt        DateTime                @default(now()) @map("accrued_at") @db.Timestamptz(3)
+
+  organization   Organization    @relation(fields: [organizationId], references: [id])
+  branch         Branch          @relation(fields: [branchId], references: [id])
+  provider       Provider        @relation(fields: [providerId], references: [id])
+  charge         Charge          @relation(fields: [chargeId], references: [id])
+  invoice        Invoice         @relation(fields: [invoiceId], references: [id])
+  payment        Payment?        @relation(fields: [paymentId], references: [id])
+  commissionRule CommissionRule  @relation(fields: [commissionRuleId], references: [id])
+  payrollRunLine PayrollRunLine? @relation(fields: [payrollRunLineId], references: [id])
+
+  @@unique([chargeId, paymentId])
+  @@index([organizationId, providerId, status])
+  @@index([branchId])
+  @@index([invoiceId])
+  @@map("commission_accrual")
+}
+
+enum AssetStatus {
+  available
+  in_use
+  maintenance
+  damaged
+  lost
+  retired
+  disposed
+}
+
+// assetNumber uses the "AST" sequence reserved back in Phase 1's SequenceType
+// union but never used until now. No accounting posting on purchase — an
+// asset's actual acquisition cost/payment already flows through the existing
+// Expense or SupplierInvoice/Payment paths if bought that way; a second,
+// redundant posting path specifically for Asset isn't named in spec.md §47
+// and isn't built ahead of a real need for it.
+model Asset {
+  id                 String      @id @default(uuid())
+  organizationId     String      @map("organization_id")
+  branchId           String      @map("branch_id")
+  departmentId       String?     @map("department_id")
+  roomId             String?     @map("room_id")
+  assetNumber        String      @map("asset_number")
+  barcode            String?
+  name               String
+  category           String
+  manufacturer       String?
+  model              String?
+  serialNumber       String?     @map("serial_number")
+  assignedEmployeeId String?     @map("assigned_employee_id")
+  supplierId         String?     @map("supplier_id")
+  purchaseDate       DateTime?   @map("purchase_date") @db.Date
+  cost               Decimal?    @db.Decimal(14, 2)
+  warrantyExpiryDate DateTime?   @map("warranty_expiry_date") @db.Date
+  status             AssetStatus @default(available)
+  createdAt          DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization       Organization        @relation(fields: [organizationId], references: [id])
+  branch             Branch              @relation(fields: [branchId], references: [id])
+  department         Department?         @relation(fields: [departmentId], references: [id])
+  room               Room?               @relation(fields: [roomId], references: [id])
+  assignedEmployee   Employee?           @relation(fields: [assignedEmployeeId], references: [id])
+  supplier           Supplier?           @relation(fields: [supplierId], references: [id])
+  maintenanceRecords MaintenanceRecord[]
+  calibrationRecords CalibrationRecord[]
+
+  @@unique([organizationId, assetNumber])
+  @@index([organizationId, branchId, status])
+  @@map("asset")
+}
+
+enum MaintenanceType {
+  preventive
+  corrective
+}
+
+model MaintenanceRecord {
+  id              String          @id @default(uuid())
+  organizationId  String          @map("organization_id")
+  assetId         String          @map("asset_id")
+  maintenanceType MaintenanceType @map("maintenance_type")
+  serviceProvider String?         @map("service_provider")
+  cost            Decimal?        @db.Decimal(14, 2)
+  workPerformed   String          @map("work_performed")
+  serviceDate     DateTime        @map("service_date") @db.Date
+  nextServiceDate DateTime?       @map("next_service_date") @db.Date
+  performedBy     String?         @map("performed_by")
+  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  asset        Asset        @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId])
+  @@map("maintenance_record")
+}
+
+enum CalibrationResult {
+  pass
+  fail
+  conditional
+}
+
+// Medical equipment specifically (spec.md §48) — any Asset can carry
+// calibration records, the UI/workflow just only surfaces this for the
+// relevant category rather than the schema enforcing a category allow-list
+// (categories are free-text, same reasoning as Episode.episodeType).
+model CalibrationRecord {
+  id                  String            @id @default(uuid())
+  organizationId      String            @map("organization_id")
+  assetId             String            @map("asset_id")
+  calibrationDate     DateTime          @map("calibration_date") @db.Date
+  certificateNumber   String?           @map("certificate_number")
+  result              CalibrationResult
+  provider            String?
+  nextCalibrationDate DateTime?         @map("next_calibration_date") @db.Date
+  createdAt           DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  asset        Asset        @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId])
+  @@map("calibration_record")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8 — Laboratory Information System (LIS)
+// ---------------------------------------------------------------------------
+
+enum LabResultType {
+  numeric
+  text
+}
+
+// Lab Test Master (spec.md §28) — organization-wide catalog, no branchId, same
+// precedent as Service/Product/Package. Carries its own price so lab charges
+// generated at test-assignment time (see LabOrderTest) are never a hardcoded
+// figure. resultType determines which entry field (numeric vs text) the UI
+// shows and is snapshotted onto each LabOrderTest at order time; unit/
+// reference range are snapshotted later, at result-entry time (see
+// LabOrderTest), since that's the actual clinical-interpretation moment, not
+// order time.
+model LabTest {
+  id                 String        @id @default(uuid())
+  organizationId     String        @map("organization_id")
+  code               String
+  name               String
+  category           String
+  specimenType       String        @map("specimen_type")
+  resultType         LabResultType @map("result_type")
+  unit               String?
+  referenceRangeLow  Decimal?      @map("reference_range_low") @db.Decimal(10, 3)
+  referenceRangeHigh Decimal?      @map("reference_range_high") @db.Decimal(10, 3)
+  referenceRangeText String?       @map("reference_range_text")
+  price              Decimal       @db.Decimal(14, 2)
+  turnaroundHours    Int?          @map("turnaround_hours")
+  isActive           Boolean       @default(true) @map("is_active")
+  createdAt          DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization     Organization   @relation(fields: [organizationId], references: [id])
+  panelMemberships LabPanelTest[]
+  orderTests       LabOrderTest[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, category])
+  @@map("lab_test")
+}
+
+// A bundle of LabTests (e.g. "CBC") priced as one billable line (spec.md
+// §28's "Panels") — ordering a panel expands into one LabOrderTest per
+// member test (see LabOrderTest.labPanelId), each independently resulted and
+// verified, since a CBC panel produces several distinct numeric results
+// (WBC, RBC, Hemoglobin, ...) each needing its own reference range — not one
+// combined result.
+model LabPanel {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  code           String
+  name           String
+  price          Decimal  @db.Decimal(14, 2)
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization   @relation(fields: [organizationId], references: [id])
+  tests        LabPanelTest[]
+  orderTests   LabOrderTest[]
+
+  @@unique([organizationId, code])
+  @@map("lab_panel")
+}
+
+model LabPanelTest {
+  id         String @id @default(uuid())
+  labPanelId String @map("lab_panel_id")
+  labTestId  String @map("lab_test_id")
+
+  labPanel LabPanel @relation(fields: [labPanelId], references: [id], onDelete: Cascade)
+  labTest  LabTest  @relation(fields: [labTestId], references: [id])
+
+  @@unique([labPanelId, labTestId])
+  @@map("lab_panel_test")
+}
+
+enum SpecimenStatus {
+  pending
+  collected
+  received
+  rejected
+}
+
+// "Sample Collection" (spec.md §28) — one specimen can serve multiple
+// LabOrderTest lines (a single blood draw commonly services several tests),
+// so this is its own table rather than fields folded onto LabOrderTest.
+// specimenNumber uses the "LAB" sequence reserved since Phase 1 but never
+// used until now.
+model Specimen {
+  id              String         @id @default(uuid())
+  organizationId  String         @map("organization_id")
+  branchId        String         @map("branch_id")
+  clinicalOrderId String         @map("clinical_order_id")
+  specimenNumber  String         @map("specimen_number")
+  specimenType    String         @map("specimen_type")
+  status          SpecimenStatus @default(pending)
+  collectedBy     String?        @map("collected_by")
+  collectedAt     DateTime?      @map("collected_at") @db.Timestamptz(3)
+  rejectionReason String?        @map("rejection_reason")
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization  Organization   @relation(fields: [organizationId], references: [id])
+  branch        Branch         @relation(fields: [branchId], references: [id])
+  clinicalOrder ClinicalOrder  @relation(fields: [clinicalOrderId], references: [id], onDelete: Cascade)
+  orderTests    LabOrderTest[]
+
+  @@unique([organizationId, specimenNumber])
+  @@index([clinicalOrderId])
+  @@map("specimen")
+}
+
+enum LabOrderTestStatus {
+  ordered
+  collected
+  processing
+  resulted
+  verified
+  cancelled
+}
+
+enum AbnormalFlag {
+  normal
+  low
+  high
+  critical_low
+  critical_high
+}
+
+// The structured, billable unit of lab work (spec.md §28's "Do not build a
+// simplistic text-only result system — allow structured numeric/text
+// results"). One row per test, whether ordered individually or as a panel
+// member (labPanelId set, purely for grouped display — each still results
+// and verifies independently). Deliberately separate from the doctor's
+// free-text ClinicalOrder/LabOrderDetail (Phase 3) — a doctor's order
+// captures clinical *intent* ("CBC, lytes"), lab staff then translate that
+// into these structured, catalog-priced, billable lines when accessioning
+// the specimen (see ARCHITECTURE.md §for the full rationale). abnormalFlag
+// is always computed server-side from numericValue vs. the snapshotted
+// reference range, never client-submitted (same discipline as
+// VitalSign.bmi/AttendanceRecord.lateMinutes).
+model LabOrderTest {
+  id                 String             @id @default(uuid())
+  organizationId     String             @map("organization_id")
+  clinicalOrderId    String             @map("clinical_order_id")
+  labTestId          String             @map("lab_test_id")
+  labPanelId         String?            @map("lab_panel_id")
+  specimenId         String?            @map("specimen_id")
+  chargeId           String?            @unique @map("charge_id")
+  status             LabOrderTestStatus @default(ordered)
+  resultType         LabResultType      @map("result_type")
+  numericValue       Decimal?           @map("numeric_value") @db.Decimal(10, 3)
+  textValue          String?            @map("text_value")
+  unit               String?
+  referenceRangeLow  Decimal?           @map("reference_range_low") @db.Decimal(10, 3)
+  referenceRangeHigh Decimal?           @map("reference_range_high") @db.Decimal(10, 3)
+  referenceRangeText String?            @map("reference_range_text")
+  abnormalFlag       AbnormalFlag?      @map("abnormal_flag")
+  enteredBy          String?            @map("entered_by")
+  enteredAt          DateTime?          @map("entered_at") @db.Timestamptz(3)
+  verifiedBy         String?            @map("verified_by")
+  verifiedAt         DateTime?          @map("verified_at") @db.Timestamptz(3)
+  notes              String?
+  createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization  Organization  @relation(fields: [organizationId], references: [id])
+  clinicalOrder ClinicalOrder @relation(fields: [clinicalOrderId], references: [id], onDelete: Cascade)
+  labTest       LabTest       @relation(fields: [labTestId], references: [id])
+  labPanel      LabPanel?     @relation(fields: [labPanelId], references: [id])
+  specimen      Specimen?     @relation(fields: [specimenId], references: [id])
+  charge        Charge?       @relation(fields: [chargeId], references: [id])
+
+  @@index([organizationId, status])
+  @@index([clinicalOrderId])
+  @@index([labTestId])
+  @@index([specimenId])
+  @@map("lab_order_test")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 — Pharmacy Information System (PIS)
+// ---------------------------------------------------------------------------
+
+// "Medication Master" (spec.md §29) layered on top of Product rather than
+// duplicating it — a medication IS an inventory item with the exact same
+// stock/batch/expiry/cost machinery every other Product already has (Phase
+// 5); this table adds only the pharmacy-specific descriptive fields Product
+// has no notion of. Same "extend, don't duplicate" reasoning as CommissionRule
+// referencing Product directly rather than a parallel item master.
+model Medication {
+  id                   String   @id @default(uuid())
+  organizationId       String   @map("organization_id")
+  productId            String   @unique @map("product_id")
+  genericName          String?  @map("generic_name")
+  strength             String?
+  dosageForm           String   @map("dosage_form")
+  route                String?
+  controlledSubstance  Boolean  @default(false) @map("controlled_substance")
+  requiresPrescription Boolean  @default(true) @map("requires_prescription")
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization      Organization       @relation(fields: [organizationId], references: [id])
+  product           Product            @relation(fields: [productId], references: [id])
+  dispensingRecords DispensingRecord[]
+
+  @@map("medication")
+}
+
+enum DispensingStatus {
+  pending
+  verified
+  dispensed
+  cancelled
+}
+
+// Doctor-order-intent vs. pharmacy-execution-reality, the identical split
+// Phase 8 used for lab orders: Prescription/PrescriptionItem (Phase 3,
+// free-text medicationName) capture what the doctor prescribed; this table
+// captures what the pharmacy actually verified, dispensed, billed, and
+// consumed from stock for one specific catalog Medication. One
+// PrescriptionItem can have several DispensingRecord rows over time
+// (partial fills across visits — spec.md §29's "Dispensing history"),
+// remaining-to-dispense always derived by summing quantityDispensed across
+// non-cancelled records, never a stored counter. dispensingNumber uses the
+// "DISP" sequence.
+model DispensingRecord {
+  id                 String           @id @default(uuid())
+  organizationId     String           @map("organization_id")
+  branchId           String           @map("branch_id")
+  dispensingNumber   String           @map("dispensing_number")
+  prescriptionId     String           @map("prescription_id")
+  prescriptionItemId String           @map("prescription_item_id")
+  medicationId       String           @map("medication_id")
+  patientId          String           @map("patient_id")
+  quantityDispensed  Int              @map("quantity_dispensed")
+  status             DispensingStatus @default(pending)
+  chargeId           String?          @unique @map("charge_id")
+  verifiedBy         String?          @map("verified_by")
+  verifiedAt         DateTime?        @map("verified_at") @db.Timestamptz(3)
+  dispensedBy        String?          @map("dispensed_by")
+  dispensedAt        DateTime?        @map("dispensed_at") @db.Timestamptz(3)
+  notes              String?
+  createdAt          DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization     Organization       @relation(fields: [organizationId], references: [id])
+  branch           Branch             @relation(fields: [branchId], references: [id])
+  prescription     Prescription       @relation(fields: [prescriptionId], references: [id])
+  prescriptionItem PrescriptionItem   @relation(fields: [prescriptionItemId], references: [id])
+  medication       Medication         @relation(fields: [medicationId], references: [id])
+  patient          Patient            @relation(fields: [patientId], references: [id])
+  charge           Charge?            @relation(fields: [chargeId], references: [id])
+  returns          DispensingReturn[]
+
+  @@unique([organizationId, dispensingNumber])
+  @@index([organizationId, status])
+  @@index([prescriptionItemId])
+  @@index([prescriptionId])
+  @@index([branchId])
+  @@index([patientId])
+  @@index([medicationId])
+  @@map("dispensing_record")
+}
+
+// "Returns" (spec.md §29) — a correcting record against an already-dispensed
+// line, never an edit to the original DispensingRecord (spec.md §92's
+// "never overwrite finalized records," the same discipline as Refund vs.
+// Payment). Adds stock back via a `return`-typed StockLedgerEntry; does NOT
+// reverse the original Charge — see PROJECT_STATUS.md's Phase 9 Known Issues
+// for that documented simplification.
+model DispensingReturn {
+  id                 String   @id @default(uuid())
+  organizationId     String   @map("organization_id")
+  dispensingRecordId String   @map("dispensing_record_id")
+  quantityReturned   Int      @map("quantity_returned")
+  reason             String
+  returnedBy         String?  @map("returned_by")
+  returnedAt         DateTime @default(now()) @map("returned_at") @db.Timestamptz(3)
+
+  organization     Organization     @relation(fields: [organizationId], references: [id])
+  dispensingRecord DispensingRecord @relation(fields: [dispensingRecordId], references: [id], onDelete: Cascade)
+
+  @@index([dispensingRecordId])
+  @@map("dispensing_return")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10 — Radiology Information System (RIS)
+// ---------------------------------------------------------------------------
+
+// "Imaging Service Master" (spec.md §30) — org-wide catalog, same precedent
+// as LabTest/Service/Product/Package. category holds the modality (X-Ray, CT,
+// MRI, Ultrasound, ...) as free text, the same "small real subset, admin-
+// extendable" reasoning as Episode.episodeType/CalibrationRecord's category.
+model ImagingService {
+  id              String   @id @default(uuid())
+  organizationId  String   @map("organization_id")
+  code            String
+  name            String
+  category        String
+  bodyPart        String?  @map("body_part")
+  price           Decimal  @db.Decimal(14, 2)
+  turnaroundHours Int?     @map("turnaround_hours")
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization  Organization   @relation(fields: [organizationId], references: [id])
+  imagingOrders ImagingOrder[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, category])
+  @@map("imaging_service")
+}
+
+enum ImagingOrderStatus {
+  ordered
+  scheduled
+  performed
+  reported
+  verified
+  cancelled
+}
+
+// The structured, billable, reportable unit of radiology work — the
+// identical doctor-intent-vs-structured-execution split Phase 8 (LIS) and
+// Phase 9 (PIS) both already established, reused a third time rather than
+// reinvented: the doctor's free-text ClinicalOrder/ImagingOrderDetail (Phase
+// 3, left untouched) captures what was asked for; this row, created when
+// radiology staff "assign" a catalog ImagingService against that order, is
+// what actually gets scheduled, performed, reported, verified, and billed.
+// Unlike lab (one order can bundle many tests/panels), one imaging
+// ClinicalOrder maps to exactly one ImagingService/ImagingOrder — a real
+// doctor orders "Chest X-Ray" and "Abdominal Ultrasound" as two separate CPOE
+// orders, not one bundled order the way "CBC, lytes" bundles many lab
+// analytes — so clinicalOrderId is this table's own @id, a real 1:1, not a
+// one-to-many the way LabOrderTest is. No separate imaging_report table:
+// report fields live directly on this row, the same "no separate lab_result
+// table" precedent Phase 8 already set for lab_order_test. accessionNumber
+// and externalImageUrl are the PACS integration surface spec.md §30
+// explicitly asks to prepare for ("do not attempt to build a PACS from
+// scratch") — populated by a real DICOM/PACS integration in a future phase,
+// unused (null) today.
+model ImagingOrder {
+  id               String             @id @default(uuid())
+  organizationId   String             @map("organization_id")
+  clinicalOrderId  String             @unique @map("clinical_order_id")
+  imagingServiceId String             @map("imaging_service_id")
+  accessionNumber  String             @map("accession_number")
+  status           ImagingOrderStatus @default(ordered)
+  chargeId         String?            @unique @map("charge_id")
+  roomId           String?            @map("room_id")
+  scheduledAt      DateTime?          @map("scheduled_at") @db.Timestamptz(3)
+  performedBy      String?            @map("performed_by")
+  performedAt      DateTime?          @map("performed_at") @db.Timestamptz(3)
+  reportText       String?            @map("report_text")
+  impression       String?
+  reportedBy       String?            @map("reported_by")
+  reportedAt       DateTime?          @map("reported_at") @db.Timestamptz(3)
+  verifiedBy       String?            @map("verified_by")
+  verifiedAt       DateTime?          @map("verified_at") @db.Timestamptz(3)
+  externalImageUrl String?            @map("external_image_url")
+  notes            String?
+  createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization   Organization   @relation(fields: [organizationId], references: [id])
+  clinicalOrder  ClinicalOrder  @relation(fields: [clinicalOrderId], references: [id], onDelete: Cascade)
+  imagingService ImagingService @relation(fields: [imagingServiceId], references: [id])
+  charge         Charge?        @relation(fields: [chargeId], references: [id])
+  room           Room?          @relation(fields: [roomId], references: [id])
+
+  @@unique([organizationId, accessionNumber])
+  @@index([organizationId, status])
+  @@index([imagingServiceId])
+  @@map("imaging_order")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 11 — Payors & Insurance
+// ---------------------------------------------------------------------------
+
+enum PayorType {
+  self_pay
+  insurance_company
+  corporate
+  government
+  other
+}
+
+// "Payor Management" (spec.md §38) — org-wide catalog, same precedent as
+// every other master (Service/Product/LabTest/ImagingService/Medication).
+// `self_pay` exists as a payorType option for completeness/reporting
+// symmetry, but is never required — spec.md §38's "self-pay patients should
+// work without insurance configuration" holds literally: every Invoice
+// field this phase adds is nullable, and the entire self-pay path (Charge →
+// Invoice → Payment) already works with zero rows in this table, unchanged
+// since Phase 4.
+model Payor {
+  id             String    @id @default(uuid())
+  organizationId String    @map("organization_id")
+  code           String
+  name           String
+  payorType      PayorType @map("payor_type")
+  contactName    String?   @map("contact_name")
+  contactPhone   String?   @map("contact_phone")
+  contactEmail   String?   @map("contact_email")
+  address        String?
+  isActive       Boolean   @default(true) @map("is_active")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization   Organization    @relation(fields: [organizationId], references: [id])
+  insurancePlans InsurancePlan[]
+  invoices       Invoice[]
+  claims         Claim[]
+
+  @@unique([organizationId, code])
+  @@map("payor")
+}
+
+// "Insurance Plan" (spec.md §38) — the product a Payor sells (e.g. "Daman
+// Basic"). Distinct from Policy: one Plan is enrolled into by many Policies.
+model InsurancePlan {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  payorId        String   @map("payor_id")
+  code           String
+  name           String
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  payor        Payor        @relation(fields: [payorId], references: [id])
+  policies     Policy[]
+
+  @@unique([organizationId, code])
+  @@index([payorId])
+  @@map("insurance_plan")
+}
+
+// "Policy" (spec.md §38) — a specific enrolled contract under a Plan
+// (carries the member/group's policy number). One Policy can cover several
+// people (subscriber + dependents), each represented by their own
+// PatientCoverage row — the policy number is shared, coverage specifics
+// (copay/deductible/dates) are per-person.
+model Policy {
+  id              String   @id @default(uuid())
+  organizationId  String   @map("organization_id")
+  insurancePlanId String   @map("insurance_plan_id")
+  policyNumber    String   @map("policy_number")
+  groupNumber     String?  @map("group_number")
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization  Organization      @relation(fields: [organizationId], references: [id])
+  insurancePlan InsurancePlan     @relation(fields: [insurancePlanId], references: [id])
+  coverages     PatientCoverage[]
+
+  @@unique([organizationId, policyNumber])
+  @@index([insurancePlanId])
+  @@map("policy")
+}
+
+enum CoverageStatus {
+  active
+  inactive
+  expired
+}
+
+// "Patient Coverage" + "Coverage Dates" + "Benefits" + "Copay" + "Deductible
+// architecture" (spec.md §38) — the per-patient enrollment actually billed
+// against. Benefits are kept deliberately lightweight (an annual limit
+// amount + free-text notes), not a normalized benefits-schedule table —
+// real benefit schedules are wildly payor/plan/country-specific, and
+// spec.md §39 explicitly warns "do not hardcode one country's insurance
+// format." isPrimary supports a patient holding two coverages (e.g.
+// primary + secondary insurance), coordinated manually by billing staff —
+// automatic coordination-of-benefits calculation is out of scope for v1.
+model PatientCoverage {
+  id                       String         @id @default(uuid())
+  organizationId           String         @map("organization_id")
+  patientId                String         @map("patient_id")
+  policyId                 String         @map("policy_id")
+  memberId                 String         @map("member_id")
+  relationshipToSubscriber String         @default("self") @map("relationship_to_subscriber")
+  startDate                DateTime       @map("start_date") @db.Timestamptz(3)
+  endDate                  DateTime?      @map("end_date") @db.Timestamptz(3)
+  copayAmount              Decimal?       @map("copay_amount") @db.Decimal(14, 2)
+  copayPercent             Decimal?       @map("copay_percent") @db.Decimal(5, 2)
+  deductibleAmount         Decimal?       @map("deductible_amount") @db.Decimal(14, 2)
+  annualLimitAmount        Decimal?       @map("annual_limit_amount") @db.Decimal(14, 2)
+  isPrimary                Boolean        @default(true) @map("is_primary")
+  status                   CoverageStatus @default(active)
+  notes                    String?
+  createdAt                DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization        Organization         @relation(fields: [organizationId], references: [id])
+  patient             Patient              @relation(fields: [patientId], references: [id])
+  policy              Policy               @relation(fields: [policyId], references: [id])
+  invoices            Invoice[]
+  priorAuthorizations PriorAuthorization[]
+  claims              Claim[]
+
+  @@index([organizationId, patientId])
+  @@map("patient_coverage")
+}
+
+enum AuthorizationStatus {
+  requested
+  approved
+  denied
+  expired
+}
+
+// "Authorization" (spec.md §39's Eligibility → Authorization → Treatment
+// step). Real prior authorizations are typically obtained by phone/fax/
+// payor-portal outside any clinic software, then recorded here — staff-
+// entered, not a live payor API call (spec.md §92 "never fake API
+// integrations"; §39 "create adapters for future country-specific
+// integrations" instead of a hardcoded live check today).
+model PriorAuthorization {
+  id                String              @id @default(uuid())
+  organizationId    String              @map("organization_id")
+  patientId         String              @map("patient_id")
+  patientCoverageId String              @map("patient_coverage_id")
+  encounterId       String?             @map("encounter_id")
+  authNumber        String?             @map("auth_number")
+  status            AuthorizationStatus @default(requested)
+  requestedAt       DateTime            @default(now()) @map("requested_at") @db.Timestamptz(3)
+  decidedAt         DateTime?           @map("decided_at") @db.Timestamptz(3)
+  validFrom         DateTime?           @map("valid_from") @db.Timestamptz(3)
+  validUntil        DateTime?           @map("valid_until") @db.Timestamptz(3)
+  notes             String?
+  requestedBy       String?             @map("requested_by")
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization    Organization    @relation(fields: [organizationId], references: [id])
+  patient         Patient         @relation(fields: [patientId], references: [id])
+  patientCoverage PatientCoverage @relation(fields: [patientCoverageId], references: [id])
+  encounter       Encounter?      @relation(fields: [encounterId], references: [id])
+
+  @@index([organizationId, patientId])
+  @@map("prior_authorization")
+}
+
+enum ClaimStatus {
+  draft
+  submitted
+  adjudicated
+  rejected
+  remitted
+  void
+}
+
+// "Claims" (spec.md §39): Eligibility -> Authorization -> Treatment -> Claim
+// -> Submission -> Adjudication -> Remittance -> Rejection -> Resubmission.
+// claimNumber uses the "CLM" sequence reserved since Phase 1 but never used
+// until now (the same "dormant Phase 1 reservation, wired for real several
+// phases later" precedent as Phase 8's "LAB" sequence and Phase 7's
+// EmployeeLeaveApproved event). Resubmission creates a NEW Claim row
+// referencing the rejected original via resubmissionOfId — never edits the
+// original in place, the same "never overwrite a finalized/historical
+// record" discipline as Appointment.rescheduledFromId (Phase 2) and
+// ClinicalNote amendments (Phase 3). Submission goes through a real,
+// swappable adapter interface (src/lib/domains/claims/adapters/), currently
+// only a "manual" implementation — spec.md §39 asks for adapters for future
+// country-specific integrations, and §92 forbids faking one that doesn't
+// exist yet.
+model Claim {
+  id                          String      @id @default(uuid())
+  organizationId              String      @map("organization_id")
+  branchId                    String      @map("branch_id")
+  claimNumber                 String      @map("claim_number")
+  patientId                   String      @map("patient_id")
+  patientCoverageId           String      @map("patient_coverage_id")
+  payorId                     String      @map("payor_id")
+  encounterId                 String?     @map("encounter_id")
+  invoiceId                   String      @map("invoice_id")
+  status                      ClaimStatus @default(draft)
+  submittedAmount             Decimal     @map("submitted_amount") @db.Decimal(14, 2)
+  approvedAmount              Decimal?    @map("approved_amount") @db.Decimal(14, 2)
+  rejectedAmount              Decimal?    @map("rejected_amount") @db.Decimal(14, 2)
+  patientResponsibilityAmount Decimal?    @map("patient_responsibility_amount") @db.Decimal(14, 2)
+  rejectionReason             String?     @map("rejection_reason")
+  externalReference           String?     @map("external_reference")
+  submittedAt                 DateTime?   @map("submitted_at") @db.Timestamptz(3)
+  adjudicatedAt               DateTime?   @map("adjudicated_at") @db.Timestamptz(3)
+  remittedAt                  DateTime?   @map("remitted_at") @db.Timestamptz(3)
+  resubmissionOfId            String?     @unique @map("resubmission_of_id")
+  createdBy                   String?     @map("created_by")
+  createdAt                   DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization    Organization    @relation(fields: [organizationId], references: [id])
+  branch          Branch          @relation(fields: [branchId], references: [id])
+  patient         Patient         @relation(fields: [patientId], references: [id])
+  patientCoverage PatientCoverage @relation(fields: [patientCoverageId], references: [id])
+  payor           Payor           @relation(fields: [payorId], references: [id])
+  encounter       Encounter?      @relation(fields: [encounterId], references: [id])
+  invoice         Invoice         @relation(fields: [invoiceId], references: [id])
+  resubmissionOf  Claim?          @relation("ClaimResubmission", fields: [resubmissionOfId], references: [id])
+  resubmittedBy   Claim?          @relation("ClaimResubmission")
+  items           ClaimItem[]
+  payments        Payment[]
+
+  @@unique([organizationId, claimNumber])
+  @@index([organizationId, status])
+  @@index([invoiceId])
+  @@index([branchId])
+  @@index([patientId])
+  @@index([payorId])
+  @@map("claim")
+}
+
+// One row per InvoiceLine included in the claim — the actual billable unit
+// a payor adjudicates against, each optionally citing which of the
+// encounter's real Diagnosis rows (Phase 3) justifies it. procedureCode is
+// free text, not a normalized CPT/HCPCS master — spec.md §39 explicitly
+// warns against hardcoding one country's/coding system's format.
+model ClaimItem {
+  id              String   @id @default(uuid())
+  claimId         String   @map("claim_id")
+  invoiceLineId   String   @map("invoice_line_id")
+  diagnosisId     String?  @map("diagnosis_id")
+  procedureCode   String?  @map("procedure_code")
+  submittedAmount Decimal  @map("submitted_amount") @db.Decimal(14, 2)
+  approvedAmount  Decimal? @map("approved_amount") @db.Decimal(14, 2)
+  rejectedAmount  Decimal? @map("rejected_amount") @db.Decimal(14, 2)
+  denialReason    String?  @map("denial_reason")
+
+  claim       Claim       @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  invoiceLine InvoiceLine @relation(fields: [invoiceLineId], references: [id])
+  diagnosis   Diagnosis?  @relation(fields: [diagnosisId], references: [id])
+
+  @@index([claimId])
+  @@map("claim_item")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 12 — Patient Engagement (Communications, Patient Portal, Online Booking)
+// ---------------------------------------------------------------------------
+
+enum CommChannel {
+  sms
+  whatsapp
+  email
+}
+
+enum CommMessageStatus {
+  queued
+  sent
+  failed
+}
+
+// "Communication engine" + "Templates" (spec.md §56) — org-wide catalog, same
+// precedent as every other master (Service/LabTest/ImagingService/Payor).
+// Seeded with the 8 named templates. `body` holds `{{variable}}` placeholders
+// resolved server-side by `renderTemplate()` — never client-submitted HTML/
+// text, so a template edit can't be used to inject arbitrary content into an
+// outbound message.
+model CommTemplate {
+  id             String      @id @default(uuid())
+  organizationId String      @map("organization_id")
+  key            String
+  channel        CommChannel
+  name           String
+  subject        String?
+  body           String
+  isActive       Boolean     @default(true) @map("is_active")
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  messages     CommMessage[]
+
+  @@unique([organizationId, key])
+  @@map("comm_template")
+}
+
+// "Maintain communication history" (spec.md §56) — one row per actually-
+// attempted send, whether it succeeded, failed, or (today, since no live
+// provider is configured — spec.md §92's "do not fake successful external
+// API delivery") always resolves to `failed` with a clear `error`. `subject`/
+// `body` are the fully-rendered snapshot at send time, not a live reference
+// to the template — the same snapshot discipline as `InvoiceLine`/
+// `LabOrderTest`, so a later template edit never rewrites sent-message
+// history. `referenceType`/`referenceId` is the same loose polymorphic
+// pointer convention as `Notification.referenceId`.
+model CommMessage {
+  id                String            @id @default(uuid())
+  organizationId    String            @map("organization_id")
+  patientId         String            @map("patient_id")
+  channel           CommChannel
+  templateId        String?           @map("template_id")
+  subject           String?
+  body              String
+  recipientAddress  String            @map("recipient_address")
+  status            CommMessageStatus @default(queued)
+  providerReference String?           @map("provider_reference")
+  error             String?
+  referenceType     String?           @map("reference_type")
+  referenceId       String?           @map("reference_id")
+  sentBy            String?           @map("sent_by")
+  createdAt         DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  patient      Patient       @relation(fields: [patientId], references: [id])
+  template     CommTemplate? @relation(fields: [templateId], references: [id])
+
+  @@index([organizationId, patientId])
+  @@index([organizationId, createdAt])
+  @@map("comm_message")
+}
+
+enum PortalAccountStatus {
+  active
+  inactive
+  locked
+}
+
+// "Patient Portal Architecture" (spec.md §57) — a genuinely separate auth
+// context from staff `User`/`Session` (its own cookie, its own login flow),
+// not a repurposed staff account. Mirrors `User`'s own lockout fields
+// exactly (`failedLoginCount`/`lockedUntil`) for the same brute-force
+// protection, minus `mfaEnabled`/`username` (not named for the portal).
+// Provisioned by staff (see `enablePortalAccess()`), not patient self-
+// registration — spec.md doesn't name a public self-signup flow, and
+// verifying a claimed identity before granting clinical-data access is a
+// real safety concern this build isn't going to hand-wave.
+model PatientPortalAccount {
+  id               String              @id @default(uuid())
+  organizationId   String              @map("organization_id")
+  patientId        String              @unique @map("patient_id")
+  email            String
+  passwordHash     String              @map("password_hash")
+  status           PortalAccountStatus @default(active)
+  failedLoginCount Int                 @default(0) @map("failed_login_count")
+  lockedUntil      DateTime?           @map("locked_until") @db.Timestamptz(3)
+  lastLoginAt      DateTime?           @map("last_login_at") @db.Timestamptz(3)
+  createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization           @relation(fields: [organizationId], references: [id])
+  patient      Patient                @relation(fields: [patientId], references: [id])
+  sessions     PatientPortalSession[]
+
+  @@unique([organizationId, email])
+  @@map("patient_portal_account")
+}
+
+// Mirrors `Session` exactly — a separate table, not a shared one with a
+// discriminator column, so a portal-session query can never accidentally
+// authenticate a staff session or vice versa.
+model PatientPortalSession {
+  id              String    @id @default(uuid())
+  portalAccountId String    @map("portal_account_id")
+  tokenHash       String    @unique @map("token_hash")
+  ip              String?
+  userAgent       String?   @map("user_agent")
+  expiresAt       DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt       DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  portalAccount PatientPortalAccount @relation(fields: [portalAccountId], references: [id], onDelete: Cascade)
+
+  @@index([portalAccountId])
+  @@index([expiresAt])
+  @@map("patient_portal_session")
+}

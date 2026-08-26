@@ -1,0 +1,591 @@
+import "dotenv/config"
+import { db } from "../src/lib/db"
+import { hashPassword } from "../src/lib/auth/password"
+
+// Permission catalog: capability-based, resource.action (spec.md §7). This is the
+// full v1 catalog including permissions for domains that land in later phases —
+// RBAC as a subsystem is Phase 1 scope even though the resources it protects
+// (patients, invoices, ...) don't exist until those phases build them.
+const PERMISSIONS: { code: string; category: string; description: string }[] = [
+  // Administration / platform
+  { code: "settings.view", category: "administration", description: "View organization settings" },
+  { code: "settings.edit", category: "administration", description: "Edit organization settings" },
+  { code: "branch.view", category: "administration", description: "View branches" },
+  { code: "branch.manage", category: "administration", description: "Create/edit branches" },
+  { code: "department.view", category: "administration", description: "View departments" },
+  { code: "department.manage", category: "administration", description: "Create/edit departments" },
+  { code: "room.view", category: "administration", description: "View rooms" },
+  { code: "room.manage", category: "administration", description: "Create/edit rooms" },
+  { code: "users.manage", category: "administration", description: "Manage users, roles, and permissions" },
+  { code: "audit.review", category: "administration", description: "View audit log and clinical access log" },
+  { code: "reports.export", category: "administration", description: "Export reports" },
+
+  // Practice management
+  { code: "patient.view", category: "practice", description: "View patient records" },
+  { code: "patient.create", category: "practice", description: "Register patients" },
+  { code: "patient.edit", category: "practice", description: "Edit patient records" },
+  { code: "provider.view", category: "practice", description: "View providers" },
+  { code: "provider.manage", category: "practice", description: "Create/edit providers" },
+  { code: "service.view", category: "practice", description: "View services" },
+  { code: "service.manage", category: "practice", description: "Create/edit services" },
+  { code: "appointment.view", category: "practice", description: "View appointments" },
+  { code: "appointment.create", category: "practice", description: "Book appointments" },
+  { code: "appointment.reschedule", category: "practice", description: "Reschedule appointments" },
+  { code: "appointment.cancel", category: "practice", description: "Cancel appointments" },
+  { code: "appointment.checkin", category: "practice", description: "Check in patients and manage the queue" },
+  { code: "package.manage", category: "practice", description: "Create/edit the package master catalog" },
+  { code: "package.sell", category: "practice", description: "Sell a package to a patient" },
+  { code: "package.consume", category: "practice", description: "Record a patient package session as used" },
+
+  // Clinical
+  { code: "encounter.view", category: "clinical", description: "View encounters" },
+  { code: "encounter.create", category: "clinical", description: "Open encounters" },
+  { code: "encounter.finalize", category: "clinical", description: "Finalize encounters" },
+  { code: "clinical_notes.view", category: "clinical", description: "View clinical notes" },
+  { code: "clinical_notes.edit", category: "clinical", description: "Edit clinical notes (notes, diagnoses, follow-ups)" },
+  { code: "vitals.record", category: "clinical", description: "Record patient vital signs" },
+  { code: "prescription.create", category: "clinical", description: "Issue prescriptions" },
+  { code: "prescription.verify", category: "clinical", description: "Pharmacist review of a dispensing record before it is dispensed" },
+  { code: "prescription.dispense", category: "clinical", description: "Create and dispense pharmacy dispensing records" },
+  { code: "lab_order.create", category: "clinical", description: "Place laboratory orders" },
+  { code: "lab_result.enter", category: "clinical", description: "Enter laboratory results" },
+  { code: "lab_result.verify", category: "clinical", description: "Verify laboratory results" },
+  { code: "lab_test.manage", category: "clinical", description: "Manage the lab test/panel catalog" },
+  { code: "imaging_order.perform", category: "clinical", description: "Assign, schedule, perform, and report on imaging orders" },
+  { code: "imaging_result.verify", category: "clinical", description: "Verify a radiology report as the final result" },
+  { code: "imaging_service.manage", category: "clinical", description: "Manage the imaging service catalog" },
+  { code: "order.create", category: "clinical", description: "Place non-lab clinical orders (imaging, procedure, referral, other)" },
+
+  // Revenue
+  { code: "charge.create", category: "revenue", description: "Create ad-hoc charges at POS (procedure/product/other)" },
+  { code: "charge.void", category: "revenue", description: "Void a pending charge" },
+  { code: "invoice.view", category: "revenue", description: "View invoices" },
+  { code: "invoice.create", category: "revenue", description: "Generate invoices from pending charges" },
+  { code: "invoice.discount", category: "revenue", description: "Apply invoice discounts" },
+  { code: "invoice.void", category: "revenue", description: "Void an unpaid invoice" },
+  { code: "payment.view", category: "revenue", description: "View payments" },
+  { code: "payment.create", category: "revenue", description: "Record payments" },
+  { code: "refund.request", category: "revenue", description: "Request a refund" },
+  { code: "refund.authorize", category: "revenue", description: "Authorize or reject a requested refund" },
+  { code: "cashier.open", category: "revenue", description: "Open/close a cashier register session" },
+  { code: "cashier.view", category: "revenue", description: "View all cashier sessions" },
+  { code: "tax.manage", category: "revenue", description: "Configure tax rules" },
+
+  // Payors & Insurance
+  { code: "payor.manage", category: "insurance", description: "Manage the payor/insurance plan/policy catalog" },
+  { code: "coverage.manage", category: "insurance", description: "Manage a patient's insurance coverage and prior authorizations" },
+  { code: "claim.create", category: "insurance", description: "Create, submit, and resubmit insurance claims" },
+  { code: "claim.adjudicate", category: "insurance", description: "Record claim adjudication and remittance" },
+
+  // Patient Engagement
+  { code: "communication.manage", category: "engagement", description: "Manage the communication template catalog" },
+  { code: "communication.send", category: "engagement", description: "Send patient communications and view message history" },
+
+  // Resources
+  { code: "inventory.view", category: "resources", description: "View inventory" },
+  { code: "inventory.adjust", category: "resources", description: "Adjust inventory / dispense" },
+  { code: "product.manage", category: "resources", description: "Create/edit the product master catalog" },
+  { code: "supplier.view", category: "resources", description: "View suppliers" },
+  { code: "supplier.manage", category: "resources", description: "Create/edit suppliers" },
+  { code: "purchase_request.create", category: "resources", description: "Create purchase requests" },
+  { code: "purchase_request.approve", category: "resources", description: "Approve or reject purchase requests" },
+  { code: "purchase_order.create", category: "resources", description: "Issue purchase orders" },
+  { code: "goods_receipt.create", category: "resources", description: "Record goods receipts" },
+  { code: "supplier_invoice.manage", category: "resources", description: "Record supplier invoices and payments" },
+  { code: "stock.transfer", category: "resources", description: "Create and receive branch-to-branch stock transfers" },
+
+  // Finance
+  { code: "accounting.view", category: "finance", description: "View accounting records" },
+  { code: "accounting.post", category: "finance", description: "Post manual journal entries" },
+  { code: "chart_of_account.manage", category: "finance", description: "Manage the chart of accounts" },
+  { code: "account_mapping.manage", category: "finance", description: "Configure account mappings" },
+  { code: "expense.create", category: "finance", description: "Record expenses" },
+
+  // Workforce
+  { code: "payroll.view", category: "workforce", description: "View payroll" },
+  { code: "payroll.process", category: "workforce", description: "Process payroll" },
+  { code: "employee.manage", category: "workforce", description: "Create/edit employee records" },
+  { code: "attendance.record", category: "workforce", description: "Record employee check-in/check-out" },
+  { code: "leave.request", category: "workforce", description: "Submit an employee leave request" },
+  { code: "leave.approve", category: "workforce", description: "Approve or reject a leave request" },
+  { code: "commission.manage", category: "workforce", description: "Configure provider commission rules" },
+  { code: "commission.view", category: "workforce", description: "View provider commission accruals and statements" },
+  { code: "asset.manage", category: "workforce", description: "Create/edit assets, maintenance, and calibration records" },
+]
+
+const SYSTEM_ROLES: { name: string; permissions: string[] }[] = [
+  { name: "Super Admin", permissions: PERMISSIONS.map((p) => p.code) }, // also gets the implicit can() bypass
+  { name: "Organization Administrator", permissions: PERMISSIONS.map((p) => p.code) },
+  {
+    name: "Clinic Manager",
+    permissions: [
+      "settings.view", "branch.view", "department.view", "room.view",
+      "patient.view", "provider.view", "service.view",
+      "appointment.view", "appointment.reschedule", "appointment.cancel",
+      "clinical_notes.view",
+      "charge.void", "invoice.view", "invoice.discount", "invoice.void",
+      "payment.view", "refund.authorize", "cashier.view", "package.manage", "tax.manage",
+      "inventory.view", "supplier.view", "purchase_request.approve",
+      "accounting.view", "expense.create", "reports.export",
+      "payroll.view", "leave.approve", "asset.manage",
+    ],
+  },
+  {
+    name: "Receptionist",
+    permissions: [
+      "patient.view", "patient.create", "patient.edit",
+      "provider.view", "service.view",
+      "appointment.view", "appointment.create", "appointment.reschedule", "appointment.cancel", "appointment.checkin",
+      "charge.create", "invoice.view", "invoice.create",
+      "payment.view", "payment.create", "refund.request", "cashier.open", "package.sell",
+      "coverage.manage", "communication.send",
+    ],
+  },
+  {
+    name: "Doctor",
+    permissions: [
+      "patient.view", "patient.edit", "provider.view", "appointment.view", "appointment.checkin",
+      "encounter.view", "encounter.create", "encounter.finalize",
+      "clinical_notes.view", "clinical_notes.edit", "vitals.record",
+      "prescription.create", "lab_order.create", "order.create", "package.consume",
+    ],
+  },
+  {
+    name: "Nurse",
+    permissions: [
+      "patient.view", "appointment.view", "appointment.checkin",
+      "encounter.view", "encounter.create", "clinical_notes.view", "vitals.record", "package.consume",
+    ],
+  },
+  {
+    name: "Laboratory Technician",
+    permissions: ["patient.view", "lab_result.enter", "lab_result.verify", "lab_test.manage"],
+  },
+  {
+    name: "Pharmacist",
+    permissions: ["patient.view", "inventory.view", "inventory.adjust", "product.manage", "prescription.verify", "prescription.dispense"],
+  },
+  {
+    name: "Radiology Technician",
+    permissions: ["patient.view", "room.view", "imaging_order.perform", "imaging_result.verify", "imaging_service.manage"],
+  },
+  {
+    name: "Cashier",
+    permissions: [
+      "patient.view", "service.view",
+      "charge.create", "invoice.view", "invoice.create",
+      "payment.view", "payment.create", "refund.request", "cashier.open", "package.sell",
+      "coverage.manage", "communication.send",
+    ],
+  },
+  {
+    name: "Accountant",
+    permissions: [
+      "accounting.view", "accounting.post", "chart_of_account.manage", "account_mapping.manage",
+      "expense.create", "supplier_invoice.manage", "reports.export",
+      "payor.manage", "coverage.manage", "claim.create", "claim.adjudicate",
+    ],
+  },
+  {
+    name: "HR Manager",
+    permissions: [
+      "payroll.view", "payroll.process", "reports.export", "department.view",
+      "provider.view", "service.view",
+      "employee.manage", "attendance.record", "leave.request", "leave.approve",
+      "commission.manage", "commission.view",
+    ],
+  },
+  {
+    name: "Inventory Manager",
+    permissions: [
+      "inventory.view", "inventory.adjust", "product.manage",
+      "supplier.view", "supplier.manage",
+      "purchase_request.create", "purchase_request.approve",
+      "purchase_order.create", "goods_receipt.create",
+      "supplier_invoice.manage", "stock.transfer", "asset.manage",
+    ],
+  },
+]
+
+// A small common-outpatient subset, not the full ICD-10 terminology hardcoded
+// into the app (spec.md §24 / BLUEPRINT.md §43) — admins add more via the
+// diagnosis code admin screen; a full bulk import is a later refinement.
+const DIAGNOSIS_CODES: { code: string; description: string; category: string }[] = [
+  { code: "J06.9", description: "Acute upper respiratory infection, unspecified", category: "Respiratory" },
+  { code: "J20.9", description: "Acute bronchitis, unspecified", category: "Respiratory" },
+  { code: "J45.909", description: "Unspecified asthma, uncomplicated", category: "Respiratory" },
+  { code: "J02.9", description: "Acute pharyngitis, unspecified", category: "Respiratory" },
+  { code: "E11.9", description: "Type 2 diabetes mellitus without complications", category: "Endocrine" },
+  { code: "E78.5", description: "Hyperlipidemia, unspecified", category: "Endocrine" },
+  { code: "E03.9", description: "Hypothyroidism, unspecified", category: "Endocrine" },
+  { code: "I10", description: "Essential (primary) hypertension", category: "Cardiovascular" },
+  { code: "I25.10", description: "Atherosclerotic heart disease without angina pectoris", category: "Cardiovascular" },
+  { code: "R51", description: "Headache", category: "Neurological" },
+  { code: "G43.909", description: "Migraine, unspecified, not intractable", category: "Neurological" },
+  { code: "M54.5", description: "Low back pain", category: "Musculoskeletal" },
+  { code: "M25.50", description: "Pain in unspecified joint", category: "Musculoskeletal" },
+  { code: "M79.1", description: "Myalgia", category: "Musculoskeletal" },
+  { code: "K21.9", description: "Gastro-esophageal reflux disease without esophagitis", category: "Digestive" },
+  { code: "K59.00", description: "Constipation, unspecified", category: "Digestive" },
+  { code: "A09", description: "Infectious gastroenteritis and colitis, unspecified", category: "Digestive" },
+  { code: "R10.9", description: "Unspecified abdominal pain", category: "Digestive" },
+  { code: "L20.9", description: "Atopic dermatitis, unspecified", category: "Dermatological" },
+  { code: "L23.9", description: "Allergic contact dermatitis, unspecified cause", category: "Dermatological" },
+  { code: "N39.0", description: "Urinary tract infection, site not specified", category: "Genitourinary" },
+  { code: "H66.90", description: "Otitis media, unspecified, unspecified ear", category: "ENT" },
+  { code: "H10.9", description: "Unspecified conjunctivitis", category: "Ophthalmological" },
+  { code: "R50.9", description: "Fever, unspecified", category: "General" },
+  { code: "R05", description: "Cough", category: "Respiratory" },
+  { code: "R11.0", description: "Nausea", category: "Digestive" },
+  { code: "F41.9", description: "Anxiety disorder, unspecified", category: "Mental Health" },
+  { code: "F32.9", description: "Major depressive disorder, single episode, unspecified", category: "Mental Health" },
+  { code: "Z00.00", description: "General adult medical examination without abnormal findings", category: "General" },
+  { code: "Z23", description: "Encounter for immunization", category: "General" },
+]
+
+// A minimal, real chart of accounts — not exhaustive, but enough that every
+// posting-service intent (see posting-service.ts's PostingIntent) resolves
+// to a real account out of the box. An org can extend/rename these later;
+// nothing in the posting service hardcodes an account by name, only by the
+// `code` looked up here at seed time.
+const DEFAULT_ACCOUNTS: { code: string; name: string; type: "asset" | "liability" | "equity" | "revenue" | "expense" }[] = [
+  { code: "1000", name: "Cash", type: "asset" },
+  { code: "1010", name: "Bank", type: "asset" },
+  { code: "1100", name: "Accounts Receivable", type: "asset" },
+  { code: "1200", name: "Inventory", type: "asset" },
+  { code: "2000", name: "Accounts Payable", type: "liability" },
+  { code: "2100", name: "Tax Payable", type: "liability" },
+  { code: "2200", name: "Unearned Revenue", type: "liability" },
+  { code: "2300", name: "Payroll Payable", type: "liability" },
+  { code: "3000", name: "Owner's Equity", type: "equity" },
+  { code: "4000", name: "Service Revenue", type: "revenue" },
+  { code: "5000", name: "Operating Expenses", type: "expense" },
+  { code: "6000", name: "Salary Expense", type: "expense" },
+]
+
+// intent -> account code. Org-wide default (branchId null); a branch can
+// override any of these later via the Account Mappings admin screen.
+const DEFAULT_MAPPINGS: { intent: string; accountCode: string }[] = [
+  { intent: "cash", accountCode: "1000" },
+  { intent: "card", accountCode: "1010" },
+  { intent: "bank", accountCode: "1010" },
+  { intent: "online", accountCode: "1010" },
+  // Phase 11 correction: the "insurance" tender previously mapped to the
+  // same account (1100) as the "accounts_receivable" intent, which
+  // postPaymentReceived() would post as Dr 1100 / Cr 1100 — a self-
+  // canceling no-op that never showed a real cash inflow anywhere. Never
+  // caught earlier because no payment had actually used the "insurance"
+  // tender until Phase 11's recordRemittance() (Insurance was defined as a
+  // payment method in Phase 4 but nothing exercised it until claims
+  // existed). Mapped to Bank (1010), since a received remittance is real
+  // money landing in the org's bank account.
+  { intent: "insurance", accountCode: "1010" },
+  // "credit" (a credit-card/store-credit tender) has the same 1100
+  // collapse-to-AR issue and is NOT fixed here — Phase 11 doesn't exercise
+  // it, so leaving it alone rather than fixing something untested this
+  // phase (see PROJECT_STATUS.md's Phase 11 Known Issues).
+  { intent: "credit", accountCode: "1100" },
+  { intent: "other", accountCode: "1000" },
+  { intent: "accounts_receivable", accountCode: "1100" },
+  { intent: "revenue", accountCode: "4000" },
+  { intent: "tax_payable", accountCode: "2100" },
+  { intent: "unearned_revenue", accountCode: "2200" },
+  { intent: "inventory_asset", accountCode: "1200" },
+  { intent: "accounts_payable", accountCode: "2000" },
+  { intent: "expense_default", accountCode: "5000" },
+  { intent: "salary_expense", accountCode: "6000" },
+  { intent: "payroll_payable", accountCode: "2300" },
+]
+
+// A small common-outpatient subset, not the full LOINC/test-code universe
+// hardcoded into the app (same reasoning as DIAGNOSIS_CODES above) — admins
+// extend this via the Lab Test catalog admin screen. CBC's members are
+// bundled into a panel below so ordering "CBC" produces five independent,
+// individually-referenced-ranged results, matching a real CBC panel.
+const DEFAULT_LAB_TESTS: {
+  code: string
+  name: string
+  category: string
+  specimenType: string
+  resultType: "numeric" | "text"
+  unit?: string
+  referenceRangeLow?: number
+  referenceRangeHigh?: number
+  referenceRangeText?: string
+  price: number
+}[] = [
+  { code: "GLU", name: "Glucose, Fasting", category: "Chemistry", specimenType: "blood", resultType: "numeric", unit: "mg/dL", referenceRangeLow: 70, referenceRangeHigh: 100, price: 40 },
+  { code: "CREAT", name: "Creatinine", category: "Chemistry", specimenType: "blood", resultType: "numeric", unit: "mg/dL", referenceRangeLow: 0.6, referenceRangeHigh: 1.3, price: 45 },
+  { code: "TSH", name: "TSH", category: "Endocrine", specimenType: "blood", resultType: "numeric", unit: "mIU/L", referenceRangeLow: 0.4, referenceRangeHigh: 4.0, price: 90 },
+  { code: "URINE-RM", name: "Urine Routine & Microscopy", category: "Urinalysis", specimenType: "urine", resultType: "text", referenceRangeText: "No abnormal findings", price: 35 },
+  { code: "WBC", name: "White Blood Cell Count", category: "Hematology", specimenType: "blood", resultType: "numeric", unit: "x10^9/L", referenceRangeLow: 4.0, referenceRangeHigh: 11.0, price: 25 },
+  { code: "RBC", name: "Red Blood Cell Count", category: "Hematology", specimenType: "blood", resultType: "numeric", unit: "x10^12/L", referenceRangeLow: 4.2, referenceRangeHigh: 5.9, price: 25 },
+  { code: "HGB", name: "Hemoglobin", category: "Hematology", specimenType: "blood", resultType: "numeric", unit: "g/dL", referenceRangeLow: 13.0, referenceRangeHigh: 17.0, price: 25 },
+  { code: "HCT", name: "Hematocrit", category: "Hematology", specimenType: "blood", resultType: "numeric", unit: "%", referenceRangeLow: 38, referenceRangeHigh: 50, price: 25 },
+  { code: "PLT", name: "Platelet Count", category: "Hematology", specimenType: "blood", resultType: "numeric", unit: "x10^9/L", referenceRangeLow: 150, referenceRangeHigh: 450, price: 25 },
+]
+
+const DEFAULT_LAB_PANELS: { code: string; name: string; price: number; testCodes: string[] }[] = [
+  { code: "CBC", name: "Complete Blood Count", price: 100, testCodes: ["WBC", "RBC", "HGB", "HCT", "PLT"] },
+]
+
+const DEFAULT_IMAGING_SERVICES: {
+  code: string
+  name: string
+  category: string
+  bodyPart?: string
+  price: number
+  turnaroundHours?: number
+}[] = [
+  { code: "XR-CHEST", name: "Chest X-Ray", category: "X-Ray", bodyPart: "Chest", price: 80, turnaroundHours: 2 },
+  { code: "XR-KNEE", name: "Knee X-Ray", category: "X-Ray", bodyPart: "Knee", price: 70, turnaroundHours: 2 },
+  { code: "US-ABDOMEN", name: "Abdominal Ultrasound", category: "Ultrasound", bodyPart: "Abdomen", price: 150, turnaroundHours: 4 },
+  { code: "CT-HEAD", name: "CT Head (non-contrast)", category: "CT", bodyPart: "Head", price: 400, turnaroundHours: 24 },
+  { code: "MRI-KNEE", name: "MRI Knee", category: "MRI", bodyPart: "Knee", price: 650, turnaroundHours: 48 },
+]
+
+// The exact 8 templates spec.md §56 names, one channel (sms) each — admins
+// can add more per key/channel later via the /communications catalog, the
+// same "small real subset, admin-extendable" precedent as every other seed
+// catalog. `{{variable}}` placeholders are resolved server-side by
+// `renderTemplate()`, never client-submitted.
+const DEFAULT_COMM_TEMPLATES: { key: string; name: string; body: string }[] = [
+  { key: "appointment_confirmation", name: "Appointment Confirmation", body: "Hi {{patientName}}, your appointment with {{providerName}} at {{branchName}} is confirmed for {{appointmentDate}} at {{appointmentTime}}." },
+  { key: "appointment_reminder", name: "Appointment Reminder", body: "Reminder: {{patientName}}, you have an appointment with {{providerName}} on {{appointmentDate}} at {{appointmentTime}}." },
+  { key: "appointment_cancellation", name: "Appointment Cancellation", body: "Hi {{patientName}}, your appointment on {{appointmentDate}} at {{appointmentTime}} has been cancelled." },
+  { key: "follow_up_reminder", name: "Follow-Up Reminder", body: "Hi {{patientName}}, a follow-up is recommended around {{followUpDate}}: {{reason}}." },
+  { key: "payment_reminder", name: "Payment Reminder", body: "Hi {{patientName}}, invoice {{invoiceNumber}} has an outstanding balance of {{outstandingAmount}}." },
+  { key: "package_expiry", name: "Package Expiry", body: "Hi {{patientName}}, your package \"{{packageName}}\" expires on {{expiryDate}}." },
+  { key: "lab_result_ready", name: "Lab Result Ready", body: "Hi {{patientName}}, your result for {{testOrStudyName}} is ready. Please contact the clinic." },
+  { key: "birthday", name: "Birthday Greeting", body: "Happy Birthday, {{patientName}}! Wishing you good health from all of us." },
+]
+
+async function main() {
+  console.log("Seeding permission catalog...")
+  for (const permission of PERMISSIONS) {
+    await db.permission.upsert({
+      where: { code: permission.code },
+      update: { category: permission.category, description: permission.description },
+      create: permission,
+    })
+  }
+
+  console.log("Seeding diagnosis code subset...")
+  for (const code of DIAGNOSIS_CODES) {
+    await db.diagnosisCode.upsert({
+      where: { code: code.code },
+      update: { description: code.description, category: code.category },
+      create: code,
+    })
+  }
+
+  let organization = await db.organization.findFirst()
+  if (!organization) {
+    console.log("Creating default organization...")
+    organization = await db.organization.create({
+      data: {
+        legalName: "Avant Health Clinic LLC",
+        displayName: "Avant Health Clinic",
+        defaultCurrency: "AED",
+        defaultTimezone: "Asia/Dubai",
+      },
+    })
+  }
+
+  let branch = await db.branch.findFirst({ where: { organizationId: organization.id } })
+  if (!branch) {
+    console.log("Creating default branch...")
+    branch = await db.branch.create({
+      data: {
+        organizationId: organization.id,
+        name: "Main Branch",
+        code: "MAIN",
+        timezone: organization.defaultTimezone,
+      },
+    })
+  }
+
+  let department = await db.department.findFirst({ where: { branchId: branch.id } })
+  if (!department) {
+    department = await db.department.create({
+      data: { branchId: branch.id, name: "General", code: "GEN" },
+    })
+  }
+
+  const existingRoom = await db.room.findFirst({ where: { departmentId: department.id } })
+  if (!existingRoom) {
+    await db.room.create({
+      data: { departmentId: department.id, name: "Room 1", code: "R1", roomType: "consultation" },
+    })
+  }
+
+  console.log("Seeding default chart of accounts...")
+  const accountByCode = new Map<string, string>()
+  for (const account of DEFAULT_ACCOUNTS) {
+    const created = await db.chartOfAccount.upsert({
+      where: { organizationId_code: { organizationId: organization.id, code: account.code } },
+      update: { name: account.name, type: account.type },
+      create: { organizationId: organization.id, code: account.code, name: account.name, type: account.type },
+    })
+    accountByCode.set(account.code, created.id)
+  }
+
+  console.log("Seeding default account mappings...")
+  for (const mapping of DEFAULT_MAPPINGS) {
+    const accountId = accountByCode.get(mapping.accountCode)
+    if (!accountId) continue
+    const existingMapping = await db.accountMapping.findFirst({
+      where: { organizationId: organization.id, branchId: null, intent: mapping.intent },
+    })
+    if (!existingMapping) {
+      await db.accountMapping.create({
+        data: { organizationId: organization.id, branchId: null, intent: mapping.intent, accountId },
+      })
+    }
+  }
+
+  console.log("Seeding default lab test catalog...")
+  const labTestByCode = new Map<string, string>()
+  for (const test of DEFAULT_LAB_TESTS) {
+    const created = await db.labTest.upsert({
+      where: { organizationId_code: { organizationId: organization.id, code: test.code } },
+      update: {
+        name: test.name,
+        category: test.category,
+        specimenType: test.specimenType,
+        resultType: test.resultType,
+        unit: test.unit ?? null,
+        referenceRangeLow: test.referenceRangeLow ?? null,
+        referenceRangeHigh: test.referenceRangeHigh ?? null,
+        referenceRangeText: test.referenceRangeText ?? null,
+        price: test.price,
+      },
+      create: {
+        organizationId: organization.id,
+        code: test.code,
+        name: test.name,
+        category: test.category,
+        specimenType: test.specimenType,
+        resultType: test.resultType,
+        unit: test.unit ?? null,
+        referenceRangeLow: test.referenceRangeLow ?? null,
+        referenceRangeHigh: test.referenceRangeHigh ?? null,
+        referenceRangeText: test.referenceRangeText ?? null,
+        price: test.price,
+      },
+    })
+    labTestByCode.set(test.code, created.id)
+  }
+
+  console.log("Seeding default lab panels...")
+  for (const panel of DEFAULT_LAB_PANELS) {
+    const created = await db.labPanel.upsert({
+      where: { organizationId_code: { organizationId: organization.id, code: panel.code } },
+      update: { name: panel.name, price: panel.price },
+      create: { organizationId: organization.id, code: panel.code, name: panel.name, price: panel.price },
+    })
+    for (const testCode of panel.testCodes) {
+      const labTestId = labTestByCode.get(testCode)
+      if (!labTestId) continue
+      await db.labPanelTest.upsert({
+        where: { labPanelId_labTestId: { labPanelId: created.id, labTestId } },
+        update: {},
+        create: { labPanelId: created.id, labTestId },
+      })
+    }
+  }
+
+  console.log("Seeding default imaging service catalog...")
+  for (const service of DEFAULT_IMAGING_SERVICES) {
+    await db.imagingService.upsert({
+      where: { organizationId_code: { organizationId: organization.id, code: service.code } },
+      update: {
+        name: service.name,
+        category: service.category,
+        bodyPart: service.bodyPart ?? null,
+        price: service.price,
+        turnaroundHours: service.turnaroundHours ?? null,
+      },
+      create: {
+        organizationId: organization.id,
+        code: service.code,
+        name: service.name,
+        category: service.category,
+        bodyPart: service.bodyPart ?? null,
+        price: service.price,
+        turnaroundHours: service.turnaroundHours ?? null,
+      },
+    })
+  }
+
+  console.log("Seeding default communication templates...")
+  for (const template of DEFAULT_COMM_TEMPLATES) {
+    await db.commTemplate.upsert({
+      where: { organizationId_key: { organizationId: organization.id, key: template.key } },
+      update: { name: template.name, body: template.body },
+      create: {
+        organizationId: organization.id,
+        key: template.key,
+        channel: "sms",
+        name: template.name,
+        body: template.body,
+      },
+    })
+  }
+
+  console.log("Seeding system roles...")
+  const allPermissions = await db.permission.findMany()
+  const permissionByCode = new Map(allPermissions.map((p) => [p.code, p.id]))
+
+  for (const roleDef of SYSTEM_ROLES) {
+    const role = await db.role.upsert({
+      where: { organizationId_name: { organizationId: organization.id, name: roleDef.name } },
+      update: { isSystemRole: true },
+      create: { organizationId: organization.id, name: roleDef.name, isSystemRole: true },
+    })
+
+    await db.rolePermission.deleteMany({ where: { roleId: role.id } })
+    const permissionIds = roleDef.permissions
+      .map((code) => permissionByCode.get(code))
+      .filter((id): id is string => Boolean(id))
+    if (permissionIds.length > 0) {
+      await db.rolePermission.createMany({
+        data: permissionIds.map((permissionId) => ({ roleId: role.id, permissionId })),
+        skipDuplicates: true,
+      })
+    }
+  }
+
+  const superAdminRole = await db.role.findFirstOrThrow({
+    where: { organizationId: organization.id, name: "Super Admin" },
+  })
+
+  const existingSuperAdmin = await db.user.findFirst({
+    where: { organizationId: organization.id, email: "admin@avant.local" },
+  })
+
+  if (!existingSuperAdmin) {
+    const devPassword = "ChangeMe123!"
+    console.log(`Creating Super Admin user (admin@avant.local / ${devPassword}) — change this password immediately.`)
+    const user = await db.user.create({
+      data: {
+        organizationId: organization.id,
+        email: "admin@avant.local",
+        firstName: "Super",
+        lastName: "Admin",
+        passwordHash: await hashPassword(devPassword),
+      },
+    })
+    await db.userRole.create({ data: { userId: user.id, roleId: superAdminRole.id } })
+    await db.userBranchAccess.create({ data: { userId: user.id, branchId: branch.id } })
+  }
+
+  console.log("Seed complete.")
+}
+
+main()
+  .then(() => process.exit(0))
+  .catch((error) => {
+    console.error(error)
+    process.exit(1)
+  })

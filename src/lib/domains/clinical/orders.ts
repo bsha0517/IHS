@@ -198,3 +198,63 @@ export async function listPatientOrders(session: SessionContext, patientId: stri
     orderBy: { orderedAt: "desc" },
   })
 }
+
+/**
+ * Org/branch-wide CPOE order log (as opposed to `listPatientOrders`, scoped
+ * to one patient) — backs the top-level `/orders` nav destination, which
+ * previously had no page at all and fell through to the "coming soon"
+ * catch-all despite ClinicalOrder being a fully-built Phase 3 model. Lab and
+ * imaging orders already have their own richer, type-specific queues
+ * (/laboratory, /radiology); this is the unified cross-type view — every
+ * order placed, of any type, with a link back to the encounter it belongs
+ * to (orders have no standalone detail page of their own; they're managed
+ * from within their encounter's own orders-section). Same search/paginate
+ * shape as `listPatients` (patients/service.ts).
+ */
+export async function listOrders(
+  session: SessionContext,
+  params: { search?: string; status?: $Enums.ClinicalOrderStatus; orderType?: $Enums.ClinicalOrderType; page?: number } = {}
+) {
+  assertCan(session, "encounter.view")
+  const scope = getAuthorizedBranchScope(session)
+  const page = Math.max(1, params.page ?? 1)
+  const pageSize = 25
+  const search = params.search?.trim()
+
+  const where = {
+    organizationId: session.user.organizationId,
+    branchId: narrowBranchFilter(scope),
+    ...(params.status ? { status: params.status } : {}),
+    ...(params.orderType ? { orderType: params.orderType } : {}),
+    ...(search
+      ? {
+          OR: [
+            { orderNumber: { contains: search, mode: "insensitive" as const } },
+            { patient: { firstName: { contains: search, mode: "insensitive" as const } } },
+            { patient: { lastName: { contains: search, mode: "insensitive" as const } } },
+            { patient: { mrn: { contains: search, mode: "insensitive" as const } } },
+          ],
+        }
+      : {}),
+  }
+
+  const [orders, total] = await Promise.all([
+    db.clinicalOrder.findMany({
+      where,
+      include: {
+        patient: true,
+        orderingProvider: true,
+        labDetail: true,
+        imagingDetail: true,
+        procedureDetail: true,
+        referralDetail: { include: { referredToProvider: true } },
+      },
+      orderBy: { orderedAt: "desc" },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+    db.clinicalOrder.count({ where }),
+  ])
+
+  return { orders, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) }
+}

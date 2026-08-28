@@ -9,6 +9,7 @@ import { writeClinicalAccessLog } from "@/lib/platform/access-log"
 import { callPatient, completeConsultation } from "@/lib/domains/appointments/service"
 import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
+import type { $Enums } from "@/generated/prisma/client"
 import type { EncounterInput } from "@/lib/domains/clinical/schemas"
 
 const ENCOUNTER_WORKSPACE_INCLUDE = {
@@ -101,6 +102,53 @@ export async function getEncounter(session: SessionContext, encounterId: string)
   assertBranchAccess(getAuthorizedBranchScope(session), encounter.branchId)
   await writeClinicalAccessLog({ session, patientId: encounter.patientId, resourceType: "encounter", resourceId: encounter.id, action: "view" })
   return encounter
+}
+
+/**
+ * Org/branch-wide encounter list (as opposed to `listPatientEncounters`,
+ * scoped to one patient) — backs the top-level `/encounters` nav
+ * destination, which previously had no page at all and fell through to the
+ * "coming soon" catch-all despite Encounter being a fully-built Phase 3
+ * model. Same search/paginate shape as `listPatients` (patients/service.ts).
+ */
+export async function listEncounters(
+  session: SessionContext,
+  params: { search?: string; status?: $Enums.EncounterStatus; page?: number } = {}
+) {
+  assertCan(session, "encounter.view")
+  const scope = getAuthorizedBranchScope(session)
+  const page = Math.max(1, params.page ?? 1)
+  const pageSize = 25
+  const search = params.search?.trim()
+
+  const where = {
+    organizationId: session.user.organizationId,
+    branchId: narrowBranchFilter(scope),
+    ...(params.status ? { status: params.status } : {}),
+    ...(search
+      ? {
+          OR: [
+            { encounterNumber: { contains: search, mode: "insensitive" as const } },
+            { patient: { firstName: { contains: search, mode: "insensitive" as const } } },
+            { patient: { lastName: { contains: search, mode: "insensitive" as const } } },
+            { patient: { mrn: { contains: search, mode: "insensitive" as const } } },
+          ],
+        }
+      : {}),
+  }
+
+  const [encounters, total] = await Promise.all([
+    db.encounter.findMany({
+      where,
+      include: { patient: true, provider: true, episode: true },
+      orderBy: { startAt: "desc" },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+    db.encounter.count({ where }),
+  ])
+
+  return { encounters, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) }
 }
 
 export async function listPatientEncounters(session: SessionContext, patientId: string) {

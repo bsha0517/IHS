@@ -10,6 +10,7 @@ import {
   getCurrentSession,
 } from "@/lib/auth/session"
 import { generateRawToken, hashToken } from "@/lib/auth/tokens"
+import { NullEmailAdapter } from "@/lib/domains/communications/adapters/email-adapter"
 
 const MAX_FAILED_ATTEMPTS = 5
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000
@@ -98,11 +99,24 @@ export async function logout(): Promise<void> {
   await clearSessionCookie()
 }
 
-/** No user enumeration: behaves identically whether or not the email exists. */
-export async function requestPasswordReset(email: string): Promise<void> {
+export type RequestPasswordResetResult = { delivered: boolean }
+
+/**
+ * P0-04: no user enumeration — behaves identically (same return shape, same
+ * timing-insensitive path) whether or not the email exists, and never
+ * returns or logs the raw token. Delivery goes through the same honest
+ * `CommunicationAdapter` pattern the Communications module already uses
+ * (spec.md §56/§92 — never fake successful external delivery): today that's
+ * `NullEmailAdapter`, which always reports `status: "failed"` because no
+ * live provider is configured in this environment, so `delivered` is
+ * honestly `false` — the caller (the reset-request page) surfaces this
+ * plainly rather than claiming an email was sent. Swapping in a real
+ * provider later requires no change here, only a different adapter.
+ */
+export async function requestPasswordReset(email: string): Promise<RequestPasswordResetResult> {
   const normalizedEmail = email.trim().toLowerCase()
   const user = await db.user.findFirst({ where: { email: normalizedEmail } })
-  if (!user) return
+  if (!user) return { delivered: false }
 
   const rawToken = generateRawToken()
   await db.passwordResetToken.create({
@@ -113,9 +127,12 @@ export async function requestPasswordReset(email: string): Promise<void> {
     },
   })
 
-  // TODO(Phase 12): route through the communications adapter (SMS/WhatsApp/Email).
-  // Never claim delivery here — this is a local-dev stand-in, logged, not sent.
-  console.log(`[password-reset] token for ${normalizedEmail}: ${rawToken}`)
+  const result = await new NullEmailAdapter().send({
+    to: normalizedEmail,
+    subject: "Reset your Avant password",
+    body: `A password reset was requested for your account. Open /reset-password?token=${rawToken} to choose a new password.\n\nThis link expires in 30 minutes. If you didn't request this, you can ignore this message.`,
+  })
+  return { delivered: result.status === "sent" }
 }
 
 export async function confirmPasswordReset(

@@ -19,24 +19,38 @@ export function AddChargeDialog({
   patientId,
   branchId,
   services,
+  products,
   providers,
 }: {
   patientId: string
   branchId: string
   services: { id: string; name: string; price: number }[]
+  products: { id: string; name: string; price: number; unit: string }[]
   providers: { id: string; firstName: string; lastName: string }[]
 }) {
   const { open, setOpen, state, pending, submit } = useActionDialog(createAdHocChargeAction, initialState)
   const [serviceId, setServiceId] = useState<string>("")
+  const [productId, setProductId] = useState<string>("")
   const [description, setDescription] = useState("")
   const [unitPrice, setUnitPrice] = useState<string>("")
 
   function onServiceChange(value: string) {
     setServiceId(value)
+    setProductId("")
     const service = services.find((s) => s.id === value)
     if (service) {
       setDescription(service.name)
       setUnitPrice(String(service.price))
+    }
+  }
+
+  function onProductChange(value: string) {
+    setProductId(value)
+    setServiceId("")
+    const product = products.find((p) => p.id === value)
+    if (product) {
+      setDescription(product.name)
+      setUnitPrice(String(product.price))
     }
   }
 
@@ -84,6 +98,21 @@ export function AddChargeDialog({
                 {services.map((s) => (
                   <SelectItem key={s.id} value={s.id}>
                     {s.name} — {s.price.toFixed(2)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="productId">From product catalog (optional — sells real stock, FEFO-allocated)</Label>
+            <Select name="productId" value={productId} onValueChange={onProductChange}>
+              <SelectTrigger id="productId" className="w-full">
+                <SelectValue placeholder="None" />
+              </SelectTrigger>
+              <SelectContent>
+                {products.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name} — {p.price.toFixed(2)} / {p.unit}
                   </SelectItem>
                 ))}
               </SelectContent>

@@ -1,6 +1,7 @@
 import "server-only"
 import { db } from "@/lib/db"
-import { assertCan } from "@/lib/platform/permissions-core"
+import { assertCan, ForbiddenError } from "@/lib/platform/permissions-core"
+import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess, type BranchScope } from "@/lib/platform/branch-scope"
 import { Prisma } from "@/generated/prisma/client"
 import type { SessionContext } from "@/lib/auth/session"
 
@@ -15,8 +16,28 @@ import type { SessionContext } from "@/lib/auth/session"
 
 type AccountBalanceRow = { id: string; code: string; name: string; type: string; debit: number; credit: number }
 
-async function accountBalances(organizationId: string, branchId?: string, asOf?: Date): Promise<AccountBalanceRow[]> {
-  const branchFilter = branchId ? Prisma.sql`AND j.branch_id = ${branchId}` : Prisma.sql``
+/**
+ * P0-01: resolves a caller-supplied branchId (validated against the scope)
+ * or, when the caller is not org-wide and asked for no specific branch,
+ * restricts to every branch they're actually authorized for — never "no
+ * filter" for a non-org-wide session, which is what every function below
+ * did before this fix (a full, org-wide financial statement to anyone
+ * holding `accounting.view`, regardless of `user_branch_access`).
+ */
+function resolveReportBranchFilter(scope: BranchScope, requestedBranchId?: string): Prisma.Sql {
+  if (requestedBranchId) {
+    if (!scope.isOrgWide && !scope.branchIds.includes(requestedBranchId)) {
+      throw new ForbiddenError("branch.access")
+    }
+    return Prisma.sql`AND j.branch_id = ${requestedBranchId}`
+  }
+  if (scope.isOrgWide) return Prisma.sql``
+  if (scope.branchIds.length === 0) return Prisma.sql`AND FALSE`
+  return Prisma.sql`AND j.branch_id IN (${Prisma.join(scope.branchIds)})`
+}
+
+async function accountBalances(organizationId: string, scope: BranchScope, branchId?: string, asOf?: Date): Promise<AccountBalanceRow[]> {
+  const branchFilter = resolveReportBranchFilter(scope, branchId)
   const asOfFilter = asOf ? Prisma.sql`AND j.journal_date <= ${asOf}` : Prisma.sql``
 
   const rows = await db.$queryRaw<AccountBalanceRow[]>(Prisma.sql`
@@ -45,7 +66,7 @@ function netBalance(row: AccountBalanceRow): number {
 
 export async function trialBalance(session: SessionContext, filters: { branchId?: string; asOf?: Date } = {}) {
   assertCan(session, "accounting.view")
-  const rows = await accountBalances(session.user.organizationId, filters.branchId, filters.asOf)
+  const rows = await accountBalances(session.user.organizationId, getAuthorizedBranchScope(session), filters.branchId, filters.asOf)
   const lines = rows
     .filter((r) => r.debit !== 0 || r.credit !== 0)
     .map((r) => {
@@ -67,7 +88,7 @@ export async function trialBalance(session: SessionContext, filters: { branchId?
 
 export async function incomeStatement(session: SessionContext, filters: { branchId?: string; asOf?: Date } = {}) {
   assertCan(session, "accounting.view")
-  const rows = await accountBalances(session.user.organizationId, filters.branchId, filters.asOf)
+  const rows = await accountBalances(session.user.organizationId, getAuthorizedBranchScope(session), filters.branchId, filters.asOf)
   const revenueLines = rows.filter((r) => r.type === "revenue" && (r.debit !== 0 || r.credit !== 0)).map((r) => ({ code: r.code, name: r.name, amount: netBalance(r) }))
   const expenseLines = rows.filter((r) => r.type === "expense" && (r.debit !== 0 || r.credit !== 0)).map((r) => ({ code: r.code, name: r.name, amount: netBalance(r) }))
   const totalRevenue = revenueLines.reduce((sum, l) => sum + l.amount, 0)
@@ -77,7 +98,7 @@ export async function incomeStatement(session: SessionContext, filters: { branch
 
 export async function balanceSheet(session: SessionContext, filters: { branchId?: string; asOf?: Date } = {}) {
   assertCan(session, "accounting.view")
-  const rows = await accountBalances(session.user.organizationId, filters.branchId, filters.asOf)
+  const rows = await accountBalances(session.user.organizationId, getAuthorizedBranchScope(session), filters.branchId, filters.asOf)
   const assetLines = rows.filter((r) => r.type === "asset" && (r.debit !== 0 || r.credit !== 0)).map((r) => ({ code: r.code, name: r.name, amount: netBalance(r) }))
   const liabilityLines = rows.filter((r) => r.type === "liability" && (r.debit !== 0 || r.credit !== 0)).map((r) => ({ code: r.code, name: r.name, amount: netBalance(r) }))
   const equityLines = rows.filter((r) => r.type === "equity" && (r.debit !== 0 || r.credit !== 0)).map((r) => ({ code: r.code, name: r.name, amount: netBalance(r) }))
@@ -104,6 +125,7 @@ export async function balanceSheet(session: SessionContext, filters: { branchId?
 /** Simplified direct-method cash flow: every journal line touching a "cash"-mapped account, grouped by counterparty account. */
 export async function cashFlow(session: SessionContext, filters: { branchId?: string; from?: Date; to?: Date } = {}) {
   assertCan(session, "accounting.view")
+  const scope = getAuthorizedBranchScope(session)
 
   const cashAccounts = await db.chartOfAccount.findMany({
     where: { organizationId: session.user.organizationId, code: { in: ["1000", "1010"] } },
@@ -116,7 +138,7 @@ export async function cashFlow(session: SessionContext, filters: { branchId?: st
       accountId: { in: cashAccountIds },
       journal: {
         organizationId: session.user.organizationId,
-        branchId: filters.branchId,
+        branchId: narrowBranchFilter(scope, filters.branchId),
         journalDate: { gte: filters.from, lte: filters.to },
       },
     },
@@ -132,8 +154,9 @@ export async function cashFlow(session: SessionContext, filters: { branchId?: st
 
 export async function listJournals(session: SessionContext, filters: { branchId?: string; referenceType?: string } = {}) {
   assertCan(session, "accounting.view")
+  const scope = getAuthorizedBranchScope(session)
   return db.journal.findMany({
-    where: { organizationId: session.user.organizationId, branchId: filters.branchId, referenceType: filters.referenceType },
+    where: { organizationId: session.user.organizationId, branchId: narrowBranchFilter(scope, filters.branchId), referenceType: filters.referenceType },
     include: { lines: { include: { account: true } }, branch: true },
     orderBy: { journalDate: "desc" },
     take: 200,
@@ -142,8 +165,10 @@ export async function listJournals(session: SessionContext, filters: { branchId?
 
 export async function getJournal(session: SessionContext, id: string) {
   assertCan(session, "accounting.view")
-  return db.journal.findFirstOrThrow({
+  const journal = await db.journal.findFirstOrThrow({
     where: { id, organizationId: session.user.organizationId },
     include: { lines: { include: { account: true } }, branch: true },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), journal.branchId)
+  return journal
 }

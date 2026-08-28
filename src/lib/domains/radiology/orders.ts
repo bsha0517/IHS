@@ -3,7 +3,10 @@ import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { nextNumber } from "@/lib/platform/sequences"
+import { assertValidTransition } from "@/lib/platform/state-machine"
+import { CLINICAL_ORDER_TRANSITIONS } from "@/lib/domains/clinical/orders"
 import { generateSystemCharge } from "@/lib/domains/billing/charges"
+import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { AssignImagingServiceInput, ScheduleImagingInput } from "@/lib/domains/radiology/schemas"
 
@@ -17,8 +20,14 @@ const ORDER_INCLUDE = {
 /** The Radiology Queue (spec.md §30): every doctor-placed imaging ClinicalOrder not yet fully completed. */
 export async function listRadiologyQueue(session: SessionContext) {
   assertCan(session, "imaging_order.perform")
+  const scope = getAuthorizedBranchScope(session)
   return db.clinicalOrder.findMany({
-    where: { organizationId: session.user.organizationId, orderType: "imaging", status: { not: "cancelled" } },
+    where: {
+      organizationId: session.user.organizationId,
+      orderType: "imaging",
+      status: { not: "cancelled" },
+      branchId: narrowBranchFilter(scope),
+    },
     include: { patient: true, imagingDetail: true, imagingOrder: { include: { imagingService: true } } },
     orderBy: { orderedAt: "asc" },
   })
@@ -26,10 +35,12 @@ export async function listRadiologyQueue(session: SessionContext) {
 
 export async function getRadiologyOrder(session: SessionContext, id: string) {
   assertCan(session, "imaging_order.perform")
-  return db.clinicalOrder.findFirstOrThrow({
+  const order = await db.clinicalOrder.findFirstOrThrow({
     where: { id, organizationId: session.user.organizationId, orderType: "imaging" },
     include: ORDER_INCLUDE,
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), order.branchId)
+  return order
 }
 
 /**
@@ -47,6 +58,9 @@ export async function assignImagingService(session: SessionContext, clinicalOrde
   const order = await db.clinicalOrder.findFirstOrThrow({
     where: { id: clinicalOrderId, organizationId: session.user.organizationId, orderType: "imaging" },
   })
+  // P1 §20: same centralized guard as laboratory's assignTests — this is
+  // what actually moves the order to "in_progress" below.
+  assertValidTransition(CLINICAL_ORDER_TRANSITIONS, order.status, "in_progress", "a clinical order")
   const service = await db.imagingService.findFirstOrThrow({
     where: { id: input.imagingServiceId, organizationId: session.user.organizationId },
   })

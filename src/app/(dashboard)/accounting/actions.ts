@@ -4,7 +4,8 @@ import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
 import { createAccount, updateAccount } from "@/lib/domains/accounting/chart-of-accounts"
 import { setMapping } from "@/lib/domains/accounting/account-mappings"
-import { createManualJournal } from "@/lib/domains/accounting/journals"
+import { createManualJournal, reverseJournal } from "@/lib/domains/accounting/journals"
+import { closePeriod, reopenPeriod } from "@/lib/domains/accounting/periods"
 import { chartOfAccountSchema, accountMappingSchema, manualJournalSchema } from "@/lib/domains/accounting/schemas"
 
 export type ActionState = { error?: string; success?: boolean }
@@ -93,6 +94,40 @@ export async function createManualJournalAction(_prev: ActionState, formData: Fo
     await createManualJournal(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to post journal." }
+  }
+  revalidatePath("/accounting")
+  return { success: true }
+}
+
+export async function reverseJournalAction(journalId: string, reason: string): Promise<ActionState> {
+  const session = await requireSession()
+  try {
+    await reverseJournal(session, journalId, reason)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to reverse journal." }
+  }
+  revalidatePath("/accounting")
+  return { success: true }
+}
+
+/** P1 §31. `year`/`month` identify the calendar month (1-12); see periods.ts's own doc comment for why closing never accepts an override. */
+export async function closePeriodAction(year: number, month: number, reason: string): Promise<ActionState> {
+  const session = await requireSession()
+  try {
+    await closePeriod(session, { year, month, reason })
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to close period." }
+  }
+  revalidatePath("/accounting")
+  return { success: true }
+}
+
+export async function reopenPeriodAction(periodId: string, reason: string): Promise<ActionState> {
+  const session = await requireSession()
+  try {
+    await reopenPeriod(session, periodId, reason)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to reopen period." }
   }
   revalidatePath("/accounting")
   return { success: true }

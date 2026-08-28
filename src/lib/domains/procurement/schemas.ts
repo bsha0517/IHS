@@ -58,6 +58,13 @@ export const goodsReceiptSchema = z.object({
   purchaseOrderId: z.uuid(),
   notes: z.preprocess(emptyToNull, z.string().max(1000).nullable().optional()),
   lines: z.array(goodsReceiptLineSchema).min(1, "Receive at least one line"),
+  // P1 §16: "prevent over-receiving beyond PO quantity unless explicitly
+  // authorized" — a receipt-level override (not persisted as its own
+  // column; the existing audit-log entry for this receipt captures that it
+  // happened) rather than a hard, unconditional block. Not per-line: the
+  // whole receipt is one user decision made once in the dialog, not a
+  // per-product judgment call.
+  allowOverReceipt: z.coerce.boolean().optional().default(false),
 })
 export type GoodsReceiptInput = z.infer<typeof goodsReceiptSchema>
 
@@ -67,6 +74,9 @@ export const supplierInvoiceSchema = z.object({
   purchaseOrderId: z.preprocess(emptyToNull, z.uuid().nullable().optional()),
   invoiceNumber: z.string().min(1).max(100),
   amount: z.coerce.number().positive().max(9999999),
+  // P1 §15: recoverable purchase tax (e.g. input VAT), manually entered —
+  // see SupplierInvoice.taxAmount's doc comment (schema.prisma).
+  taxAmount: z.coerce.number().min(0).max(9999999).optional().default(0),
   dueDate: z.preprocess(emptyToNull, z.coerce.date().nullable().optional()),
 })
 export type SupplierInvoiceInput = z.infer<typeof supplierInvoiceSchema>

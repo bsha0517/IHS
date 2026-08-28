@@ -27,6 +27,13 @@ export const patientSchema = z.object({
 })
 export type PatientInput = z.infer<typeof patientSchema>
 
+/** P1 §24: the explicit ACTIVE/INACTIVE/DECEASED alternative to deleting a Patient (which P0 made Restrict). */
+export const patientStatusSchema = z.object({
+  status: z.enum(["active", "inactive", "deceased"]),
+  reason: z.string().min(1, "A reason is required").max(500),
+})
+export type PatientStatusInput = z.infer<typeof patientStatusSchema>
+
 export const allergySchema = z.object({
   allergen: z.string().min(1).max(200),
   reaction: z.preprocess(emptyToNull, z.string().max(300).nullable().optional()),

@@ -42,7 +42,13 @@ number_sequence      [P1]  id, organization_id FK, branch_id FK NULL, sequence_t
                             prefix, current_value, padding, UNIQUE(organization_id,
                             branch_id, sequence_type)
 outbox_event         [P1]  id, organization_id FK, event_type, payload JSONB,
-                            status(pending|processed|failed), created_at, processed_at NULL
+                            status(pending|processing|completed|failed|dead_letter), attempts,
+                            last_attempt_at NULL, next_retry_at NULL, last_error NULL,
+                            created_at, completed_at NULL
+                            — reshaped in the P0 remediation pass (P0-02, 2026-08-27); see
+                            "P0 Remediation Schema Changes" below. Original Phase 1 shape
+                            (status pending|processed|failed, processed_at) shown here for
+                            history is superseded.
 setting              [P1]  id, organization_id FK, branch_id FK NULL, key, value JSONB,
                             UNIQUE(organization_id, branch_id, key)
 notification         [P1]  id, organization_id FK, recipient_user_id FK, type, title, body,
@@ -166,7 +172,11 @@ Note-amendment invariant (enforced in `src/lib/domains/clinical/notes.ts`, not j
 
 ```
 charge                   [P4]  id, organization_id FK, branch_id FK, patient_id FK,
-                                encounter_id FK NULL, service_id FK NULL, provider_id FK NULL,
+                                encounter_id FK NULL, service_id FK NULL, product_id FK NULL
+                                (added P1 §9 — set only for a real retail product sale;
+                                presence, not source_type, triggers real inventory
+                                consumption in insertCharge — see "P1 Batch 3 Schema
+                                Changes" below), provider_id FK NULL,
                                 source_type(consultation|procedure|lab|imaging|pharmacy|product|
                                 package|other), source_reference_id NULL (loose polymorphic
                                 pointer, interpretation depends on source_type — same convention
@@ -669,7 +679,95 @@ vital_sign.branch_id
 
 **Deliberately left unindexed** (~80 remaining FK columns) — see PROJECT_STATUS.md's Phase 14 Known Issues for the full reasoning: mostly `organization_id`-alone gaps on smaller reference/config tables (`calibration_record`, `maintenance_record`, `leave_balance`, `medication`, `notification`, `outbox_event`, `cash_movement`, `dispensing_return`, `patient_package_session`) where no query pattern in this codebase filters on that column alone, plus a few low-cardinality nullable self-relations and small/ephemeral tables. Revisit with real production `EXPLAIN ANALYZE` evidence, not by extending this list speculatively.
 
-**Also reviewed, not changed**: SECURITY.md's Phase-1-era pre-commitment that "Phase 14 hardening removes UPDATE/DELETE grants for the app role" on `audit_log`/`clinical_access_log`. This deployment's `DATABASE_URL` connects as Supabase's project-owner-equivalent role — the same role every migration in this project's history runs DDL as — so there is no separate lower-privileged "app role" to revoke anything from without breaking the application. The correct fix (a genuinely separate runtime role) is documented in DEPLOYMENT.md's "Database Privileges" section, not executed, since it requires rotating live credentials the running application depends on.
+**Also reviewed, not changed in Phase 14 itself**: SECURITY.md's Phase-1-era pre-commitment that "Phase 14 hardening removes UPDATE/DELETE grants for the app role" on `audit_log`/`clinical_access_log`. This deployment's `DATABASE_URL` connects as Supabase's project-owner-equivalent role — the same role every migration in this project's history runs DDL as — so there was no separate lower-privileged "app role" to revoke anything from without breaking the application. Phase 14 documented the correct fix without executing it, since it requires rotating live credentials. **This was subsequently executed in the P0 remediation pass** — see below.
+
+## P0 Remediation Schema Changes (2026-08-27, following the Phase 14 audit — not a numbered spec.md phase)
+
+Three migrations, all applied and verified against the real database (`prisma migrate status` shows zero drift):
+
+**`20260826192144_p0_02_outbox_reliability`** + **`20260826192200_p0_02_outbox_reliability_data`** (P0-02, split into two files — a newly-added Postgres enum value can't be used in the same transaction that adds it): `outbox_event.status` widened from `pending|processed|failed` to `pending|processing|completed|failed|dead_letter`; `processed_at` renamed to `completed_at`; new columns `attempts` (int, default 0), `last_attempt_at`, `next_retry_at`, `last_error`; new index `(status, next_retry_at)` for the retry sweep alongside the existing `(status, created_at)`. The 30 pre-existing rows (all `processed`) were remapped to `completed` as part of the data migration — verified zero rows lost.
+
+**`20260826200219_p0_05_cascade_delete_protection`**: 24 foreign key constraints changed from `ON DELETE CASCADE` to `ON DELETE RESTRICT` (full list in P0_REMEDIATION_REPORT.md's P0-05 section) — `patient_allergy`/`patient_condition`/`patient_medication_history` → `patient`; `vital_sign`/`diagnosis`/`clinical_note`/`clinical_order`/`prescription`/`follow_up_recommendation` → `encounter`; the four order-detail tables plus `specimen`/`lab_order_test`/`imaging_order` → `clinical_order`; `prescription_item` → `prescription`; `invoice_line` → `invoice`; `payment_allocation` → `payment`; `patient_package_session` → `patient_package`; `journal_line` → `journal`; `payroll_run_line` → `payroll_run`; `dispensing_return` → `dispensing_record`; `claim_item` → `claim`. Non-destructive by construction — an `ON DELETE` behavior change doesn't touch or validate existing rows, only future delete attempts.
+
+**No Prisma migration** (deliberately — see `prisma/db-setup/p0-06-create-runtime-role.sql`'s header for why role/GRANT management isn't schema-tracked): a new database role, `avant_app_runtime`, was created directly against each configured environment with `UPDATE`/`DELETE` revoked on `audit_log`/`clinical_access_log` specifically (P0-06) — closing the exact gap the paragraph above describes. **The running application was cut over to this role for real in the P1 remediation pass** (P1 §1, 2026-08-27) — see "Connection Roles" immediately below; P0-06 is FIXED, not partial, as of that cutover.
+
+## Connection Roles (P1 §1, 2026-08-27 — closes the P0-06 gap for real)
+
+Two separate environment variables, two separate database roles, never collapsed into one connection:
+
+| Variable | Used by | Role | Rights |
+|---|---|---|---|
+| `DATABASE_URL` | The running application (`src/lib/db.ts`, every request) | `avant_app_runtime` (non-owner) | Full CRUD on every table **except** `audit_log`/`clinical_access_log`, where `UPDATE`/`DELETE` are revoked |
+| `DIRECT_DATABASE_URL` | Prisma CLI only — `migrate deploy`/`migrate status`/`generate`/`db seed` (`prisma.config.ts`) | the schema owner | Full DDL + DML — required for migrations, never used by the running application |
+
+Why two roles were necessary, not optional: PostgreSQL does not let a table owner's own privileges be revoked from itself (verified empirically via `pg_tables.tableowner` during P0-06) — `REVOKE UPDATE, DELETE ON audit_log FROM postgres` against the owner role executes without error but has zero actual effect. `avant_app_runtime` owns nothing, so the revoke against it is real. Setup script: `prisma/db-setup/p0-06-create-runtime-role.sql` (run once by hand per environment — role/GRANT management is cluster-level, not something `prisma migrate deploy` tracks or should track).
+
+**Live-verified** (`test/integration/audit-log-immutability.test.ts`, run through `db` — the exact same client every domain service imports, connected via `DATABASE_URL`): the application can INSERT and SELECT `audit_log` rows, cannot UPDATE or DELETE them (PostgreSQL rejects it, not application-level logic), and retains full read/write access to a normal table (`branch`) through the identical connection. The full 84-test suite and a live browser session (login → dashboard → complete an encounter, exercising INSERT/UPDATE/SELECT across session, login_history, encounter, charge, and outbox_event) were both run against this same restricted connection with no regressions. See SECURITY.md §5 for the authorization-architecture writeup and DEPLOYMENT.md for the per-environment setup procedure.
+
+## P1 Remediation Schema Changes, Batch 3 (2026-08-27 — POS/inventory/cost accounting, §9-§13)
+
+**`20260826234516_p1_batch3_charge_product_link`**: one nullable column — `charge.product_id` (FK → `product`, `ON DELETE SET NULL`) — plus its covering index. Closes the gap P1_FINANCIAL_INTEGRITY_FINDINGS.md's B1 named: a POS charge sourced from a physical product previously had no field identifying *which* product, so `insertCharge` (billing/charges.ts) had no way to consume real inventory for it. Set only for a genuine retail product sale (`sourceType: "product"` with a real `productId` picked from the catalog) — every existing charge keeps `product_id NULL`, unaffected. No account-mapping schema change was needed for the new `cogs`/`inventory_write_off`/`inventory_adjustment_gain` posting intents — `account_mapping.intent` is a plain string column (not a DB enum), so these are seed-data additions (`prisma/seed.ts`'s `DEFAULT_ACCOUNTS`/`DEFAULT_MAPPINGS` — new Chart of Accounts rows `4100 Inventory Adjustment Gain`, `5100 Cost of Goods Sold`, `5200 Inventory Write-off Expense`), not a migration.
+
+See INVENTORY.md for the valuation-method decision this batch also had to make (specific identification via batch-level `purchase_cost` — no schema change, since `product_batch.purchase_cost` already existed and already carried exactly the data this needed) and P1_REMEDIATION_REPORT.md for the full batch record.
+
+## P1 Remediation Schema Changes, Batch 4 (2026-08-27 — pharmacy chain, supplier AP, over-receiving, asset acquisition, §14-§17)
+
+**`20260827064558_p1_batch4_asset_supplier_invoice_fields`**: two `AlterTable` statements, no new tables.
+
+- `supplier_invoice.tax_amount DECIMAL(14,2) NOT NULL DEFAULT 0` — recoverable purchase tax (e.g. input VAT), manually entered (no supplier-side tax-rule engine exists, unlike the sales side's `TaxRule`). The total AP obligation a supplier invoice creates is `amount + tax_amount`, not `amount` alone — `recordSupplierPayment`'s outstanding-balance check (`supplier-invoices.ts`) was updated to match. Defaulting to 0 means every existing row is unaffected.
+- `asset.paid_via PaymentMethod` (nullable) — which tender an acquisition was paid with; set, `postAssetAcquired` credits that tender's resolved account, left null (bought on credit), it credits Accounts Payable instead.
+- `asset.depreciation_method TEXT`, `asset.useful_life_months INTEGER`, `asset.salvage_value DECIMAL(14,2)`, `asset.depreciation_start_date DATE` (all nullable) — depreciation-readiness fields only, the same "prepare architecture, don't build the integration" precedent as `ImagingOrder`'s PACS fields (Phase 10). No calculation or posting logic reads any of these yet.
+
+No account-mapping schema change was needed for the new `goods_received_not_invoiced`/`recoverable_tax`/`fixed_asset` posting intents — same reasoning as Batch 3's COGS intents: `account_mapping.intent` is a plain string column, so these are seed-data additions (`prisma/seed.ts`'s `DEFAULT_ACCOUNTS`/`DEFAULT_MAPPINGS` — new Chart of Accounts rows `1300 Recoverable Tax`, `1400 Fixed Assets`, `2050 Goods Received Not Invoiced`), not a migration. The over-receiving-authorization flag (§16) is likewise not a schema change — it's a request-level `allowOverReceipt` input to `createGoodsReceipt`, not a persisted column; the existing `goods_receipt` audit-log entry records whether it was used.
+
+See ARCHITECTURE.md's Chart of Accounts / Central Accounting Posting Service section for the GR/IR clearing-account design this batch introduced, and P1_REMEDIATION_REPORT.md for the full batch record.
+
+## P1 Remediation Schema Changes, Batch 5 (2026-08-27 — payroll replay verification, commission refund reversal, §18-§19)
+
+**`20260827075348_p1_batch5_commission_refund_reversal`**: one nullable column, one index, one FK — no new tables.
+
+- `commission_accrual.refund_id TEXT` (nullable, FK → `refund`, `ON DELETE SET NULL`) — set only on a reversal row `reverseCommissionsForRefund` (`payroll/commissions.ts`) inserts when a refund claws back `collected_revenue`-basis commission. Deliberately left `payment_id NULL` on these reversal rows (copying the original accrual's `payment_id` there would collide with the existing `@@unique([chargeId, paymentId])` — the original row already occupies that pair).
+
+**`20260827080737_p1_batch5_commission_reversal_idempotency`**: one more nullable column, one unique index, one FK — a same-batch follow-up, not a separately motivated change. A real integration test (the multi-payment case in `test/integration/commission-refund-integrity.test.ts`) caught the first migration's idempotency design under-reversing: checking only `(refundId, chargeId)` for an existing reversal wrongly treated a second originating payment's reversal as "already done" once the first payment's reversal existed, silently leaving part of the commission un-clawed-back. Fixed with `commission_accrual.reversal_of_id TEXT` (nullable, self-referencing FK — which ORIGINAL accrual this row reverses) plus a real `@@unique([refundId, reversalOfId])` constraint, replacing the service-layer-only check with a DB-enforced one. Left as its own migration rather than folded into the first (never edit an already-applied migration, even within the same batch — same discipline the rest of this file's migration history follows).
+
+§18 (payroll lifecycle replay) needed no schema change at all — it's a verification batch against the existing `postJournal` referenceType-keyed idempotency (`payroll_run` vs `payroll_run_paid`, P0-02), proven correct with new integration tests rather than any code or schema change.
+
+See ARCHITECTURE.md's Provider Commissions section for the reversal design (including why `gross_invoice`/`net_invoice`-basis accruals are deliberately left untouched) and P1_REMEDIATION_REPORT.md for the full batch record.
+
+## P1 Remediation Schema Changes, Batch 6 (2026-08-27 — lab order state integrity, critical results, clinical/encounter cancellation, §20-§25)
+
+**`20260827092019_p1_batch6_clinical_integrity`**: two new enum values, three nullable columns, one FK — no new tables.
+
+- `EncounterStatus` gains `cancelled` and `entered_in_error` (§24) — `cancelEncounter`/`markEncounterEnteredInError` (clinical/encounters.ts) are the new operational alternatives P0's `Restrict` cascades made necessary. Added via `ALTER TYPE ... ADD VALUE`, which must run outside the same transaction that uses the new value — not a concern here since nothing in this migration references them.
+- `encounter.cancel_reason TEXT` / `clinical_order.cancel_reason TEXT` (nullable) — every cancellation captures a reason; user/timestamp come from the audit log, the same convention `Invoice.voidReason` already established.
+- `lab_test.critical_low DECIMAL(10,3)` / `lab_test.critical_high DECIMAL(10,3)` (nullable, independent of `reference_range_low`/`high`) — §22's critical-panic thresholds, checked by `computeAbnormalFlag` only where actually configured.
+- `lab_order_test.is_current BOOLEAN NOT NULL DEFAULT true` / `lab_order_test.amends_id TEXT` (nullable, self-referencing FK) — §21's amendment chain, the identical `isCurrent`/`amendsId` shape `ClinicalNote` (Phase 3) already established, reused via `amendLabResult` (laboratory/results.ts) rather than reinvented.
+
+No schema change was needed for §20's centralized transition validation (a new shared function plus two in-memory transition-map constants, not a data-model change), §24's Patient status (the `PatientStatus` enum and `Patient.status` column already existed — only `updatePatientStatus`, the missing function, was new), or §24's Invoice-void/Journal-reversal fixes (both reuse `journal`/`journal_line`'s existing `referenceType`/`referenceId` columns — `invoice_void` and `manual_reversal` are new *values* in that plain string column, not a schema change).
+
+See ARCHITECTURE.md's §4 Clinical Workflow, §8 HR/Payroll, and Central Accounting Posting Service sections for the full batch design, and P1_REMEDIATION_REPORT.md for the full batch record.
+
+## P1 Remediation Schema Changes, Batch 7 (2026-08-27 — appointment reschedule/status transitions, package session locking, refund numbering, sequence concurrency, §26-§30)
+
+**`20260827142820_p1_batch7_appointment_and_refund_integrity`**: one nullable column, one unique index — no new tables, no enum changes.
+
+- `refund.refund_number TEXT` (nullable) — §30's genuine gap: every other financial document (`invoice.invoice_number`, `payment.receipt_number`, `goods_receipt.receipt_number`, `supplier_invoice.invoice_number`) already had a human-readable number; `Refund` never did. Assigned via a new `"RFD"` `nextNumber()` sequence type only at `completeRefund` — the first point a refund is guaranteed to actually move money — so it stays `null` through `requested`/`authorized`/`rejected`.
+- `@@unique([organizationId, refundNumber])` — Postgres treats each `NULL` as distinct, so the many refunds still in a pre-completion status never collide with each other under this constraint.
+
+No schema change was needed for §26/§27 (appointment reschedule reason and the centralized `APPOINTMENT_TRANSITIONS` map are both application-layer — `AppointmentStatusHistory` and the DB's own `appointment_provider_no_overlap`/`appointment_room_no_overlap` exclusion constraints already existed and needed no changes), §28 (the `SELECT ... FOR UPDATE` lock added to `consumeSession` is a query-time change, not a data-model one), or §30's two `nextNumber`/`appointmentNumber` fixes (see ARCHITECTURE.md's Patient Journey section) — both were application-code races, not schema gaps.
+
+See ARCHITECTURE.md's §3 Patient Journey section for the full batch design, and P1_REMEDIATION_REPORT.md for the full batch record.
+
+## P1 Remediation Schema Changes, Batch 8 (2026-08-27 — financial period control, transaction boundary review, idempotency review, §31-§33)
+
+**`20260827161220_p1_batch8_period_control_and_idempotency`**: two new tables, one new enum — no column changes to any existing table.
+
+- `accounting_period` (§31) — `AccountingPeriodStatus` (`open`/`closed`), `period_start`/`period_end` (an exclusive `[start, end)` calendar-month range), `closed_by`/`closed_at`, `reason`. A row exists ONLY for a month that has actually been closed at some point — an unclosed month has no row and is implicitly open, so nothing has to be pre-created for future months. `@@unique([organizationId, periodStart])` — reopening flips the same row's `status` back to `open` rather than deleting it, so the row's own presence plus the audit log is the full open→closed→reopened history. Read by `assertPeriodOpen` (`accounting/periods.ts`), called from inside `postJournal` itself.
+- `idempotency_key` (§33) — `organization_id`, `scope`, `key`, nullable `result_id`, `created_at`. `@@unique([organizationId, scope, key])` is the actual concurrency-safety mechanism (see `platform/idempotency.ts`): a duplicate `(scope, key)` insert genuinely fails at the database level, and Postgres blocks a concurrent conflicting insert until the first transaction commits or rolls back — which is what makes "claim first, do the real work, then record the result, all in one transaction" safe against a true double-click race, not just a delayed retry. A single shared table + primitive, not a bespoke nullable+unique column bolted onto `GoodsReceipt`/`Payment`/`PatientPackageSession` individually.
+
+**Runtime-role grant note, and a real regression it caused** (relevant only if your environment uses the `avant_app_runtime` restricted role per P0-06 — see DEPLOYMENT.md's "Database Privileges"): both new tables needed the idempotent `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "avant_app_runtime"` step re-run after this migration — Postgres does not retroactively grant privileges on tables created after that script last ran. Caught by this batch's own test run (`permission denied for table idempotency_key`/`accounting_period`) before it ever reached a real deployment. **But re-running only that bare GRANT statement — not the full script — re-granted UPDATE/DELETE on `audit_log`/`clinical_access_log` too**, silently reopening P0-06's audit-log immutability fix; `test/integration/audit-log-immutability.test.ts` failed in this same batch's own subsequent full-suite run, catching it for real (not hypothetically) before it went anywhere near a deployment. Fixed by re-running `REVOKE UPDATE, DELETE ON "audit_log", "clinical_access_log" FROM "avant_app_runtime"`, re-verified both by that test file passing again and a direct standalone check against both tables. New `prisma/db-setup/p0-06-regrant-new-tables.sql` now bundles the GRANT and the REVOKE in one script specifically so this can't be repeated by copying only half of the original script again.
+
+See ARCHITECTURE.md's Central Accounting Posting Service section and the new [TRANSACTION_BOUNDARIES.md](TRANSACTION_BOUNDARIES.md) for the full batch design, and P1_REMEDIATION_REPORT.md for the full batch record.
 
 ## Forward Schema (populated per phase as each phase lands)
 
@@ -696,4 +794,24 @@ vital_sign.branch_id
 
 ## Status
 
-Phase 1 through Phase 14 (the full spec.md build plan) schemas implemented and migrated — 20 migrations total: Phase 1's `phase1_platform_foundation` plus two `number_sequence_null_branch_uniqueness` housekeeping migrations, Phase 2's `phase2_patient_provider_service_appointment`, `timestamptz_and_booking_exclusion`, `provider_user_link`, `appointment_reschedule_link`, Phase 3's `phase3_core_emr`, `clinical_org_scoping`, Phase 4's `phase4_revenue`, Phase 5's `phase5_inventory_procurement`, Phase 6's `phase6_finance`, Phase 7's `phase7_hr_assets` plus the same-session `payroll_run_branch_required` follow-up, Phase 8's `phase8_lis`, Phase 9's `phase9_pharmacy`, Phase 10's `phase10_ris`, Phase 11's `phase11_payors_insurance`, Phase 12's `phase12_patient_engagement`, and Phase 14's `phase14_indexing` (Phase 13 added none, exactly as predicted) — see PROJECT_STATUS.md for verification detail. Phase 14 confirmed this file's own prediction from last phase almost exactly: schema-adjacent (indexing) rather than new domain tables, plus a DB-privilege-tightening review that found a real reason not to execute the change autonomously (see the Phase 14 section above). This is the last phase in spec.md's roadmap — no further phase-driven schema growth is expected, though real deployment needs (a genuinely separate runtime DB role, Global Search, master-data Import/Export, Lead CRM — all tracked in PROJECT_STATUS.md's Next Actions) may still add tables or indexes in the future.
+Phase 1 through Phase 14 (the full spec.md build plan) schemas implemented and migrated — 20 migrations total: Phase 1's `phase1_platform_foundation` plus two `number_sequence_null_branch_uniqueness` housekeeping migrations, Phase 2's `phase2_patient_provider_service_appointment`, `timestamptz_and_booking_exclusion`, `provider_user_link`, `appointment_reschedule_link`, Phase 3's `phase3_core_emr`, `clinical_org_scoping`, Phase 4's `phase4_revenue`, Phase 5's `phase5_inventory_procurement`, Phase 6's `phase6_finance`, Phase 7's `phase7_hr_assets` plus the same-session `payroll_run_branch_required` follow-up, Phase 8's `phase8_lis`, Phase 9's `phase9_pharmacy`, Phase 10's `phase10_ris`, Phase 11's `phase11_payors_insurance`, Phase 12's `phase12_patient_engagement`, and Phase 14's `phase14_indexing` (Phase 13 added none, exactly as predicted) — see PROJECT_STATUS.md for verification detail. Phase 14 confirmed this file's own prediction from last phase almost exactly: schema-adjacent (indexing) rather than new domain tables, plus a DB-privilege-tightening review that found a real reason not to execute the change autonomously (see the Phase 14 section above). This is the last phase in spec.md's roadmap.
+
+**P0 Remediation Pass (2026-08-27, following the Phase 14 audit)** added 3 more migrations — `20260826192144_p0_02_outbox_reliability`, `20260826192200_p0_02_outbox_reliability_data`, `20260826200219_p0_05_cascade_delete_protection` (23 total now) — plus the genuinely separate runtime DB role Phase 14 had documented but deliberately not executed.
+
+**P1 Remediation Pass, Batch 0 (2026-08-27)** completed the cutover: the running application now connects via `DATABASE_URL` as the restricted `avant_app_runtime` role, not the schema owner — see "Connection Roles" above for the full verification. No new migrations this batch (role/GRANT changes are cluster-level, not schema-level).
+
+**P1 Remediation Pass, Batch 3 (2026-08-27, POS/inventory/cost accounting)** added 1 more migration — `20260826234516_p1_batch3_charge_product_link` (24 total now) — linking `charge` to `product` so a POS retail sale can trigger real inventory consumption and COGS posting for the first time; see "P1 Remediation Schema Changes, Batch 3" above.
+
+**P1 Remediation Pass, Batch 4 (2026-08-27, pharmacy chain / supplier AP / over-receiving / asset acquisition)** added 1 more migration — `20260827064558_p1_batch4_asset_supplier_invoice_fields` (25 total now) — `supplier_invoice.tax_amount` and four nullable `asset` columns (`paid_via` + the depreciation-readiness fields); see "P1 Remediation Schema Changes, Batch 4" above.
+
+**P1 Remediation Pass, Batch 5 (2026-08-27, payroll replay verification / commission refund reversal)** added 2 more migrations — `20260827075348_p1_batch5_commission_refund_reversal` and `20260827080737_p1_batch5_commission_reversal_idempotency` (27 total then) — `commission_accrual.refund_id`, then a follow-up `reversal_of_id` + `@@unique([refundId, reversalOfId])` once a real integration test caught the first design under-reversing when one charge had multiple originating payments; see "P1 Remediation Schema Changes, Batch 5" above.
+
+**P1 Remediation Pass, Batch 6 (2026-08-27, lab order state integrity / critical results / clinical & encounter cancellation)** added 1 more migration — `20260827092019_p1_batch6_clinical_integrity` (28 total now) — `EncounterStatus`'s two new terminal values, `encounter`/`clinical_order` cancel reasons, `lab_test` critical thresholds, and `lab_order_test`'s amendment chain; see "P1 Remediation Schema Changes, Batch 6" above.
+
+**P1 Remediation Pass, Batch 7 (2026-08-27, appointment reschedule/status transitions / package session locking / refund numbering / sequence concurrency)** added 1 more migration — `20260827142820_p1_batch7_appointment_and_refund_integrity` (29 total then) — `refund.refund_number` plus its nullable-safe unique index; see "P1 Remediation Schema Changes, Batch 7" above.
+
+**P1 Remediation Pass, Batch 8 (2026-08-27, financial period control / transaction boundary review / idempotency review)** added 1 more migration — `20260827161220_p1_batch8_period_control_and_idempotency` (30 total now) — the new `accounting_period` and `idempotency_key` tables; see "P1 Remediation Schema Changes, Batch 8" above.
+
+**P1 Remediation Pass, Batch 9 (2026-08-27, adversarial test list / report and patient-statement reconciliation)** added no migrations (30 total, unchanged) — §34-§36 are entirely test coverage plus one new read-only application-layer function (`getPatientStatement`, `billing/statement.ts`) composed from existing `Invoice`/`Payment`/`PaymentAllocation`/`Refund` tables, no new columns or tables needed.
+
+**P1 Remediation Pass, Batch 10 (2026-08-28, final synthesis and sign-off — §38-§43) — the pass concludes.** Added no migrations (30 total, final). §38-§43 are verification, reporting, and a small amount of test-only work: a genuine, previously-uncovered gap in `consumeSession`'s already-shipped (Batch 8) idempotency-key mechanism was found and closed with a new test (`package-session-concurrency.test.ts`), not a schema or application-code change. Two real application-layer gaps (`createAdHocCharge`/`createSupplierInvoice` both lacking `IdempotencyKey` protection) were found while building `SYSTEM_INTEGRITY_MATRIX.md` and reported rather than fixed, per this batch's own "synthesis and sign-off only" authorized scope — see `PROJECT_STATUS.md`'s Next Actions items 34-35 and `P1_REMEDIATION_REPORT.md`. 30 migrations is the final count for this entire P1 pass; no further phase-driven schema growth is expected beyond this, though real deployment needs (Global Search, master-data Import/Export, Lead CRM — tracked in PROJECT_STATUS.md's Next Actions) may still add tables or indexes in the future.

@@ -5,8 +5,26 @@ import { auditFromSession } from "@/lib/platform/audit"
 import { nextNumber } from "@/lib/platform/sequences"
 import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/outbox"
 import "@/lib/platform/event-handlers"
+import { assertValidTransition } from "@/lib/platform/state-machine"
+import { getAuthorizedBranchScope, patientVisibilityWhere } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
-import type { PatientInput, AllergyInput, ConditionInput, MedicationHistoryInput } from "@/lib/domains/patients/schemas"
+import type { $Enums } from "@/generated/prisma/client"
+import type { PatientInput, AllergyInput, ConditionInput, MedicationHistoryInput, PatientStatusInput } from "@/lib/domains/patients/schemas"
+
+/**
+ * P1 §24: the explicit alternative to deleting a Patient (which P0 made
+ * Restrict) — ACTIVE/INACTIVE freely reversible either direction (a patient
+ * who stopped attending, then returns), DECEASED reachable from either but
+ * terminal through this function: undoing a deceased marking is not a
+ * routine status change and isn't given a path here (a genuine data-entry
+ * correction would need direct administrative/DB intervention, deliberately
+ * not a self-service action).
+ */
+const PATIENT_STATUS_TRANSITIONS: Readonly<Record<$Enums.PatientStatus, readonly $Enums.PatientStatus[]>> = {
+  active: ["inactive", "deceased"],
+  inactive: ["active", "deceased"],
+  deceased: [],
+}
 
 export type DuplicateCandidate = {
   id: string
@@ -128,24 +146,35 @@ export async function registerPatient(
   return patient
 }
 
+/** Thin wrapper kept local for call-site brevity — see branch-scope.ts's `patientVisibilityWhere` doc comment. */
+function patientBranchVisibility(session: SessionContext) {
+  return patientVisibilityWhere(getAuthorizedBranchScope(session))
+}
+
 export async function listPatients(session: SessionContext, params: { search?: string; page?: number } = {}) {
   assertCan(session, "patient.view")
   const page = Math.max(1, params.page ?? 1)
   const pageSize = 25
   const search = params.search?.trim()
+  const visibility = patientBranchVisibility(session)
 
   const where = {
-    organizationId: session.user.organizationId,
-    ...(search
-      ? {
-          OR: [
-            { firstName: { contains: search, mode: "insensitive" as const } },
-            { lastName: { contains: search, mode: "insensitive" as const } },
-            { mrn: { contains: search, mode: "insensitive" as const } },
-            { mobile: { contains: search } },
-          ],
-        }
-      : {}),
+    AND: [
+      { organizationId: session.user.organizationId },
+      ...(visibility ? [visibility] : []),
+      ...(search
+        ? [
+            {
+              OR: [
+                { firstName: { contains: search, mode: "insensitive" as const } },
+                { lastName: { contains: search, mode: "insensitive" as const } },
+                { mrn: { contains: search, mode: "insensitive" as const } },
+                { mobile: { contains: search } },
+              ],
+            },
+          ]
+        : []),
+    ],
   }
 
   const [patients, total] = await Promise.all([
@@ -158,8 +187,9 @@ export async function listPatients(session: SessionContext, params: { search?: s
 
 export async function getPatient(session: SessionContext, patientId: string) {
   assertCan(session, "patient.view")
+  const visibility = patientBranchVisibility(session)
   return db.patient.findFirstOrThrow({
-    where: { id: patientId, organizationId: session.user.organizationId },
+    where: { AND: [{ id: patientId, organizationId: session.user.organizationId }, ...(visibility ? [visibility] : [])] },
     include: {
       registrationBranch: true,
       preferredProvider: true,
@@ -172,9 +202,26 @@ export async function getPatient(session: SessionContext, patientId: string) {
 
 export async function updatePatient(session: SessionContext, patientId: string, input: Partial<PatientInput>) {
   assertCan(session, "patient.edit")
-  const before = await db.patient.findFirstOrThrow({ where: { id: patientId, organizationId: session.user.organizationId } })
+  const visibility = patientBranchVisibility(session)
+  const before = await db.patient.findFirstOrThrow({
+    where: { AND: [{ id: patientId, organizationId: session.user.organizationId }, ...(visibility ? [visibility] : [])] },
+  })
   const updated = await db.patient.update({ where: { id: patientId }, data: input })
   await auditFromSession(session, "update", "patient", patientId, { old: before, new: updated })
+  return updated
+}
+
+/** P1 §24: ACTIVE/INACTIVE/DECEASED — the record itself is never deleted (see PATIENT_STATUS_TRANSITIONS above for what's reachable from where). */
+export async function updatePatientStatus(session: SessionContext, patientId: string, input: PatientStatusInput) {
+  assertCan(session, "patient.edit")
+  const visibility = patientBranchVisibility(session)
+  const before = await db.patient.findFirstOrThrow({
+    where: { AND: [{ id: patientId, organizationId: session.user.organizationId }, ...(visibility ? [visibility] : [])] },
+  })
+  assertValidTransition(PATIENT_STATUS_TRANSITIONS, before.status, input.status, "a patient")
+
+  const updated = await db.patient.update({ where: { id: patientId }, data: { status: input.status } })
+  await auditFromSession(session, "update", "patient", patientId, { old: { status: before.status }, new: { status: input.status, reason: input.reason } })
   return updated
 }
 

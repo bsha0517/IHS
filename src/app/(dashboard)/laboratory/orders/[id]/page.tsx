@@ -160,9 +160,17 @@ export default async function LabOrderDetailPage({ params }: { params: Promise<{
                       )}
                       {t.status === "resulted" && canVerify && <VerifyButton labOrderTestId={t.id} clinicalOrderId={order.id} />}
                       {t.status === "verified" && (
-                        <span className="text-xs text-muted-foreground">
-                          {t.verifiedAt && formatDate(t.verifiedAt)}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-muted-foreground">{t.verifiedAt && formatDate(t.verifiedAt)}</span>
+                          <ResultEntryDialog
+                            labOrderTestId={t.id}
+                            clinicalOrderId={order.id}
+                            resultType={t.resultType}
+                            testName={t.labTest.name}
+                            unit={t.labTest.unit}
+                            mode="amend"
+                          />
+                        </div>
                       )}
                     </TableCell>
                   </TableRow>

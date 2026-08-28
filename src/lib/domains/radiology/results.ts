@@ -5,6 +5,7 @@ import { auditFromSession } from "@/lib/platform/audit"
 import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/outbox"
 import "@/lib/platform/event-handlers"
 import { writeClinicalAccessLog } from "@/lib/platform/access-log"
+import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { WriteReportInput } from "@/lib/domains/radiology/schemas"
 
@@ -67,8 +68,13 @@ export async function verifyImagingResult(session: SessionContext, imagingOrderI
 /** Patient 360's Imaging tab — only verified ("Final Result") studies, per spec.md §30's workflow ending in "Patient EMR". A "result view" (SECURITY.md §5) — logged to clinical_access_log, wired up in Phase 14. */
 export async function listPatientImagingResults(session: SessionContext, patientId: string) {
   assertCan(session, "patient.view")
+  const scope = getAuthorizedBranchScope(session)
   const results = await db.imagingOrder.findMany({
-    where: { organizationId: session.user.organizationId, status: "verified", clinicalOrder: { patientId } },
+    where: {
+      organizationId: session.user.organizationId,
+      status: "verified",
+      clinicalOrder: { patientId, branchId: narrowBranchFilter(scope) },
+    },
     include: { imagingService: true, clinicalOrder: true },
     orderBy: { verifiedAt: "desc" },
   })

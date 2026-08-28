@@ -10,9 +10,10 @@ import {
   addCondition,
   addMedicationHistory,
   listPatients,
+  updatePatientStatus,
   type DuplicateCandidate,
 } from "@/lib/domains/patients/service"
-import { patientSchema, allergySchema, conditionSchema, medicationHistorySchema } from "@/lib/domains/patients/schemas"
+import { patientSchema, allergySchema, conditionSchema, medicationHistorySchema, patientStatusSchema } from "@/lib/domains/patients/schemas"
 import { enablePortalAccess, resetPortalPassword, deactivatePortalAccess } from "@/lib/domains/portal/service"
 
 export type ActionState = { error?: string; success?: boolean }
@@ -104,6 +105,21 @@ export async function searchPatientsAction(query: string) {
     lastName: p.lastName,
     mobile: p.mobile,
   }))
+}
+
+export async function updatePatientStatusAction(patientId: string, status: string, reason: string): Promise<ActionState> {
+  const session = await requireSession()
+  const parsed = patientStatusSchema.safeParse({ status, reason })
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
+
+  try {
+    await updatePatientStatus(session, patientId, parsed.data)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to update patient status." }
+  }
+  revalidatePath(`/patients/${patientId}`)
+  revalidatePath("/patients")
+  return { success: true }
 }
 
 export async function addAllergyAction(_prev: ActionState, formData: FormData): Promise<ActionState> {

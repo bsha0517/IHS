@@ -4,7 +4,9 @@ import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { nextNumber } from "@/lib/platform/sequences"
 import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/outbox"
+import { assertValidTransition } from "@/lib/platform/state-machine"
 import "@/lib/platform/event-handlers"
+import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { $Enums } from "@/generated/prisma/client"
 import type { BookAppointmentInput, RescheduleAppointmentInput } from "@/lib/domains/appointments/schemas"
@@ -16,6 +18,33 @@ export class BookingConflictError extends Error {
     super(message)
     this.name = "BookingConflictError"
   }
+}
+
+/**
+ * P1 §27: single source of truth for every appointment status change, so
+ * "nonsensical" is defined once rather than re-decided per call site. The
+ * happy path (scheduled → confirmed → arrived → waiting → in_consultation →
+ * completed) plus the controlled branches P1.md names by example (Scheduled
+ * → Cancelled, Scheduled → No Show, Confirmed → Rescheduled) and the ones
+ * this codebase already exercised before this map existed (arrived/waiting
+ * → cancelled; the DB's own AppointmentStatus enum still has "checked_in" as
+ * a status value even though checkIn() below never leaves the appointment
+ * row sitting in it — see that function's own comment — so it's listed here
+ * too for completeness, not because any write ever targets it). completed,
+ * cancelled, rescheduled, and no_show are terminal: no further transition
+ * moves an appointment away from them through this guard.
+ */
+export const APPOINTMENT_TRANSITIONS: Readonly<Record<AppointmentStatus, readonly AppointmentStatus[]>> = {
+  scheduled: ["confirmed", "arrived", "waiting", "cancelled", "no_show", "rescheduled"],
+  confirmed: ["arrived", "waiting", "cancelled", "no_show", "rescheduled"],
+  arrived: ["waiting", "cancelled"],
+  checked_in: ["waiting", "cancelled"],
+  waiting: ["in_consultation", "cancelled"],
+  in_consultation: ["completed"],
+  completed: [],
+  cancelled: [],
+  rescheduled: [],
+  no_show: [],
 }
 
 export async function assertNoLeaveConflict(providerId: string, startTime: Date, endTime: Date) {
@@ -51,9 +80,17 @@ export async function bookAppointment(session: SessionContext, input: BookAppoin
 
   try {
     const appointment = await db.$transaction(async (tx) => {
+      // P1 §30: org-wide, not branch-scoped — Appointment.appointmentNumber's
+      // own unique constraint (`@@unique([organizationId, appointmentNumber])`)
+      // is org-wide, matching every other numbered entity (Invoice, Payment,
+      // Refund, Claim, PO, Asset, Employee, MRN, Encounter — none pass
+      // branchId to nextNumber). Passing branchId here used to give this one
+      // entity a branch-scoped counter feeding an org-wide-unique column — two
+      // branches of the same org would eventually both mint "APT-000047" and
+      // the second insert would fail the DB constraint. A concurrency test
+      // that raced a from-scratch sequence reproduced exactly this collision.
       const appointmentNumber = await nextNumber({
         organizationId: session.user.organizationId,
-        branchId: input.branchId,
         sequenceType: "APT",
         prefix: "APT",
       })
@@ -88,7 +125,12 @@ export async function bookAppointment(session: SessionContext, input: BookAppoin
       })
 
       return created
-    })
+      // Widened from Prisma's 5000ms default below — nextNumber() above
+      // opens its own nested transaction/connection (see sequences.ts's own
+      // comment), on top of the create + history-create + outbox write
+      // here; a real P2028 ("5000ms timeout, 6289ms passed") was observed
+      // directly from this exact transaction during this batch's own tests.
+    }, { timeout: 20_000, maxWait: 10_000 })
 
     await auditFromSession(session, "create", "appointment", appointment.id, {
       new: { appointmentNumber: appointment.appointmentNumber, startTime: appointment.startTime },
@@ -106,10 +148,11 @@ export async function listAppointments(
   params: { branchId?: string; providerId?: string; from: Date; to: Date; statuses?: AppointmentStatus[] }
 ) {
   assertCan(session, "appointment.view")
+  const scope = getAuthorizedBranchScope(session)
   return db.appointment.findMany({
     where: {
       organizationId: session.user.organizationId,
-      ...(params.branchId ? { branchId: params.branchId } : {}),
+      branchId: narrowBranchFilter(scope, params.branchId),
       ...(params.providerId ? { providerId: params.providerId } : {}),
       startTime: { gte: params.from, lt: params.to },
       ...(params.statuses ? { status: { in: params.statuses } } : {}),
@@ -121,8 +164,9 @@ export async function listAppointments(
 
 export async function listPatientAppointments(session: SessionContext, patientId: string) {
   assertCan(session, "appointment.view")
+  const scope = getAuthorizedBranchScope(session)
   return db.appointment.findMany({
-    where: { organizationId: session.user.organizationId, patientId },
+    where: { organizationId: session.user.organizationId, patientId, branchId: narrowBranchFilter(scope) },
     include: { provider: true, service: true, queueEntry: true, statusHistory: { orderBy: { changedAt: "asc" } } },
     orderBy: { startTime: "desc" },
   })
@@ -130,7 +174,7 @@ export async function listPatientAppointments(session: SessionContext, patientId
 
 export async function getAppointment(session: SessionContext, appointmentId: string) {
   assertCan(session, "appointment.view")
-  return db.appointment.findFirstOrThrow({
+  const appointment = await db.appointment.findFirstOrThrow({
     where: { id: appointmentId, organizationId: session.user.organizationId },
     include: {
       patient: true,
@@ -142,21 +186,21 @@ export async function getAppointment(session: SessionContext, appointmentId: str
       statusHistory: { orderBy: { changedAt: "asc" } },
     },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), appointment.branchId)
+  return appointment
 }
 
 async function transition(
   session: SessionContext,
   appointmentId: string,
-  allowedFrom: AppointmentStatus[],
   toStatus: AppointmentStatus,
   reason?: string
 ) {
   const appointment = await db.appointment.findFirstOrThrow({
     where: { id: appointmentId, organizationId: session.user.organizationId },
   })
-  if (!allowedFrom.includes(appointment.status)) {
-    throw new Error(`Cannot move an appointment from "${appointment.status}" to "${toStatus}".`)
-  }
+  assertBranchAccess(getAuthorizedBranchScope(session), appointment.branchId)
+  assertValidTransition(APPOINTMENT_TRANSITIONS, appointment.status, toStatus, "an appointment")
 
   await db.$transaction([
     db.appointment.update({ where: { id: appointmentId }, data: { status: toStatus } }),
@@ -170,12 +214,12 @@ async function transition(
 
 export async function confirmAppointment(session: SessionContext, appointmentId: string) {
   assertCan(session, "appointment.view")
-  return transition(session, appointmentId, ["scheduled"], "confirmed")
+  return transition(session, appointmentId, "confirmed")
 }
 
 export async function markArrived(session: SessionContext, appointmentId: string) {
   assertCan(session, "appointment.checkin")
-  return transition(session, appointmentId, ["scheduled", "confirmed"], "arrived")
+  return transition(session, appointmentId, "arrived")
 }
 
 /**
@@ -189,9 +233,8 @@ export async function checkIn(session: SessionContext, appointmentId: string) {
   const appointment = await db.appointment.findFirstOrThrow({
     where: { id: appointmentId, organizationId: session.user.organizationId },
   })
-  if (!["scheduled", "confirmed", "arrived"].includes(appointment.status)) {
-    throw new Error(`Cannot check in an appointment with status "${appointment.status}".`)
-  }
+  assertBranchAccess(getAuthorizedBranchScope(session), appointment.branchId)
+  assertValidTransition(APPOINTMENT_TRANSITIONS, appointment.status, "waiting", "an appointment")
 
   const now = new Date()
   const tokenNumber = await nextNumber({
@@ -234,7 +277,7 @@ export async function checkIn(session: SessionContext, appointmentId: string) {
 
 export async function callPatient(session: SessionContext, appointmentId: string) {
   assertCan(session, "appointment.checkin")
-  const result = await transition(session, appointmentId, ["waiting"], "in_consultation")
+  const result = await transition(session, appointmentId, "in_consultation")
   const now = new Date()
   await db.queueEntry.update({
     where: { appointmentId },
@@ -245,20 +288,14 @@ export async function callPatient(session: SessionContext, appointmentId: string
 
 export async function completeConsultation(session: SessionContext, appointmentId: string) {
   assertCan(session, "appointment.checkin")
-  const result = await transition(session, appointmentId, ["in_consultation"], "completed")
+  const result = await transition(session, appointmentId, "completed")
   await db.queueEntry.update({ where: { appointmentId }, data: { consultationEndAt: new Date() } })
   return result
 }
 
 export async function cancelAppointment(session: SessionContext, appointmentId: string, reason: string) {
   assertCan(session, "appointment.cancel")
-  const result = await transition(
-    session,
-    appointmentId,
-    ["scheduled", "confirmed", "arrived", "checked_in", "waiting"],
-    "cancelled",
-    reason
-  )
+  const result = await transition(session, appointmentId, "cancelled", reason)
   // Best-effort patient notification (spec.md §56's "Cancellation" template).
   // Written as a separate outbox event rather than inside transition()'s own
   // transaction — a notification failing to queue should never block the
@@ -275,7 +312,7 @@ export async function cancelAppointment(session: SessionContext, appointmentId: 
 
 export async function markNoShow(session: SessionContext, appointmentId: string) {
   assertCan(session, "appointment.cancel")
-  return transition(session, appointmentId, ["scheduled", "confirmed"], "no_show")
+  return transition(session, appointmentId, "no_show")
 }
 
 export async function rescheduleAppointment(
@@ -288,9 +325,8 @@ export async function rescheduleAppointment(
   const original = await db.appointment.findFirstOrThrow({
     where: { id: appointmentId, organizationId: session.user.organizationId },
   })
-  if (!["scheduled", "confirmed"].includes(original.status)) {
-    throw new Error(`Cannot reschedule an appointment with status "${original.status}".`)
-  }
+  assertBranchAccess(getAuthorizedBranchScope(session), original.branchId)
+  assertValidTransition(APPOINTMENT_TRANSITIONS, original.status, "rescheduled", "an appointment")
 
   const providerId = input.providerId ?? original.providerId
   const endTime = new Date(input.startTime.getTime() + input.durationMinutes * 60_000)
@@ -298,9 +334,9 @@ export async function rescheduleAppointment(
 
   try {
     const rebooked = await db.$transaction(async (tx) => {
+      // P1 §30: org-wide — see bookAppointment's identical comment above.
       const appointmentNumber = await nextNumber({
         organizationId: session.user.organizationId,
-        branchId: original.branchId,
         sequenceType: "APT",
         prefix: "APT",
       })
@@ -334,16 +370,25 @@ export async function rescheduleAppointment(
           fromStatus: original.status,
           toStatus: "rescheduled",
           changedBy: session.user.id,
-          reason: `Rebooked as ${created.appointmentNumber}`,
+          // P1 §26: the actual reason the staff member gave, not just the
+          // mechanical "what happened" note — original.startTime/original.id
+          // stay on the original row untouched (nothing here overwrites the
+          // original appointment's own date/time), and rescheduledFromId on
+          // the new row is what lets a reader walk from either end of the
+          // chain.
+          reason: `${input.reason} (rebooked as ${created.appointmentNumber})`,
         },
       })
 
       return created
-    })
+      // Widened from Prisma's 5000ms default — same reasoning as
+      // bookAppointment's identical fix above (nested nextNumber() call plus
+      // a create, two history-creates, and an update, all in one transaction).
+    }, { timeout: 20_000, maxWait: 10_000 })
 
     await auditFromSession(session, "reschedule", "appointment", original.id, {
       old: { startTime: original.startTime },
-      new: { rebookedAs: rebooked.appointmentNumber, startTime: rebooked.startTime },
+      new: { rebookedAs: rebooked.appointmentNumber, startTime: rebooked.startTime, reason: input.reason },
     })
 
     return rebooked

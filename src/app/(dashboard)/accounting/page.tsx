@@ -4,6 +4,7 @@ import { can } from "@/lib/platform/permissions-core"
 import { listAccounts } from "@/lib/domains/accounting/chart-of-accounts"
 import { listMappings } from "@/lib/domains/accounting/account-mappings"
 import { listJournals, trialBalance, incomeStatement, balanceSheet, cashFlow } from "@/lib/domains/accounting/reports"
+import { listAccountingPeriods } from "@/lib/domains/accounting/periods"
 import { listAccessibleBranches } from "@/lib/domains/billing/cashier"
 import { serializeDecimals } from "@/lib/utils/serialize"
 import { formatDate, formatDateTime } from "@/lib/utils/dates"
@@ -15,6 +16,8 @@ import { AccountDialog } from "@/app/(dashboard)/accounting/account-dialog"
 import { MappingDialog } from "@/app/(dashboard)/accounting/mapping-dialog"
 import { ManualJournalDialog } from "@/app/(dashboard)/accounting/manual-journal-dialog"
 import { JournalDetailDialog } from "@/app/(dashboard)/accounting/journal-detail-dialog"
+import { ReverseJournalDialog } from "@/app/(dashboard)/accounting/reverse-journal-dialog"
+import { PeriodsPanel } from "@/app/(dashboard)/accounting/periods-panel"
 
 export default async function AccountingPage() {
   const session = await getCurrentSession()
@@ -23,8 +26,9 @@ export default async function AccountingPage() {
   const canManageAccounts = can(session, "chart_of_account.manage")
   const canManageMappings = can(session, "account_mapping.manage")
   const canPost = can(session, "accounting.post")
+  const canManagePeriods = can(session, "accounting.period.manage")
 
-  const [accounts, mappings, journals, trial, income, sheet, flow, branches] = await Promise.all([
+  const [accounts, mappings, journals, trial, income, sheet, flow, branches, periods] = await Promise.all([
     listAccounts(session),
     listMappings(session),
     listJournals(session),
@@ -33,6 +37,7 @@ export default async function AccountingPage() {
     balanceSheet(session),
     cashFlow(session),
     listAccessibleBranches(session),
+    canManagePeriods ? listAccountingPeriods(session) : Promise.resolve([]),
   ])
 
   const accountOptions = accounts.map((a) => ({ id: a.id, code: a.code, name: a.name }))
@@ -54,6 +59,7 @@ export default async function AccountingPage() {
           <TabsTrigger value="income-statement">Income Statement</TabsTrigger>
           <TabsTrigger value="balance-sheet">Balance Sheet</TabsTrigger>
           <TabsTrigger value="cash-flow">Cash Flow</TabsTrigger>
+          {canManagePeriods && <TabsTrigger value="periods">Periods</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="accounts" className="grid gap-4">
@@ -175,12 +181,16 @@ export default async function AccountingPage() {
                       </TableCell>
                       <TableCell>{j.description}</TableCell>
                       <TableCell>
-                        {/* serializeDecimals converts debit/credit to plain numbers at runtime; JournalLine's prop type reflects that post-conversion shape. */}
-                        <JournalDetailDialog
-                          journalNumber={j.journalNumber}
-                          description={j.description}
-                          lines={serializeDecimals(j.lines) as unknown as { id: string; account: { code: string; name: string }; debit: number; credit: number; description: string | null }[]}
-                        />
+                        <div className="flex items-center gap-1">
+                          {/* serializeDecimals converts debit/credit to plain numbers at runtime; JournalLine's prop type reflects that post-conversion shape. */}
+                          <JournalDetailDialog
+                            journalNumber={j.journalNumber}
+                            description={j.description}
+                            lines={serializeDecimals(j.lines) as unknown as { id: string; account: { code: string; name: string }; debit: number; credit: number; description: string | null }[]}
+                          />
+                          {/* P1 §24: only a manual journal reverses directly here — a domain-tied one (invoice, refund, ...) goes through its own domain's void/refund workflow instead. */}
+                          {canPost && j.referenceType === "manual" && <ReverseJournalDialog journalId={j.id} journalNumber={j.journalNumber} />}
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -388,6 +398,12 @@ export default async function AccountingPage() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {canManagePeriods && (
+          <TabsContent value="periods" className="grid gap-4">
+            <PeriodsPanel periods={periods} />
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   )

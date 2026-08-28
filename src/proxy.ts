@@ -25,6 +25,11 @@ export async function proxy(request: NextRequest) {
   if (
     PUBLIC_PATHS.some((path) => pathname.startsWith(path)) ||
     pathname.startsWith("/api/auth") ||
+    // Cron-triggered — no session cookie exists for a scheduled request.
+    // This route's only authorization is its own CRON_SECRET bearer-token
+    // check (see src/app/api/cron/outbox-sweep/route.ts) — every other
+    // route under /api/* still goes through the staff-session check below.
+    pathname.startsWith("/api/cron") ||
     pathname.startsWith("/_next")
   ) {
     return NextResponse.next()

@@ -1,6 +1,7 @@
 import "server-only"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
+import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 
 /**
@@ -19,11 +20,13 @@ import type { SessionContext } from "@/lib/auth/session"
 
 export async function listUpcomingAppointmentsForReminder(session: SessionContext) {
   assertCan(session, "communication.send")
+  const scope = getAuthorizedBranchScope(session)
   const now = new Date()
   const in48h = new Date(now.getTime() + 48 * 60 * 60 * 1000)
   return db.appointment.findMany({
     where: {
       organizationId: session.user.organizationId,
+      branchId: narrowBranchFilter(scope),
       startTime: { gte: now, lte: in48h },
       status: { in: ["scheduled", "confirmed"] },
     },
@@ -34,8 +37,9 @@ export async function listUpcomingAppointmentsForReminder(session: SessionContex
 
 export async function listOutstandingInvoicesForReminder(session: SessionContext) {
   assertCan(session, "communication.send")
+  const scope = getAuthorizedBranchScope(session)
   const invoices = await db.invoice.findMany({
-    where: { organizationId: session.user.organizationId, status: { in: ["issued", "partially_paid"] } },
+    where: { organizationId: session.user.organizationId, branchId: narrowBranchFilter(scope), status: { in: ["issued", "partially_paid"] } },
     include: { patient: true },
     orderBy: { issuedAt: "asc" },
     take: 100,

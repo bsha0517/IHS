@@ -16,6 +16,7 @@ import {
   markNoShowAction,
 } from "@/app/(dashboard)/appointments/actions"
 import { startEncounterAction, type ActionState } from "@/app/(dashboard)/encounters/actions"
+import { RescheduleDialog } from "@/app/(dashboard)/appointments/reschedule-dialog"
 import type { $Enums } from "@/generated/prisma/client"
 
 type Status = $Enums.AppointmentStatus
@@ -57,23 +58,27 @@ export function AppointmentStatusActions({
   status,
   canCheckin,
   canCancel,
+  canReschedule = false,
   canStartEncounter,
   encounterId,
   branchId,
   departmentId = null,
   patientId,
   providerId,
+  providers = [],
 }: {
   appointmentId: string
   status: Status
   canCheckin: boolean
   canCancel: boolean
+  canReschedule?: boolean
   canStartEncounter?: boolean
   encounterId?: string | null
   branchId?: string
   departmentId?: string | null
   patientId?: string
   providerId?: string
+  providers?: { id: string; firstName: string; lastName: string }[]
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -140,6 +145,11 @@ export function AppointmentStatusActions({
       <Button key="complete" size="sm" variant="outline" disabled={pending} onClick={() => run(() => completeConsultationAction(appointmentId))}>
         Complete
       </Button>
+    )
+  }
+  if (canReschedule && (status === "scheduled" || status === "confirmed")) {
+    buttons.push(
+      <RescheduleDialog key="reschedule" appointmentId={appointmentId} providers={providers} defaultProviderId={providerId} />
     )
   }
   if (canCancel && (status === "scheduled" || status === "confirmed")) {

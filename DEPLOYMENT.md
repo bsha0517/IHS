@@ -26,25 +26,40 @@ If a real deployment later needs richer charts, native Excel export, or programm
 
 **No SMS/WhatsApp/Email provider is connected** — `src/lib/domains/communications/adapters/*` are real, swappable adapter implementations, but only the honest `Null*Adapter`s exist (Phase 12). Connecting a real provider (Twilio, WhatsApp Business API, SES/SendGrid, ...) means implementing a new adapter behind the existing `CommunicationAdapter` interface and swapping it in `resolveAdapter()` — no environment variable currently controls this because there is nothing to configure yet.
 
-## Environment Variables (as actually used — corrected in Phase 14)
+## Environment Variables (as actually used — corrected in Phase 14, DB connection split added in P1 §1)
 
 ```
-DATABASE_URL=      # Postgres connection string, required. This project connects through
-                    # Supabase's Supavisor pooler (aws-*.pooler.supabase.com:5432).
-NODE_ENV=           # development | production, standard Next.js — controls cookie
-                    # `secure` flag (src/lib/auth/session.ts, portal-session.ts) among
-                    # Next's own build-mode behavior.
+DATABASE_URL=        # Postgres connection string, required. The RUNTIME connection —
+                      # used by the running application (src/lib/db.ts) for every
+                      # request. Must point at the restricted `avant_app_runtime` role,
+                      # never the schema owner — see "Database Privileges" below.
+                      # This project connects through Supabase's Supavisor pooler
+                      # (aws-*.pooler.supabase.com:5432).
+DIRECT_DATABASE_URL=  # Postgres connection string, required for migrations. The
+                      # MIGRATION connection — used only by the Prisma CLI
+                      # (migrate/generate/db seed, see prisma.config.ts). Must point
+                      # at the schema owner role (has DDL rights the runtime role
+                      # intentionally lacks). Never used by the running application.
+NODE_ENV=             # development | production, standard Next.js — controls cookie
+                      # `secure` flag (src/lib/auth/session.ts, portal-session.ts) among
+                      # Next's own build-mode behavior.
+CRON_SECRET=          # Optional. Bearer token /api/cron/outbox-sweep requires (P1 §4)
+                      # — see "Outbox Sweep Scheduling" below. Unset in local dev; the
+                      # route just refuses every request rather than running open.
+OUTBOX_PROCESSING_TIMEOUT_MS=  # Optional, default 300000 (5 minutes). How long an
+                      # outbox event may sit in "processing" before P1 §3's recovery
+                      # presumes it crashed — see src/lib/platform/outbox.ts.
 ```
 
-That's the complete list. `SESSION_SECRET` was named in Phase 0's speculative env var list but is never read anywhere — session/reset tokens are 256-bit `crypto.randomBytes` values (`src/lib/auth/tokens.ts`), hashed with SHA-256 before storage; the token's own randomness is what makes it unguessable, not an HMAC secret, so there was never a code path that needed one. `STORAGE_DRIVER`/`S3_*` were likewise speculative and are unused for the reason above.
+`SESSION_SECRET` was named in Phase 0's speculative env var list but is never read anywhere — session/reset tokens are 256-bit `crypto.randomBytes` values (`src/lib/auth/tokens.ts`), hashed with SHA-256 before storage; the token's own randomness is what makes it unguessable, not an HMAC secret, so there was never a code path that needed one. `STORAGE_DRIVER`/`S3_*` were likewise speculative and are unused for the reason above.
 
-Only `DATABASE_URL` and `NODE_ENV` are validated present — `DATABASE_URL` fails Prisma Client construction loudly at import time if missing; there is currently no separate explicit "fail loudly at process boot" check beyond that, since only two variables exist and one (`NODE_ENV`) always has a Next.js-provided default.
+`DATABASE_URL` and `DIRECT_DATABASE_URL` both fail loudly at import/CLI-invocation time if missing — the former via Prisma Client construction in `src/lib/db.ts`, the latter via `prisma.config.ts`'s own datasource resolution. There is currently no separate explicit "fail loudly at process boot" check beyond that.
 
 ## Migrations
 
 `prisma migrate deploy` as an explicit, separate deploy step — never auto-applied on server boot, consistent throughout all 14 phases.
 
-**A real, binding workflow constraint discovered in Phase 3 and re-confirmed through Phase 10, not the originally-planned one**: `prisma migrate dev` does not work cleanly against this Supabase-hosted database — its shadow-database drift detection flags Supabase's own pre-installed extensions (`pgcrypto`, `pg_stat_statements`, etc.) as drift, and `migrate dev --create-only` has been observed to hang indefinitely attempting shadow-database creation. Every migration in this project's history (20 to date) was instead generated via:
+**A real, binding workflow constraint discovered in Phase 3 and re-confirmed through Phase 10, not the originally-planned one**: `prisma migrate dev` does not work cleanly against this Supabase-hosted database — its shadow-database drift detection flags Supabase's own pre-installed extensions (`pgcrypto`, `pg_stat_statements`, etc.) as drift, and `migrate dev --create-only` has been observed to hang indefinitely attempting shadow-database creation. Every migration in this project's history (30 total — the final count, as of the P1 remediation pass's conclusion, Batch 10) was instead generated via:
 
 ```bash
 prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --script
@@ -52,18 +67,37 @@ prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --
 
 with the "Loaded Prisma config..." noise line stripped, the SQL reviewed by hand, placed into a manually-created `prisma/migrations/<timestamp>_<name>/migration.sql`, and applied with `prisma migrate deploy`. A production deployment against a different (non-Supabase-pooled) Postgres instance may not hit this constraint, but this codebase's own migration history was built entirely through the manual path — reproduce a fresh environment the same way, not via `migrate dev`.
 
-## Database Privileges (Phase 14 hardening — a real finding, not a completed action)
+## Database Privileges (P0-06, closed for real in P1 §1 — 2026-08-27)
 
-SECURITY.md originally pre-committed that "Phase 14 hardening removes UPDATE/DELETE grants for the app role" on `audit_log`/`clinical_access_log`. Reviewing this in Phase 14 surfaced a real gap in that plan, not an implementation of it: **this deployment has no separate, lower-privileged "app role" to revoke anything from.** `DATABASE_URL` connects as `postgres.<project-ref>` — a Supabase project's owner-equivalent role, the same role every migration in this project's history has run DDL as. Revoking UPDATE/DELETE on any table from that role would break migrations and every other write in the application, not just harden the two audit tables.
+Phase 14's hardening pass found a real gap: `SECURITY.md` had pre-committed that hardening would remove UPDATE/DELETE grants for "the app role" on `audit_log`/`clinical_access_log`, but this deployment had no separate, lower-privileged role to revoke anything from — `DATABASE_URL` connected as `postgres.<project-ref>`, the schema owner, the same role migrations ran DDL as. Revoking UPDATE/DELETE on any table from the owner role would be a silent no-op in PostgreSQL (an owner's privileges can't be revoked from itself), not a real restriction. The P0 remediation pass created the correct fix; the P1 pass executed the cutover:
 
-The correct fix — **not executed this phase, since it's a live-credential/infrastructure change that needs the user's explicit go-ahead, not something to do silently mid-hardening-pass**:
+1. **Create the restricted role** (one-time, per environment): run `prisma/db-setup/p0-06-create-runtime-role.sql` connected as the current owner role. Replace `__PASSWORD__` with a freshly generated secret (`node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`) — never reuse a password across environments. This creates `avant_app_runtime` with `SELECT, INSERT, UPDATE, DELETE` on every table, then explicitly `REVOKE UPDATE, DELETE ON audit_log, clinical_access_log` — full CRUD everywhere, insert-only on exactly those two tables.
+2. **Split the connection strings**: set `DATABASE_URL` to the new `avant_app_runtime` role's connection string (the running application) and `DIRECT_DATABASE_URL` to the existing owner role's connection string (Prisma CLI/migrations only) — see Environment Variables above and `prisma.config.ts`.
+3. **Verify before trusting it**: the full test suite (84 tests, including `test/integration/audit-log-immutability.test.ts`'s live proof of INSERT/SELECT succeeding and UPDATE/DELETE failing against `audit_log` through the actual runtime connection) and a live browser session (login, dashboard, completing an encounter) were both run against the new `DATABASE_URL` with no regressions, and `prisma migrate status`/`prisma migrate deploy` were confirmed working against `DIRECT_DATABASE_URL`.
 
-1. Create a second, lower-privileged Postgres role (e.g. `app_runtime`) via `CREATE ROLE app_runtime LOGIN PASSWORD '...'`.
-2. `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_runtime`, then explicitly `REVOKE UPDATE, DELETE ON audit_log, clinical_access_log FROM app_runtime` — insert-only on exactly those two tables, full CRUD everywhere else.
-3. Keep migrations running as the current `postgres.*` owner role (unaffected); switch only the running application's `DATABASE_URL` to the new `app_runtime` role's connection string.
-4. Verify the app still functions end-to-end against the new role before considering this closed (a wrong grant would surface as a runtime permission error on some write path, not a build-time failure).
+**This is now a completed cutover, not a documented plan** — every environment deploying this application (including production, when provisioned) must follow steps 1-2 above; a fresh environment that only sets `DATABASE_URL` to an owner-role connection string is running with the pre-P1 gap re-opened. If new tables are added in a future phase, run `prisma/db-setup/p0-06-regrant-new-tables.sql` (idempotent) so the restricted role can access them — PostgreSQL does not retroactively grant privileges on tables created after the script last ran.
 
-Tracked as a Next Action in PROJECT_STATUS.md — deliberately not executed autonomously.
+**A real regression, not a hypothetical one — P1 Batch 8, 2026-08-27**: that migration's two new tables (`accounting_period`, `idempotency_key`) genuinely failed with `permission denied` against the running application's `avant_app_runtime` connection until the grant was re-applied. The fix was applied as a bare copy of `p0-06-create-runtime-role.sql`'s `GRANT ... ALL TABLES` line only — which re-grants UPDATE/DELETE on *every* table, including `audit_log`/`clinical_access_log`, silently undoing the REVOKE that script applies right after that same GRANT. This genuinely reopened the audit-log immutability fix (§5/§6, P0-06) for a real window, not just in theory — `test/integration/audit-log-immutability.test.ts` failed in that same batch's own subsequent full-suite run (`UPDATE`/`DELETE` against `audit_log` succeeding where they must reject), which is what caught it. Fixed by re-running the REVOKE, verified by that test file passing again plus a direct standalone check against both tables. **`p0-06-regrant-new-tables.sql` now exists specifically so this can't happen again** — it bundles the GRANT and the REVOKE in one script; never copy just the GRANT lines out of the main script by hand.
+
+## Outbox Sweep Scheduling (P1 §3/§4, 2026-08-27)
+
+Every write that produces a domain event calls `dispatchPendingOutboxEvents(organizationId)` inline, immediately after its own transaction commits (ARCHITECTURE.md §15) — this is the primary, low-latency delivery path and needs no scheduling. But it only ever looks at *that write's own organization*, so nothing re-checks a `failed` event whose `nextRetryAt` has since arrived, or recovers an event stuck in `processing` because the process that claimed it died mid-handler (a killed serverless invocation, an OOM, a deploy that terminated an in-flight request) — unless something else calls `processPendingOutboxEvents()` (`src/lib/platform/outbox.ts`), the organization-agnostic sweep. **A production deployment must schedule this to run periodically** — without it, a crash-stuck event or a `failed` event whose retry window has opened just sits there until an admin happens to click "Sweep now" on `/admin/system-events`.
+
+**This project ships a working Vercel Cron configuration** (`vercel.json`) hitting `GET /api/cron/outbox-sweep` every 5 minutes:
+
+```json
+{ "crons": [{ "path": "/api/cron/outbox-sweep", "schedule": "*/5 * * * *" }] }
+```
+
+Setup:
+
+1. Set `CRON_SECRET` in the deployment's environment variables (`node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`) — Vercel automatically attaches it as `Authorization: Bearer <CRON_SECRET>` on every cron-triggered request to this project, which is what the route checks against (`src/app/api/cron/outbox-sweep/route.ts`). Without it set, the route returns `503` rather than running unauthenticated — there is no fallback "open" mode.
+2. Vercel Cron Jobs are available on every plan, but the **Hobby tier is limited to once-per-day cron invocations** — the `*/5 * * * *` schedule in `vercel.json` requires at least the Pro tier to actually run every 5 minutes; on Hobby it will be silently coerced to Vercel's once-daily allowance. Confirm the project's plan before relying on 5-minute recovery latency in production.
+3. **Why 5 minutes**: matches `OUTBOX_PROCESSING_TIMEOUT_MS`'s own 5-minute default (see that constant's doc comment in `outbox.ts`) — a stuck event becomes eligible for recovery and gets swept up on roughly the same cadence, without the sweep running so often it's pointless overhead for a bounded, idempotent batch job.
+
+**Not on Vercel, or don't want to use Vercel Cron?** `processPendingOutboxEvents()` is a plain, dependency-free async function — call it from any scheduler that can run a Node process or hit an HTTP endpoint on an interval (a system cron entry running a small script that imports it directly, a different platform's scheduled-jobs feature, a self-hosted task runner). No Kafka/RabbitMQ/dedicated worker process is needed or was added — this stays within the existing modular-monolith architecture (ARCHITECTURE.md §1), the same "no unnecessary infrastructure" discipline already applied to the outbox's original design (§15) and the communications engine (§13).
+
+**Manual/admin fallback**: `/admin/system-events` has a "Sweep now" button (gated on `system_events.retry`, same permission as retrying a single event) that calls the identical `processPendingOutboxEvents()` function synchronously — useful for an admin who doesn't want to wait for the next scheduled run, and a real (not merely theoretical) third way to trigger the sweep, alongside cron and any other scheduled job.
 
 ## Backup Strategy
 
@@ -80,16 +114,16 @@ This project runs on Supabase-hosted Postgres, which provides the actual backup 
 Concrete, project-specific — not generic Next.js deployment advice:
 
 1. Provision a production Postgres database (or a separate production Supabase project — do not deploy against the same database this build's development/testing has been running against).
-2. Set `DATABASE_URL` and `NODE_ENV=production` in the hosting platform's environment configuration.
-3. Run `prisma migrate deploy` against the production database as an explicit, separate step — before or during deploy, never automatically on server boot (see Migrations above).
-4. Run `npm run db:seed` once, against the fresh production database, to create the permission catalog, default roles, and the initial Super Admin account.
-5. **Change the seeded Super Admin password immediately** (`admin@avant.local` / the `prisma/seed.ts`-hardcoded dev password) — this has been a carried-over Next Action since Phase 1 and must happen before any non-local use. There is no forced-password-change-on-first-login flow; this is a manual step.
-6. `npm run build` — confirms the production bundle compiles; the same command CI/this build's own verification has run at the end of every phase.
-7. Start the app (`npm run start`, or the hosting platform's equivalent).
-8. Verify: log in as Super Admin, confirm `/dashboard` renders real data, confirm a representative Server Action (e.g. registering a patient) and the new `/api/reports/export` Route Handler both work against the production database.
-9. Apply the database privilege hardening described above (Database Privileges) before considering the deployment "hardened" per this phase's own name — not done automatically as part of this checklist, tracked separately.
+2. Run `prisma/db-setup/p0-06-create-runtime-role.sql` against the new database (connected as its owner role) to create `avant_app_runtime` with a freshly generated password — see Database Privileges below. Do this **before** step 3, since step 3 needs both connection strings.
+3. Set `DIRECT_DATABASE_URL` (the owner role, for migrations) and `DATABASE_URL` (the new `avant_app_runtime` role, for the running application) and `NODE_ENV=production` in the hosting platform's environment configuration — never set `DATABASE_URL` to an owner-role connection string.
+4. Run `prisma migrate deploy` against the production database as an explicit, separate step — before or during deploy, never automatically on server boot (see Migrations above). This uses `DIRECT_DATABASE_URL`.
+5. Run `npm run db:seed` once, against the fresh production database, to create the permission catalog, default roles, and the initial Super Admin account. This runs through `DATABASE_URL` (the restricted role) — fine, since seeding is DML (creates/upserts rows), not DDL.
+6. **Change the seeded Super Admin password immediately** (`admin@avant.local` / the `prisma/seed.ts`-hardcoded dev password) — this has been a carried-over Next Action since Phase 1 and must happen before any non-local use. There is no forced-password-change-on-first-login flow; this is a manual step.
+7. `npm run build` — confirms the production bundle compiles; the same command CI/this build's own verification has run at the end of every phase.
+8. Start the app (`npm run start`, or the hosting platform's equivalent).
+9. Verify: log in as Super Admin, confirm `/dashboard` renders real data, confirm a representative Server Action (e.g. registering a patient) and the new `/api/reports/export` Route Handler both work against the production database — this exercises `DATABASE_URL`/the restricted role end-to-end, per Database Privileges below.
 10. Decide on and configure real SMS/WhatsApp/Email provider credentials only once a specific provider is chosen — see Environments above; nothing reads a provider credential yet, so there's nothing to set until an adapter is actually implemented.
 
 ## Status
 
-Not yet deployed to production. Every environment this build has run in in has been local/CI-style development against a Supabase-hosted Postgres database, verified via `npm run typecheck`, `npm run lint`, `npm run build`, and (as of Phase 14) `npm run test`, plus live browser verification each phase. This document was fully corrected against actual, built reality in Phase 14 — see the Stack section above for what changed from Phase 0's original plan.
+Every environment this build has run in has been local/CI-style development against a Supabase-hosted Postgres database, verified via `npm run typecheck`, `npm run lint`, `npm run build`, and `npm run test`, plus live browser verification each phase. This document was fully corrected against actual, built reality in Phase 14 — see the Stack section above for what changed from Phase 0's original plan. **The P1 remediation pass (P1 §1, 2026-08-27) cut this project's own local/dev database connection over to the two-role split described in Database Privileges above** — the current `.env` in this environment already reflects it; a fresh environment or a not-yet-provisioned production database must follow the Deployment Checklist's steps 2-3 to reach the same state. **The P1 remediation pass concluded 2026-08-28** (Batch 10, final synthesis and sign-off) — nothing in this document changed as a result of that final batch beyond this note and the migration count above; see [P1_REMEDIATION_REPORT.md](P1_REMEDIATION_REPORT.md) for the full record and this document's own Deployment Checklist/Database Privileges/Outbox Sweep Scheduling sections for every manual step a real deployment still needs (none newly introduced by P1; all were already documented before this pass, most already exercised by it).

@@ -18,6 +18,10 @@ export const assetSchema = z.object({
   supplierId: z.preprocess(emptyToNull, z.uuid().nullable().optional()),
   purchaseDate: z.preprocess(emptyToNull, z.coerce.date().nullable().optional()),
   cost: z.preprocess(emptyToNull, z.coerce.number().min(0).max(9999999).nullable().optional()),
+  // P1 §17: how the acquisition was paid — set, posts Dr Fixed Asset / Cr
+  // this tender's account; left null, Dr Fixed Asset / Cr Accounts Payable
+  // (acquired on credit). See postAssetAcquired (posting-service.ts).
+  paidVia: z.preprocess(emptyToNull, z.enum(["cash", "card", "bank", "online", "insurance", "credit", "other"]).nullable().optional()),
   warrantyExpiryDate: z.preprocess(emptyToNull, z.coerce.date().nullable().optional()),
 })
 export type AssetInput = z.infer<typeof assetSchema>

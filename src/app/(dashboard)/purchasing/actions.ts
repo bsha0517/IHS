@@ -106,11 +106,17 @@ export async function createGoodsReceiptAction(_prev: ActionState, formData: For
     purchaseOrderId,
     notes: formData.get("notes"),
     lines: rawLines,
+    allowOverReceipt: formData.get("allowOverReceipt") === "on" || formData.get("allowOverReceipt") === "true",
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
+  // P1 §33: the dialog generates this once per open and resubmits it
+  // unchanged on any retry — see receive-dialog.tsx — so a double-click or
+  // network retry replays the original receipt instead of creating a second one.
+  const idempotencyKey = String(formData.get("idempotencyKey") ?? "") || undefined
+
   try {
-    await createGoodsReceipt(session, parsed.data)
+    await createGoodsReceipt(session, { ...parsed.data, idempotencyKey })
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to record goods receipt." }
   }
@@ -128,6 +134,7 @@ export async function createSupplierInvoiceAction(_prev: ActionState, formData: 
     purchaseOrderId,
     invoiceNumber: formData.get("invoiceNumber"),
     amount: formData.get("amount"),
+    taxAmount: formData.get("taxAmount"),
     dueDate: formData.get("dueDate"),
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }

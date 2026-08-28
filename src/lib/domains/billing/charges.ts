@@ -4,6 +4,9 @@ import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { consumeStock } from "@/lib/domains/inventory/stock"
+import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
+import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/outbox"
+import "@/lib/platform/event-handlers"
 import type { Prisma } from "@/generated/prisma/client"
 import type { SessionContext } from "@/lib/auth/session"
 import type { AdHocChargeInput } from "@/lib/domains/billing/schemas"
@@ -35,6 +38,7 @@ async function insertCharge(
     patientId: string
     encounterId?: string | null
     serviceId?: string | null
+    productId?: string | null
     providerId?: string | null
     sourceType: string
     sourceReferenceId?: string | null
@@ -53,6 +57,7 @@ async function insertCharge(
       patientId: input.patientId,
       encounterId: input.encounterId ?? null,
       serviceId: input.serviceId ?? null,
+      productId: input.productId ?? null,
       providerId: input.providerId ?? null,
       sourceType: input.sourceType as never,
       sourceReferenceId: input.sourceReferenceId ?? null,
@@ -79,6 +84,41 @@ async function insertCharge(
     }
   }
 
+  // P1 §9/§10/§11: a direct retail product sale (sourceType "product" with
+  // a real productId — see the schema's own doc comment on Charge.productId
+  // for why presence, not sourceType, is the trigger) consumes real stock
+  // via the same FEFO-safe, expired-batch-excluding consumeStock() every
+  // other inventory movement in this system goes through — never a direct
+  // decrement. Insufficient stock throws (allocateFefo), which aborts this
+  // entire transaction, so a charge (and therefore any invoice built from
+  // it) can never exist without the inventory movement that should
+  // accompany it — the same guarantee already held for service-triggered
+  // consumption above, extended to the one path that previously had none
+  // at all. The resulting cost feeds a `ProductSold` event, posted
+  // asynchronously (postProductSaleCogs, accounting/posting-service.ts) —
+  // Dr COGS / Cr Inventory Asset — the moment stock actually left the
+  // shelf, not deferred to whenever the charge is later invoiced.
+  if (input.productId) {
+    const { totalCost } = await consumeStock(tx, {
+      organizationId: input.organizationId,
+      branchId: input.branchId,
+      productId: input.productId,
+      quantity: input.quantity,
+      referenceType: "charge",
+      referenceId: charge.id,
+      performedBy: input.createdBy,
+      transactionType: "sale",
+    })
+
+    if (totalCost.greaterThan(0)) {
+      await writeOutboxEvent(tx, {
+        organizationId: input.organizationId,
+        eventType: "ProductSold",
+        payload: { branchId: input.branchId, chargeId: charge.id, cost: Number(totalCost) },
+      })
+    }
+  }
+
   return charge
 }
 
@@ -94,6 +134,13 @@ export async function createAdHocCharge(session: SessionContext, input: AdHocCha
     if (!unitPrice) unitPrice = Number(service.price)
     if (!description) description = service.name
   }
+  if (input.productId) {
+    const product = await db.product.findFirstOrThrow({
+      where: { id: input.productId, organizationId: session.user.organizationId },
+    })
+    if (!unitPrice) unitPrice = Number(product.sellingPrice ?? product.purchaseCost)
+    if (!description) description = product.name
+  }
 
   const charge = await db.$transaction((tx) =>
     insertCharge(tx, {
@@ -102,18 +149,23 @@ export async function createAdHocCharge(session: SessionContext, input: AdHocCha
       patientId: input.patientId,
       encounterId: input.encounterId,
       serviceId: input.serviceId,
+      productId: input.productId,
       providerId: input.providerId,
       sourceType: input.sourceType,
       description,
       quantity: input.quantity,
       unitPrice,
       createdBy: session.user.id,
-    })
+    }),
+    { timeout: 20_000, maxWait: 10_000 }
   )
 
   await auditFromSession(session, "create", "charge", charge.id, {
     new: { sourceType: charge.sourceType, description: charge.description, amount: Number(charge.amount) },
   })
+  if (input.productId) {
+    await dispatchPendingOutboxEvents(session.user.organizationId)
+  }
 
   return charge
 }
@@ -128,19 +180,62 @@ export async function voidCharge(session: SessionContext, chargeId: string, reas
     throw new Error(`Only a pending charge can be voided (this one is "${charge.status}").`)
   }
 
-  const updated = await db.charge.update({
-    where: { id: chargeId },
-    data: { status: "void", voidReason: reason },
-  })
+  const updated = await db.$transaction(async (tx) => {
+    const result = await tx.charge.update({
+      where: { id: chargeId },
+      data: { status: "void", voidReason: reason },
+    })
+
+    // P1 §9: voiding a product-sale charge (only reachable while still
+    // "pending" — never after it's been invoiced) must not leave the stock
+    // it consumed permanently gone. Reverses each batch-level consumption
+    // entry with a positive return — never edits or deletes the original
+    // sale entries (spec.md §92) — then triggers the matching COGS reversal
+    // asynchronously (postProductSaleVoided), the same outbox-driven
+    // pattern every other accounting-relevant event in this system uses.
+    if (charge.productId) {
+      const consumedEntries = await tx.stockLedgerEntry.findMany({
+        where: { organizationId: session.user.organizationId, referenceType: "charge", referenceId: chargeId, transactionType: "sale" },
+      })
+      for (const entry of consumedEntries) {
+        await tx.stockLedgerEntry.create({
+          data: {
+            organizationId: session.user.organizationId,
+            branchId: entry.branchId,
+            productId: entry.productId,
+            batchId: entry.batchId,
+            transactionType: "return",
+            quantity: entry.quantity.negated(),
+            referenceType: "charge_void",
+            referenceId: chargeId,
+            performedBy: session.user.id,
+          },
+        })
+      }
+      if (consumedEntries.length > 0) {
+        await writeOutboxEvent(tx, {
+          organizationId: session.user.organizationId,
+          eventType: "ProductSaleVoided",
+          payload: { branchId: charge.branchId, chargeId },
+        })
+      }
+    }
+
+    return result
+  }, { timeout: 20_000, maxWait: 10_000 })
 
   await auditFromSession(session, "void", "charge", chargeId, { old: charge, new: { status: "void", reason } })
+  if (charge.productId) {
+    await dispatchPendingOutboxEvents(session.user.organizationId)
+  }
   return updated
 }
 
 export async function listPendingCharges(session: SessionContext, patientId: string) {
   assertCan(session, "charge.create")
+  const scope = getAuthorizedBranchScope(session)
   return db.charge.findMany({
-    where: { organizationId: session.user.organizationId, patientId, status: "pending" },
+    where: { organizationId: session.user.organizationId, patientId, status: "pending", branchId: narrowBranchFilter(scope) },
     include: { service: true, encounter: true, provider: true },
     orderBy: { createdAt: "asc" },
   })
@@ -148,8 +243,9 @@ export async function listPendingCharges(session: SessionContext, patientId: str
 
 export async function listPatientCharges(session: SessionContext, patientId: string) {
   assertCan(session, "invoice.view")
+  const scope = getAuthorizedBranchScope(session)
   return db.charge.findMany({
-    where: { organizationId: session.user.organizationId, patientId },
+    where: { organizationId: session.user.organizationId, patientId, branchId: narrowBranchFilter(scope) },
     include: { service: true },
     orderBy: { createdAt: "desc" },
   })

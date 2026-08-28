@@ -4,13 +4,20 @@ import { registerOutboxHandler } from "@/lib/platform/outbox"
 import { generateSystemCharge } from "@/lib/domains/billing/charges"
 import {
   postInvoiceIssued,
+  postInvoiceVoided,
   postPaymentReceived,
   postRefundCompleted,
   postGoodsReceiptCompleted,
+  postSupplierInvoiceCreated,
   postSupplierPaymentRecorded,
   postPackageSessionConsumed,
+  postProductSaleCogs,
+  postProductSaleVoided,
+  postInventoryAdjustment,
+  postPayrollApproved,
+  postPayrollPaid,
 } from "@/lib/domains/accounting/posting-service"
-import { accrueInvoiceBasisCommissions, accruePaymentBasisCommissions } from "@/lib/domains/payroll/commissions"
+import { accrueInvoiceBasisCommissions, accruePaymentBasisCommissions, reverseCommissionsForRefund } from "@/lib/domains/payroll/commissions"
 import { sendMessage } from "@/lib/domains/communications/service"
 import { formatDate, formatTime } from "@/lib/utils/dates"
 
@@ -127,10 +134,26 @@ registerOutboxHandler("EncounterCompleted", async (payload, organizationId) => {
   )
 })
 
+// Widened from Prisma's 5000ms/2000ms defaults — same reason
+// posting-service.ts's POSTING_TRANSACTION_OPTIONS is: `resolveCommissionRule`
+// (commissions.ts) runs 1-2 queries per invoice line, and a real full-suite
+// run in this pass's own final synthesis batch caught this exact
+// transaction genuinely exceeding the 5000ms default (P2028, "6312 ms
+// passed") under this environment's real Supabase pooler latency — not
+// speculative, the same class of gap `createAsset`/`generateInvoice`/
+// `voidInvoice`/`createGoodsReceipt`/`approveLeave`/`nextNumber` already
+// needed this identical fix for.
+const COMMISSION_TRANSACTION_OPTIONS = { timeout: 20_000, maxWait: 10_000 }
+
 registerOutboxHandler("InvoiceIssued", async (payload) => {
   const invoiceId = payload.invoiceId as string
   await postInvoiceIssued(invoiceId)
-  await db.$transaction((tx) => accrueInvoiceBasisCommissions(tx, invoiceId))
+  await db.$transaction((tx) => accrueInvoiceBasisCommissions(tx, invoiceId), COMMISSION_TRANSACTION_OPTIONS)
+})
+
+/** P1 §24: reverses postInvoiceIssued's own posting — see voidInvoice (billing/invoices.ts) and postInvoiceVoided's doc comment. */
+registerOutboxHandler("InvoiceVoided", async (payload) => {
+  await postInvoiceVoided(payload.invoiceId as string)
 })
 
 registerOutboxHandler("PaymentReceived", async (payload) => {
@@ -138,15 +161,25 @@ registerOutboxHandler("PaymentReceived", async (payload) => {
   const tenders = payload.tenders as { method: string; amount: number }[]
   const paymentIds = payload.paymentIds as string[]
   await postPaymentReceived(invoiceId, tenders)
-  await db.$transaction((tx) => accruePaymentBasisCommissions(tx, invoiceId, paymentIds))
+  await db.$transaction((tx) => accruePaymentBasisCommissions(tx, invoiceId, paymentIds), COMMISSION_TRANSACTION_OPTIONS)
 })
 
 registerOutboxHandler("RefundCompleted", async (payload) => {
-  await postRefundCompleted(payload.refundId as string)
+  const refundId = payload.refundId as string
+  await postRefundCompleted(refundId)
+  // P1 §19: claws back collected_revenue-basis commission that was earned
+  // on now-refunded cash — see reverseCommissionsForRefund's own doc
+  // comment (commissions.ts) for why only that one basis is touched.
+  await db.$transaction((tx) => reverseCommissionsForRefund(tx, refundId), COMMISSION_TRANSACTION_OPTIONS)
 })
 
 registerOutboxHandler("GoodsReceiptCompleted", async (payload) => {
   await postGoodsReceiptCompleted(payload.goodsReceiptId as string)
+})
+
+/** P1 §15: the AP-recognition half of a supplier invoice — see supplier-invoices.ts's createSupplierInvoice and posting-service.ts's postSupplierInvoiceCreated. */
+registerOutboxHandler("SupplierInvoiceCreated", async (payload) => {
+  await postSupplierInvoiceCreated(payload.supplierInvoiceId as string)
 })
 
 registerOutboxHandler("SupplierPaymentRecorded", async (payload) => {
@@ -155,6 +188,47 @@ registerOutboxHandler("SupplierPaymentRecorded", async (payload) => {
 
 registerOutboxHandler("PackageSessionConsumed", async (payload) => {
   await postPackageSessionConsumed(payload.patientPackageSessionId as string)
+})
+
+/** P1 §32 (finding B10): the async posting half of `approvePayrollRun` — see payroll.ts's own doc comment for why this moved off a direct, unprotected call. */
+registerOutboxHandler("PayrollApproved", async (payload) => {
+  await postPayrollApproved(payload.payrollRunId as string)
+})
+
+/** P1 §32 (finding B10): the async posting half of `markPayrollPaid` — see payroll.ts's own doc comment. */
+registerOutboxHandler("PayrollPaid", async (payload) => {
+  await postPayrollPaid(payload.payrollRunId as string)
+})
+
+/** P1 §11: the COGS half of a POS product sale — see charges.ts's insertCharge and posting-service.ts's postProductSaleCogs. */
+registerOutboxHandler("ProductSold", async (payload, organizationId) => {
+  await postProductSaleCogs({
+    organizationId,
+    branchId: payload.branchId as string,
+    chargeId: payload.chargeId as string,
+    cost: payload.cost as number,
+  })
+})
+
+/** P1 §9-§11: reverses a voided product-sale charge's COGS — see charges.ts's voidCharge and posting-service.ts's postProductSaleVoided. */
+registerOutboxHandler("ProductSaleVoided", async (payload, organizationId) => {
+  await postProductSaleVoided({
+    organizationId,
+    branchId: payload.branchId as string,
+    chargeId: payload.chargeId as string,
+  })
+})
+
+/** P1 §13: a financially-relevant manual stock adjustment — see stock.ts's recordAdjustment and posting-service.ts's postInventoryAdjustment. */
+registerOutboxHandler("InventoryAdjusted", async (payload, organizationId) => {
+  await postInventoryAdjustment({
+    organizationId,
+    branchId: payload.branchId as string,
+    stockLedgerEntryId: payload.stockLedgerEntryId as string,
+    direction: payload.direction as "in" | "out",
+    amount: payload.amount as number,
+    description: payload.description as string,
+  })
 })
 
 /**
@@ -166,7 +240,7 @@ registerOutboxHandler("PackageSessionConsumed", async (payload) => {
  * for this exact leave request (matched by reason text, since there's no
  * direct FK from ProviderLeaveBlock back to LeaveRequest).
  */
-registerOutboxHandler("EmployeeLeaveApproved", async (payload) => {
+registerOutboxHandler("EmployeeLeaveApproved", async (payload, organizationId) => {
   const employeeId = payload.employeeId as string
   const leaveRequestId = payload.leaveRequestId as string
   const employee = await db.employee.findUnique({ where: { id: employeeId }, include: { providerProfile: true } })
@@ -183,6 +257,48 @@ registerOutboxHandler("EmployeeLeaveApproved", async (payload) => {
 
   await db.providerLeaveBlock.create({
     data: { providerId: employee.providerProfile.id, startAt, endAt, reason },
+  })
+
+  // P1 §25: "existing appointments during newly approved leave must trigger
+  // a conflict warning / administrative notification — do NOT silently
+  // delete/reschedule." assertNoLeaveConflict (appointments/service.ts)
+  // only guards NEW bookings against an EXISTING leave block; it can't
+  // retroactively stop an appointment that was booked before this leave was
+  // ever approved. This is that missing other half — surfaced to admins for
+  // a human to actually reschedule or cancel, never done automatically here.
+  const conflicting = await db.appointment.findMany({
+    where: {
+      organizationId,
+      providerId: employee.providerProfile.id,
+      status: { notIn: ["completed", "cancelled", "no_show", "rescheduled"] },
+      startTime: { lt: endAt },
+      endTime: { gt: startAt },
+    },
+    include: { patient: true },
+    orderBy: { startTime: "asc" },
+  })
+  if (conflicting.length === 0) return
+
+  const admins = await db.user.findMany({
+    where: { organizationId, status: "active", roles: { some: { role: { name: { in: ["Super Admin", "Organization Administrator"] } } } } },
+    select: { id: true },
+  })
+  if (admins.length === 0) return
+
+  const summary = conflicting
+    .slice(0, 5)
+    .map((a) => `${a.patient.firstName} ${a.patient.lastName} at ${a.startTime.toISOString()}`)
+    .join("; ")
+  await db.notification.createMany({
+    data: admins.map((admin) => ({
+      organizationId,
+      recipientUserId: admin.id,
+      type: "leave_appointment_conflict",
+      title: `Approved leave conflicts with ${conflicting.length} existing appointment(s)`,
+      body: `Dr. ${employee.firstName} ${employee.lastName}'s newly approved leave (${startAt.toDateString()}–${endAt.toDateString()}) overlaps: ${summary}${conflicting.length > 5 ? ` and ${conflicting.length - 5} more` : ""}. These were NOT automatically cancelled or rescheduled.`,
+      referenceType: "employee",
+      referenceId: employeeId,
+    })),
   })
 })
 
@@ -212,6 +328,55 @@ registerOutboxHandler("LabResultFinalized", async (payload) => {
       referenceType: "clinical_order",
       referenceId: order.id,
     },
+  })
+})
+
+/**
+ * P1 §22: critical (panic-value) result notification — fired independently
+ * of LabResultFinalized above (a critical single line deserves immediate
+ * attention regardless of whether sibling tests on the same order are also
+ * done). Restricted to clinically-authorized recipients by construction,
+ * not by a separate access check: every Notification row here is addressed
+ * to one specific `recipientUserId` (never a broadcast), and the only
+ * candidates are the ordering provider or a user holding `lab_result.verify`
+ * — the same clinical-permission boundary every other lab action already
+ * enforces. Falls back to `lab_result.verify` holders only when the
+ * ordering provider has no linked login, so a critical result is never
+ * silently unnoticed the way LabResultFinalized's own "nobody to notify,
+ * return" is acceptable for a routine result.
+ */
+registerOutboxHandler("CriticalLabResultVerified", async (payload, organizationId) => {
+  const labOrderTestId = payload.labOrderTestId as string
+  const abnormalFlag = payload.abnormalFlag as string
+  const line = await db.labOrderTest.findUnique({
+    where: { id: labOrderTestId },
+    include: { labTest: true, clinicalOrder: { include: { orderingProvider: true, patient: true } } },
+  })
+  if (!line) return
+  const order = line.clinicalOrder
+
+  const recipientIds = new Set<string>()
+  if (order.orderingProvider.userId) recipientIds.add(order.orderingProvider.userId)
+  if (recipientIds.size === 0) {
+    const verifiers = await db.user.findMany({
+      where: { organizationId, status: "active", roles: { some: { role: { permissions: { some: { permission: { code: "lab_result.verify" } } } } } } },
+      select: { id: true },
+    })
+    for (const v of verifiers) recipientIds.add(v.id)
+  }
+  if (recipientIds.size === 0) return
+
+  const value = line.numericValue != null ? String(line.numericValue) : (line.textValue ?? "")
+  await db.notification.createMany({
+    data: [...recipientIds].map((recipientUserId) => ({
+      organizationId,
+      recipientUserId,
+      type: "critical_lab_result",
+      title: `CRITICAL: ${line.labTest.name}`,
+      body: `${order.patient.firstName} ${order.patient.lastName} (${order.patient.mrn}) — ${line.labTest.name} = ${value}${line.unit ? ` ${line.unit}` : ""} (${abnormalFlag.replace("_", " ")}).`,
+      referenceType: "lab_order_test",
+      referenceId: line.id,
+    })),
   })
 })
 

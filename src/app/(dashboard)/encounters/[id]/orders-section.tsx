@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { useActionDialog } from "@/hooks/use-action-dialog"
-import { createOrderAction, updateOrderStatusAction, type ActionState } from "@/app/(dashboard)/encounters/actions"
+import { createOrderAction, cancelOrderAction, type ActionState } from "@/app/(dashboard)/encounters/actions"
 import type {
   ClinicalOrder,
   LabOrderDetail,
@@ -66,6 +66,8 @@ export function OrdersSection({
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
+  const [cancelTarget, setCancelTarget] = useState<string | null>(null)
+  const [reason, setReason] = useState("")
 
   return (
     <Card>
@@ -90,12 +92,10 @@ export function OrdersSection({
                   size="sm"
                   variant="ghost"
                   disabled={pending}
-                  onClick={() =>
-                    startTransition(async () => {
-                      await updateOrderStatusAction(encounterId, order.id, "cancelled")
-                      router.refresh()
-                    })
-                  }
+                  onClick={() => {
+                    setReason("")
+                    setCancelTarget(order.id)
+                  }}
                 >
                   Cancel
                 </Button>
@@ -104,6 +104,34 @@ export function OrdersSection({
           </div>
         ))}
       </CardContent>
+
+      <Dialog open={cancelTarget !== null} onOpenChange={(open) => !open && setCancelTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Cancel order</DialogTitle>
+          </DialogHeader>
+          <Input placeholder="Reason for cancellation" value={reason} onChange={(e) => setReason(e.target.value)} />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCancelTarget(null)}>
+              Back
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={pending || !reason.trim()}
+              onClick={() => {
+                const orderId = cancelTarget!
+                setCancelTarget(null)
+                startTransition(async () => {
+                  await cancelOrderAction(encounterId, orderId, reason)
+                  router.refresh()
+                })
+              }}
+            >
+              Cancel order
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   )
 }

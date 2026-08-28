@@ -61,6 +61,7 @@ export default async function AppointmentsPage({
 
   const canCheckin = can(session, "appointment.checkin")
   const canCancel = can(session, "appointment.cancel")
+  const canReschedule = can(session, "appointment.reschedule")
   const canStartEncounter = can(session, "encounter.create")
 
   // Prisma's Decimal fields (consultationFee/price) can't cross the
@@ -171,12 +172,14 @@ export default async function AppointmentsPage({
                       status={a.status}
                       canCheckin={canCheckin}
                       canCancel={canCancel}
+                      canReschedule={canReschedule}
                       canStartEncounter={canStartEncounter}
                       encounterId={a.encounter?.id}
                       branchId={a.branchId}
                       departmentId={a.departmentId}
                       patientId={a.patientId}
                       providerId={a.providerId}
+                      providers={providerOptions}
                     />
                   </TableCell>
                 </TableRow>

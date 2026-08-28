@@ -14,7 +14,9 @@ export default async function LabReportPage({ params }: { params: Promise<{ id: 
 
   const { id } = await params
   const [order, organization] = await Promise.all([getLabOrder(session, id), getOrganization(session)])
-  const verifiedTests = order.labOrderTests.filter((t) => t.status === "verified")
+  // P1 §21: isCurrent too — an amended result must never show alongside the
+  // superseded original it corrected (both still carry status "verified").
+  const verifiedTests = order.labOrderTests.filter((t) => t.status === "verified" && t.isCurrent)
 
   return (
     <div className="mx-auto max-w-2xl p-8 print:p-0">

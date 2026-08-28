@@ -3,7 +3,7 @@
 import { headers } from "next/headers"
 import { redirect } from "next/navigation"
 import { z } from "zod"
-import { login as loginService, requestPasswordReset as requestPasswordResetService } from "@/lib/auth/service"
+import { login as loginService } from "@/lib/auth/service"
 
 const loginSchema = z.object({
   email: z.email("Enter a valid email address"),
@@ -37,15 +37,4 @@ export async function loginAction(_prevState: LoginFormState, formData: FormData
   }
 
   redirect(parsed.data.from && parsed.data.from.startsWith("/") ? parsed.data.from : "/dashboard")
-}
-
-const resetRequestSchema = z.object({ email: z.email() })
-
-export async function requestPasswordResetAction(_prevState: LoginFormState, formData: FormData): Promise<LoginFormState> {
-  const parsed = resetRequestSchema.safeParse({ email: formData.get("email") })
-  if (!parsed.success) {
-    return { error: "Enter a valid email address." }
-  }
-  await requestPasswordResetService(parsed.data.email)
-  return {}
 }

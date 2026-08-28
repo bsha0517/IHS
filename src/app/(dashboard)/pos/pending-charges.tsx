@@ -29,6 +29,7 @@ export function PendingCharges({
   branchId,
   charges,
   services,
+  products,
   providers,
   coverages,
   canVoid,
@@ -37,6 +38,7 @@ export function PendingCharges({
   branchId: string
   charges: ChargeRow[]
   services: { id: string; name: string; price: number }[]
+  products: { id: string; name: string; price: number; unit: string }[]
   providers: { id: string; firstName: string; lastName: string }[]
   coverages: { id: string; label: string }[]
   canVoid: boolean
@@ -65,7 +67,7 @@ export function PendingCharges({
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle className="text-base">Pending charges</CardTitle>
-        <AddChargeDialog patientId={patientId} branchId={branchId} services={services} providers={providers} />
+        <AddChargeDialog patientId={patientId} branchId={branchId} services={services} products={products} providers={providers} />
       </CardHeader>
       <CardContent className="grid gap-4">
         {charges.length === 0 && <p className="text-sm text-muted-foreground">No pending charges for this patient.</p>}

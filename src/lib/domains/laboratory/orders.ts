@@ -3,7 +3,10 @@ import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { nextNumber } from "@/lib/platform/sequences"
+import { assertValidTransition } from "@/lib/platform/state-machine"
+import { CLINICAL_ORDER_TRANSITIONS } from "@/lib/domains/clinical/orders"
 import { generateSystemCharge } from "@/lib/domains/billing/charges"
+import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { AssignTestsInput, RejectSpecimenInput } from "@/lib/domains/laboratory/schemas"
 
@@ -36,16 +39,23 @@ const ORDER_INCLUDE = {
   orderingProvider: true,
   labDetail: true,
   specimens: true,
-  labOrderTests: { include: { labTest: true, labPanel: true, specimen: true } },
+  // P1 §21: current lines only — same "where: { isCurrent: true }" convention
+  // ENCOUNTER_WORKSPACE_INCLUDE already uses for ClinicalNote, so an amended
+  // result's superseded original never shows as a duplicate working row.
+  // Full history (including superseded rows) is a separate, deliberate read
+  // — getLabResultHistory (results.ts) — not this operational view.
+  labOrderTests: { where: { isCurrent: true }, include: { labTest: true, labPanel: true, specimen: true } },
 } as const
 
 /** The Lab Queue (spec.md §28): every doctor-placed lab ClinicalOrder not yet fully completed. */
 export async function listLabQueue(session: SessionContext, filters: { status?: string } = {}) {
   assertCan(session, "lab_result.enter")
+  const scope = getAuthorizedBranchScope(session)
   return db.clinicalOrder.findMany({
     where: {
       organizationId: session.user.organizationId,
       orderType: "lab",
+      branchId: narrowBranchFilter(scope),
       status: filters.status ? (filters.status as never) : { not: "cancelled" },
     },
     include: { patient: true, labDetail: true, labOrderTests: true },
@@ -55,10 +65,12 @@ export async function listLabQueue(session: SessionContext, filters: { status?: 
 
 export async function getLabOrder(session: SessionContext, id: string) {
   assertCan(session, "lab_result.enter")
-  return db.clinicalOrder.findFirstOrThrow({
+  const order = await db.clinicalOrder.findFirstOrThrow({
     where: { id, organizationId: session.user.organizationId, orderType: "lab" },
     include: ORDER_INCLUDE,
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), order.branchId)
+  return order
 }
 
 /**
@@ -79,6 +91,11 @@ export async function assignTests(session: SessionContext, clinicalOrderId: stri
   const order = await db.clinicalOrder.findFirstOrThrow({
     where: { id: clinicalOrderId, organizationId: session.user.organizationId, orderType: "lab" },
   })
+  // P1 §20: this is what actually moves the order to "in_progress" below —
+  // validate it through the same centralized map updateOrderStatus uses,
+  // so assigning tests against an already-completed or cancelled order
+  // can't silently drag it back to in_progress.
+  assertValidTransition(CLINICAL_ORDER_TRANSITIONS, order.status, "in_progress", "a clinical order")
 
   const testIds = input.lines.filter((l) => l.kind === "test").map((l) => l.id)
   const panelIds = input.lines.filter((l) => l.kind === "panel").map((l) => l.id)

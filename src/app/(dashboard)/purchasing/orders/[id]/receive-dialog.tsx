@@ -4,6 +4,7 @@ import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Textarea } from "@/components/ui/textarea"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
@@ -31,6 +32,14 @@ type ReceiveLine = {
 
 export function ReceiveDialog({ purchaseOrderId, outstandingLines }: { purchaseOrderId: string; outstandingLines: OutstandingLine[] }) {
   const { open, setOpen, state, pending, submit } = useActionDialog(createGoodsReceiptAction, initialState)
+  const [allowOverReceipt, setAllowOverReceipt] = useState(false)
+  // P1 §33: one key per dialog-open, resubmitted unchanged by every retry of
+  // that same attempt (a double-click doesn't re-render this away) — a fresh
+  // open (a genuinely new attempt) gets a fresh key. See goods-receipts.ts's
+  // createGoodsReceipt for what the server does with it. Regenerated in
+  // onOpenChange (an event, not an effect — see use-action-dialog.ts's own
+  // doc comment).
+  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID())
   const [lines, setLines] = useState<Record<string, ReceiveLine>>(
     Object.fromEntries(
       outstandingLines.map((l) => [
@@ -61,11 +70,19 @@ export function ReceiveDialog({ purchaseOrderId, outstandingLines }: { purchaseO
         }
       })
     formData.set("lines", JSON.stringify(payload))
+    formData.set("allowOverReceipt", allowOverReceipt ? "true" : "false")
+    formData.set("idempotencyKey", idempotencyKey)
     submit(formData)
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (o) setIdempotencyKey(crypto.randomUUID())
+        setOpen(o)
+      }}
+    >
       <DialogTrigger asChild>
         <Button size="sm">Receive goods</Button>
       </DialogTrigger>
@@ -95,7 +112,7 @@ export function ReceiveDialog({ purchaseOrderId, outstandingLines }: { purchaseO
                     <Input
                       type="number"
                       min="0"
-                      max={l.remaining}
+                      max={allowOverReceipt ? undefined : l.remaining}
                       value={lines[l.purchaseOrderLineId]?.quantityReceived ?? ""}
                       onChange={(e) => update(l.purchaseOrderLineId, "quantityReceived", e.target.value)}
                     />
@@ -117,6 +134,12 @@ export function ReceiveDialog({ purchaseOrderId, outstandingLines }: { purchaseO
             ))}
           </div>
           <p className="text-xs text-muted-foreground">Leave a line&apos;s batch number blank to skip receiving it now.</p>
+          <div className="flex items-center gap-2">
+            <Checkbox id="allowOverReceipt" checked={allowOverReceipt} onCheckedChange={(c) => setAllowOverReceipt(c === true)} />
+            <Label htmlFor="allowOverReceipt" className="text-sm font-normal">
+              Allow receiving more than the ordered quantity
+            </Label>
+          </div>
           <div className="grid gap-2">
             <Label htmlFor="notes">Notes</Label>
             <Textarea id="notes" name="notes" />

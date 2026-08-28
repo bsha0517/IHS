@@ -121,6 +121,7 @@ export default async function AssetsPage() {
                               supplierId: a.supplierId,
                               purchaseDate: a.purchaseDate ? a.purchaseDate.toISOString().slice(0, 10) : null,
                               cost: a.cost != null ? Number(a.cost) : null,
+                              paidVia: a.paidVia,
                               warrantyExpiryDate: a.warrantyExpiryDate ? a.warrantyExpiryDate.toISOString().slice(0, 10) : null,
                             }}
                           />

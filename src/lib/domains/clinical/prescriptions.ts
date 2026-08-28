@@ -3,6 +3,7 @@ import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { nextNumber } from "@/lib/platform/sequences"
+import { getAuthorizedBranchScope, patientVisibilityWhere } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { PrescriptionInput } from "@/lib/domains/clinical/schemas"
 
@@ -53,8 +54,9 @@ export async function cancelPrescription(session: SessionContext, prescriptionId
 
 export async function listPatientPrescriptions(session: SessionContext, patientId: string) {
   assertCan(session, "encounter.view")
+  const visibility = patientVisibilityWhere(getAuthorizedBranchScope(session))
   return db.prescription.findMany({
-    where: { organizationId: session.user.organizationId, patientId },
+    where: { organizationId: session.user.organizationId, patientId, ...(visibility ? { patient: visibility } : {}) },
     include: { items: true, provider: true },
     orderBy: { issuedAt: "desc" },
   })
@@ -62,8 +64,9 @@ export async function listPatientPrescriptions(session: SessionContext, patientI
 
 export async function getPrescription(session: SessionContext, prescriptionId: string) {
   assertCan(session, "encounter.view")
+  const visibility = patientVisibilityWhere(getAuthorizedBranchScope(session))
   return db.prescription.findFirstOrThrow({
-    where: { id: prescriptionId, organizationId: session.user.organizationId },
+    where: { id: prescriptionId, organizationId: session.user.organizationId, ...(visibility ? { patient: visibility } : {}) },
     include: { items: true, provider: true, patient: true, encounter: true },
   })
 }

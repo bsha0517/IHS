@@ -3,6 +3,7 @@ import { db } from "@/lib/db"
 import { can, assertCan } from "@/lib/platform/permissions-core"
 import { listLowStock, listNearExpiryBatches } from "@/lib/domains/inventory/stock"
 import { listMaintenanceDue } from "@/lib/domains/assets/assets"
+import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 
 /**
@@ -37,7 +38,9 @@ export async function getManagementDashboard(session: SessionContext, filters: {
   const organizationId = session.user.organizationId
   const { start: todayStart, end: todayEnd } = todayRange()
   const { start: monthStart, end: monthEnd } = monthToDateRange()
-  const branchWhere = filters.branchId ? { branchId: filters.branchId } : {}
+  const scope = getAuthorizedBranchScope(session)
+  const scopedBranchId = narrowBranchFilter(scope, filters.branchId)
+  const branchWhere = scopedBranchId !== undefined ? { branchId: scopedBranchId } : {}
 
   const [
     todaysAppointments,
@@ -71,7 +74,7 @@ export async function getManagementDashboard(session: SessionContext, filters: {
     db.expense.aggregate({ where: { organizationId, ...branchWhere, expenseDate: { gte: todayStart, lt: todayEnd } }, _sum: { amount: true } }),
     db.charge.groupBy({ by: ["serviceId"], where: { organizationId, ...branchWhere, status: { not: "void" }, createdAt: { gte: monthStart, lte: monthEnd }, serviceId: { not: null } }, _sum: { amount: true }, orderBy: { _sum: { amount: "desc" } }, take: 5 }),
     db.charge.groupBy({ by: ["providerId"], where: { organizationId, ...branchWhere, status: { not: "void" }, createdAt: { gte: monthStart, lte: monthEnd }, providerId: { not: null } }, _sum: { amount: true }, orderBy: { _sum: { amount: "desc" } }, take: 5 }),
-    db.invoice.groupBy({ by: ["branchId"], where: { organizationId, status: { not: "void" }, issuedAt: { gte: monthStart, lte: monthEnd } }, _sum: { totalAmount: true } }),
+    db.invoice.groupBy({ by: ["branchId"], where: { organizationId, ...branchWhere, status: { not: "void" }, issuedAt: { gte: monthStart, lte: monthEnd } }, _sum: { totalAmount: true } }),
     listLowStock(session, filters.branchId),
     listNearExpiryBatches(session, filters.branchId),
     listMaintenanceDue(session),
@@ -120,7 +123,9 @@ export async function getReceptionDashboard(session: SessionContext, filters: { 
   assertCan(session, "appointment.checkin")
   const organizationId = session.user.organizationId
   const { start: todayStart, end: todayEnd } = todayRange()
-  const branchWhere = filters.branchId ? { branchId: filters.branchId } : {}
+  const scope = getAuthorizedBranchScope(session)
+  const scopedBranchId = narrowBranchFilter(scope, filters.branchId)
+  const branchWhere = scopedBranchId !== undefined ? { branchId: scopedBranchId } : {}
 
   const [todaysAppointments, arrivals, waiting, upcoming, noShows] = await Promise.all([
     db.appointment.findMany({ where: { organizationId, ...branchWhere, startTime: { gte: todayStart, lt: todayEnd } }, include: { patient: true, provider: true }, orderBy: { startTime: "asc" } }),
@@ -163,19 +168,21 @@ export async function getFinanceDashboard(session: SessionContext, filters: { br
   assertCan(session, "accounting.view")
   const organizationId = session.user.organizationId
   const { start: monthStart, end: monthEnd } = monthToDateRange()
-  const branchWhere = filters.branchId ? { branchId: filters.branchId } : {}
+  const scope = getAuthorizedBranchScope(session)
+  const scopedBranchId = narrowBranchFilter(scope, filters.branchId)
+  const branchWhere = scopedBranchId !== undefined ? { branchId: scopedBranchId } : {}
 
   const [revenue, collections, receivables, payables, expenses, cashAccounts] = await Promise.all([
     db.invoice.aggregate({ where: { organizationId, ...branchWhere, status: { not: "void" }, issuedAt: { gte: monthStart, lte: monthEnd } }, _sum: { totalAmount: true } }),
     db.payment.aggregate({ where: { organizationId, ...branchWhere, status: "completed", receivedAt: { gte: monthStart, lte: monthEnd } }, _sum: { amount: true } }),
-    db.invoice.aggregate({ where: { organizationId, status: { in: ["issued", "partially_paid"] } }, _sum: { totalAmount: true, paidAmount: true } }),
-    db.supplierInvoice.aggregate({ where: { organizationId, status: { in: ["pending", "partially_paid"] } }, _sum: { amount: true, paidAmount: true } }),
+    db.invoice.aggregate({ where: { organizationId, ...branchWhere, status: { in: ["issued", "partially_paid"] } }, _sum: { totalAmount: true, paidAmount: true } }),
+    db.supplierInvoice.aggregate({ where: { organizationId, ...branchWhere, status: { in: ["pending", "partially_paid"] } }, _sum: { amount: true, paidAmount: true } }),
     db.expense.aggregate({ where: { organizationId, ...branchWhere, expenseDate: { gte: monthStart, lte: monthEnd } }, _sum: { amount: true } }),
     db.chartOfAccount.findMany({ where: { organizationId, code: { in: ["1000", "1010"] } } }),
   ])
 
   const cashPosition = await db.journalLine.aggregate({
-    where: { accountId: { in: cashAccounts.map((a) => a.id) }, journal: { organizationId } },
+    where: { accountId: { in: cashAccounts.map((a) => a.id) }, journal: { organizationId, ...branchWhere } },
     _sum: { debit: true, credit: true },
   })
 

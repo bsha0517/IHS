@@ -3,6 +3,7 @@ import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { nextNumber } from "@/lib/platform/sequences"
+import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { PurchaseRequestInput } from "@/lib/domains/procurement/schemas"
 
@@ -46,16 +47,19 @@ export async function createPurchaseRequest(session: SessionContext, input: Purc
 
 export async function getPurchaseRequest(session: SessionContext, id: string) {
   assertCan(session, "purchase_request.create")
-  return db.purchaseRequest.findFirstOrThrow({
+  const pr = await db.purchaseRequest.findFirstOrThrow({
     where: { id, organizationId: session.user.organizationId },
     include: PR_INCLUDE,
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), pr.branchId)
+  return pr
 }
 
 export async function listPurchaseRequests(session: SessionContext, filters: { status?: string } = {}) {
   assertCan(session, "purchase_request.create")
+  const scope = getAuthorizedBranchScope(session)
   return db.purchaseRequest.findMany({
-    where: { organizationId: session.user.organizationId, status: filters.status as never },
+    where: { organizationId: session.user.organizationId, status: filters.status as never, branchId: narrowBranchFilter(scope) },
     include: PR_INCLUDE,
     orderBy: { createdAt: "desc" },
     take: 100,

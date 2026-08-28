@@ -19,6 +19,8 @@ const PERMISSIONS: { code: string; category: string; description: string }[] = [
   { code: "users.manage", category: "administration", description: "Manage users, roles, and permissions" },
   { code: "audit.review", category: "administration", description: "View audit log and clinical access log" },
   { code: "reports.export", category: "administration", description: "Export reports" },
+  { code: "system_events.view", category: "administration", description: "View background system events (outbox) and their status" },
+  { code: "system_events.retry", category: "administration", description: "Manually retry a failed or dead-lettered system event" },
 
   // Practice management
   { code: "patient.view", category: "practice", description: "View patient records" },
@@ -97,6 +99,7 @@ const PERMISSIONS: { code: string; category: string; description: string }[] = [
   // Finance
   { code: "accounting.view", category: "finance", description: "View accounting records" },
   { code: "accounting.post", category: "finance", description: "Post manual journal entries" },
+  { code: "accounting.period.manage", category: "finance", description: "Close and reopen accounting periods" },
   { code: "chart_of_account.manage", category: "finance", description: "Manage the chart of accounts" },
   { code: "account_mapping.manage", category: "finance", description: "Configure account mappings" },
   { code: "expense.create", category: "finance", description: "Record expenses" },
@@ -181,7 +184,7 @@ const SYSTEM_ROLES: { name: string; permissions: string[] }[] = [
   {
     name: "Accountant",
     permissions: [
-      "accounting.view", "accounting.post", "chart_of_account.manage", "account_mapping.manage",
+      "accounting.view", "accounting.post", "accounting.period.manage", "chart_of_account.manage", "account_mapping.manage",
       "expense.create", "supplier_invoice.manage", "reports.export",
       "payor.manage", "coverage.manage", "claim.create", "claim.adjudicate",
     ],
@@ -253,13 +256,40 @@ const DEFAULT_ACCOUNTS: { code: string; name: string; type: "asset" | "liability
   { code: "1010", name: "Bank", type: "asset" },
   { code: "1100", name: "Accounts Receivable", type: "asset" },
   { code: "1200", name: "Inventory", type: "asset" },
+  // P1 §15: recoverable purchase tax (e.g. input VAT) invoiced by a
+  // supplier — an asset (a claim against future tax owed), not an expense.
+  { code: "1300", name: "Recoverable Tax", type: "asset" },
+  // P1 §17: capitalized asset purchases — separate from ordinary Inventory
+  // (retail stock for resale) and Operating Expenses, so purchasing a piece
+  // of equipment doesn't inflate either figure.
+  { code: "1400", name: "Fixed Assets", type: "asset" },
   { code: "2000", name: "Accounts Payable", type: "liability" },
+  // P1 §15: GR/IR clearing account — a provisional liability recognized at
+  // physical goods-receipt time, before the supplier's actual invoice
+  // (and its exact final amount) has arrived. Cleared to real Accounts
+  // Payable when the supplier invoice is recorded. See GoodsReceipt's doc
+  // comment (schema.prisma) and postGoodsReceiptCompleted /
+  // postSupplierInvoiceCreated (posting-service.ts).
+  { code: "2050", name: "Goods Received Not Invoiced", type: "liability" },
   { code: "2100", name: "Tax Payable", type: "liability" },
   { code: "2200", name: "Unearned Revenue", type: "liability" },
   { code: "2300", name: "Payroll Payable", type: "liability" },
   { code: "3000", name: "Owner's Equity", type: "equity" },
   { code: "4000", name: "Service Revenue", type: "revenue" },
+  // P1 §13: the credit side of a stock-count gain (found more on hand than
+  // the ledger recorded) — a non-operating gain, not ordinary service
+  // revenue, kept in its own account so it's never blended into the
+  // Service Revenue figure the P&L's main revenue line reads.
+  { code: "4100", name: "Inventory Adjustment Gain", type: "revenue" },
   { code: "5000", name: "Operating Expenses", type: "expense" },
+  // P1 §11: Cost of Goods Sold for retail product sales — the debit side of
+  // postProductSaleCogs, separate from Operating Expenses so a P&L reader
+  // can see gross margin (Revenue - COGS) before overhead.
+  { code: "5100", name: "Cost of Goods Sold", type: "expense" },
+  // P1 §13: damage/expiry/shrinkage write-offs — real inventory loss, kept
+  // separate from both COGS (which represents inventory that was actually
+  // sold) and Operating Expenses (general overhead).
+  { code: "5200", name: "Inventory Write-off Expense", type: "expense" },
   { code: "6000", name: "Salary Expense", type: "expense" },
 ]
 
@@ -293,8 +323,19 @@ const DEFAULT_MAPPINGS: { intent: string; accountCode: string }[] = [
   { intent: "inventory_asset", accountCode: "1200" },
   { intent: "accounts_payable", accountCode: "2000" },
   { intent: "expense_default", accountCode: "5000" },
+  // P1 §11/§13: product-sale COGS and inventory write-off/gain postings —
+  // see posting-service.ts's postProductSaleCogs/postInventoryAdjustment.
+  { intent: "cogs", accountCode: "5100" },
+  { intent: "inventory_write_off", accountCode: "5200" },
+  { intent: "inventory_adjustment_gain", accountCode: "4100" },
   { intent: "salary_expense", accountCode: "6000" },
   { intent: "payroll_payable", accountCode: "2300" },
+  // P1 §15: GR/IR clearing (postGoodsReceiptCompleted's credit side) and
+  // recoverable purchase tax (postSupplierInvoiceCreated's optional debit).
+  { intent: "goods_received_not_invoiced", accountCode: "2050" },
+  { intent: "recoverable_tax", accountCode: "1300" },
+  // P1 §17: fixed-asset acquisitions — postAssetAcquired's debit side.
+  { intent: "fixed_asset", accountCode: "1400" },
 ]
 
 // A small common-outpatient subset, not the full LOINC/test-code universe
@@ -312,9 +353,18 @@ const DEFAULT_LAB_TESTS: {
   referenceRangeLow?: number
   referenceRangeHigh?: number
   referenceRangeText?: string
+  // P1 §22: standard clinical panic values, seeded on one representative
+  // test (Glucose) as a real, working demonstration of the critical-flag
+  // feature — not added everywhere, since most of this subset's real
+  // critical thresholds vary by lab/population and shouldn't be guessed at.
+  criticalLow?: number
+  criticalHigh?: number
   price: number
 }[] = [
-  { code: "GLU", name: "Glucose, Fasting", category: "Chemistry", specimenType: "blood", resultType: "numeric", unit: "mg/dL", referenceRangeLow: 70, referenceRangeHigh: 100, price: 40 },
+  {
+    code: "GLU", name: "Glucose, Fasting", category: "Chemistry", specimenType: "blood", resultType: "numeric", unit: "mg/dL",
+    referenceRangeLow: 70, referenceRangeHigh: 100, criticalLow: 40, criticalHigh: 400, price: 40,
+  },
   { code: "CREAT", name: "Creatinine", category: "Chemistry", specimenType: "blood", resultType: "numeric", unit: "mg/dL", referenceRangeLow: 0.6, referenceRangeHigh: 1.3, price: 45 },
   { code: "TSH", name: "TSH", category: "Endocrine", specimenType: "blood", resultType: "numeric", unit: "mIU/L", referenceRangeLow: 0.4, referenceRangeHigh: 4.0, price: 90 },
   { code: "URINE-RM", name: "Urine Routine & Microscopy", category: "Urinalysis", specimenType: "urine", resultType: "text", referenceRangeText: "No abnormal findings", price: 35 },
@@ -458,6 +508,8 @@ async function main() {
         referenceRangeLow: test.referenceRangeLow ?? null,
         referenceRangeHigh: test.referenceRangeHigh ?? null,
         referenceRangeText: test.referenceRangeText ?? null,
+        criticalLow: test.criticalLow ?? null,
+        criticalHigh: test.criticalHigh ?? null,
         price: test.price,
       },
       create: {
@@ -471,6 +523,8 @@ async function main() {
         referenceRangeLow: test.referenceRangeLow ?? null,
         referenceRangeHigh: test.referenceRangeHigh ?? null,
         referenceRangeText: test.referenceRangeText ?? null,
+        criticalLow: test.criticalLow ?? null,
+        criticalHigh: test.criticalHigh ?? null,
         price: test.price,
       },
     })

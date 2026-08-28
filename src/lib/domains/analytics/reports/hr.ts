@@ -1,6 +1,7 @@
 import "server-only"
 import { db } from "@/lib/db"
 import { assertCan, can } from "@/lib/platform/permissions-core"
+import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { ReportFilters } from "@/lib/domains/analytics/schemas"
 
@@ -8,12 +9,17 @@ import type { ReportFilters } from "@/lib/domains/analytics/schemas"
 export async function getHrReport(session: SessionContext, filters: ReportFilters) {
   assertCan(session, "payroll.view")
   const organizationId = session.user.organizationId
-  const branchWhere = filters.branchId ? { branchId: filters.branchId } : {}
+  const scope = getAuthorizedBranchScope(session)
+  const scopedBranchId = narrowBranchFilter(scope, filters.branchId)
+  const branchWhere = scopedBranchId !== undefined ? { branchId: scopedBranchId } : {}
+  // LeaveRequest has no branchId of its own — traverse via its Employee (same
+  // pattern as hr/leave.ts's listLeaveRequests).
+  const employeeBranchWhere = scope.isOrgWide ? {} : { employee: { branchId: { in: scope.branchIds } } }
 
   const [attendanceByStatus, leaveByStatus, leaveByType, payrollRuns, commissionByProvider] = await Promise.all([
     db.attendanceRecord.groupBy({ by: ["status"], where: { organizationId, ...branchWhere, date: { gte: filters.from, lte: filters.to } }, _count: { _all: true } }),
-    db.leaveRequest.groupBy({ by: ["status"], where: { organizationId, requestedAt: { gte: filters.from, lte: filters.to } }, _count: { _all: true } }),
-    db.leaveRequest.groupBy({ by: ["leaveType"], where: { organizationId, requestedAt: { gte: filters.from, lte: filters.to } }, _count: { _all: true } }),
+    db.leaveRequest.groupBy({ by: ["status"], where: { organizationId, requestedAt: { gte: filters.from, lte: filters.to }, ...employeeBranchWhere }, _count: { _all: true } }),
+    db.leaveRequest.groupBy({ by: ["leaveType"], where: { organizationId, requestedAt: { gte: filters.from, lte: filters.to }, ...employeeBranchWhere }, _count: { _all: true } }),
     db.payrollRun.findMany({
       where: { organizationId, ...branchWhere, periodStart: { gte: filters.from }, periodEnd: { lte: filters.to } },
       include: { lines: true },

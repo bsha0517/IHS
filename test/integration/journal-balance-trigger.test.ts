@@ -29,11 +29,14 @@ describe("journal_line_balance_check DB trigger", () => {
 
   afterAll(async () => {
     // Only the balanced journal actually commits (the unbalanced one rolls back on its own) — clean it up.
+    // JournalLine.journal is now onDelete: Restrict (P0-05), so children must
+    // be deleted before the parent — cascade no longer does this for us.
     if (createdJournalIds.length > 0) {
+      await db.journalLine.deleteMany({ where: { journalId: { in: createdJournalIds } } })
       await db.journal.deleteMany({ where: { id: { in: createdJournalIds } } })
     }
     await db.$disconnect()
-  })
+  }, 20000)
 
   it("rejects an unbalanced journal (Dr 100 / Cr 50) at commit, not silently", async () => {
     await expect(

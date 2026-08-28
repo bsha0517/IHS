@@ -108,6 +108,8 @@ model Organization {
   commTemplates           CommTemplate[]
   commMessages            CommMessage[]
   patientPortalAccounts   PatientPortalAccount[]
+  idempotencyKeys         IdempotencyKey[]
+  accountingPeriods       AccountingPeriod[]
 
   @@map("organization")
 }
@@ -462,10 +464,40 @@ model NumberSequence {
   @@map("number_sequence")
 }
 
+// P1 §33: business-level idempotency for client-initiated "create a new
+// record" actions with nothing pre-existing to atomically claim (unlike
+// dispenseRecord's verified->dispensed claim or completeRefund's
+// authorized->completed claim) — see platform/idempotency.ts. `resultId` is
+// null while the original request is still in flight, set once it commits;
+// a retry/double-click carrying the same (organizationId, scope, key) either
+// replays the recorded result or is rejected while the first is still
+// running, but never re-runs the underlying write.
+model IdempotencyKey {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  scope          String
+  key            String
+  resultId       String?  @map("result_id")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, scope, key])
+  @@map("idempotency_key")
+}
+
+// P0-02: pending -> processing -> completed, or pending -> failed (retry
+// scheduled) -> ... -> dead_letter once retries are exhausted. Replaces the
+// old pending/processed/failed set, whose "failed" state was a dead end —
+// dispatchPendingOutboxEvents only ever re-queried "pending", so a failed
+// event was never retried despite the code's own doc comment claiming
+// otherwise (SYSTEM_AUDIT.md Critical #2).
 enum OutboxStatus {
   pending
-  processed
+  processing
+  completed
   failed
+  dead_letter
 }
 
 model OutboxEvent {
@@ -474,12 +506,17 @@ model OutboxEvent {
   eventType      String       @map("event_type")
   payload        Json
   status         OutboxStatus @default(pending)
+  attempts       Int          @default(0)
+  lastAttemptAt  DateTime?    @map("last_attempt_at") @db.Timestamptz(3)
+  nextRetryAt    DateTime?    @map("next_retry_at") @db.Timestamptz(3)
+  lastError      String?      @map("last_error")
   createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
-  processedAt    DateTime?    @map("processed_at") @db.Timestamptz(3)
+  completedAt    DateTime?    @map("completed_at") @db.Timestamptz(3)
 
   organization Organization @relation(fields: [organizationId], references: [id])
 
   @@index([status, createdAt])
+  @@index([status, nextRetryAt])
   @@map("outbox_event")
 }
 
@@ -621,7 +658,11 @@ model PatientAllergy {
   notedBy   String?         @map("noted_by")
   notedAt   DateTime        @default(now()) @map("noted_at") @db.Timestamptz(3)
 
-  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — an allergy list is the single most safety-critical
+  // record a patient has; it must not silently vanish if Patient is ever
+  // deleted. No code path deletes a Patient today; Restrict just makes that
+  // a hard guarantee instead of an unenforced convention.
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
 
   @@index([patientId])
   @@map("patient_allergy")
@@ -649,7 +690,8 @@ model PatientCondition {
   notedBy     String?                  @map("noted_by")
   notedAt     DateTime                 @default(now()) @map("noted_at") @db.Timestamptz(3)
 
-  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — same reasoning as PatientAllergy above.
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
 
   @@index([patientId, category])
   @@map("patient_condition")
@@ -666,7 +708,8 @@ model PatientMedicationHistory {
   notedBy        String?   @map("noted_by")
   notedAt        DateTime  @default(now()) @map("noted_at") @db.Timestamptz(3)
 
-  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — same reasoning as PatientAllergy above.
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
 
   @@index([patientId])
   @@map("patient_medication_history")
@@ -1017,6 +1060,11 @@ enum EncounterStatus {
   active
   completed
   finalized
+  // P1 §24: explicit cancellation/void alternatives now that P0 made
+  // Encounter's own onDelete Restrict — see Encounter.cancelReason and
+  // cancelEncounter/markEncounterEnteredInError (clinical/encounters.ts).
+  cancelled
+  entered_in_error
 }
 
 model Encounter {
@@ -1033,6 +1081,10 @@ model Encounter {
   startAt         DateTime        @default(now()) @map("start_at") @db.Timestamptz(3)
   endAt           DateTime?       @map("end_at") @db.Timestamptz(3)
   status          EncounterStatus @default(draft)
+  // P1 §24: captured whenever status moves to cancelled/entered_in_error —
+  // user and timestamp come from the audit log (auditFromSession), the same
+  // convention Invoice.voidReason already uses.
+  cancelReason    String?         @map("cancel_reason")
   createdBy       String?         @map("created_by")
   createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt       DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
@@ -1084,7 +1136,9 @@ model VitalSign {
 
   organization Organization @relation(fields: [organizationId], references: [id])
   patient      Patient      @relation(fields: [patientId], references: [id])
-  encounter    Encounter    @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — deleting an Encounter must not silently erase the
+  // vitals recorded during it. No code path deletes an Encounter today.
+  encounter    Encounter    @relation(fields: [encounterId], references: [id], onDelete: Restrict)
   branch       Branch       @relation(fields: [branchId], references: [id])
 
   @@index([organizationId, patientId, recordedAt])
@@ -1131,7 +1185,9 @@ model Diagnosis {
 
   organization Organization   @relation(fields: [organizationId], references: [id])
   patient      Patient        @relation(fields: [patientId], references: [id])
-  encounter    Encounter      @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — a diagnosis must not silently disappear if its
+  // Encounter is ever deleted.
+  encounter    Encounter      @relation(fields: [encounterId], references: [id], onDelete: Restrict)
   episode      Episode?       @relation(fields: [episodeId], references: [id])
   code         DiagnosisCode? @relation(fields: [diagnosisCode], references: [code])
   claimItems   ClaimItem[]
@@ -1183,7 +1239,10 @@ model ClinicalNote {
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   organization Organization   @relation(fields: [organizationId], references: [id])
-  encounter    Encounter      @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — directly contradicts this model's own "finalized
+  // notes are never edited in place" comment above; the amendment chain
+  // means nothing if the whole encounter can be deleted out from under it.
+  encounter    Encounter      @relation(fields: [encounterId], references: [id], onDelete: Restrict)
   patient      Patient        @relation(fields: [patientId], references: [id])
   amends       ClinicalNote?  @relation("ClinicalNoteAmendment", fields: [amendsId], references: [id])
   amendments   ClinicalNote[] @relation("ClinicalNoteAmendment")
@@ -1232,6 +1291,9 @@ model ClinicalOrder {
   priority           ClinicalOrderPriority @default(routine)
   instructions       String?
   status             ClinicalOrderStatus   @default(draft)
+  // P1 §24: required by cancelOrder (clinical/orders.ts) — every
+  // cancellation captures a reason, same convention as Invoice.voidReason.
+  cancelReason       String?               @map("cancel_reason")
   orderingProviderId String                @map("ordering_provider_id")
   orderedAt          DateTime              @default(now()) @map("ordered_at") @db.Timestamptz(3)
   createdBy          String?               @map("created_by")
@@ -1239,7 +1301,10 @@ model ClinicalOrder {
   organization     Organization          @relation(fields: [organizationId], references: [id])
   branch           Branch                @relation(fields: [branchId], references: [id])
   patient          Patient               @relation(fields: [patientId], references: [id])
-  encounter        Encounter             @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — a clinical order (and everything chained beneath
+  // it: lab/imaging/procedure/referral detail, specimens, results) must not
+  // silently vanish if its Encounter is ever deleted.
+  encounter        Encounter             @relation(fields: [encounterId], references: [id], onDelete: Restrict)
   orderingProvider Provider              @relation(fields: [orderingProviderId], references: [id])
   labDetail        LabOrderDetail?
   imagingDetail    ImagingOrderDetail?
@@ -1263,7 +1328,10 @@ model LabOrderDetail {
   specimenType    String? @map("specimen_type")
   clinicalNotes   String? @map("clinical_notes")
 
-  order ClinicalOrder @relation(fields: [clinicalOrderId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — see ClinicalOrder.encounter's comment; the parent
+  // order itself is now Restrict-protected, so this is defense in depth for
+  // the (currently nonexistent) case of a ClinicalOrder delete path.
+  order ClinicalOrder @relation(fields: [clinicalOrderId], references: [id], onDelete: Restrict)
 
   @@map("lab_order_detail")
 }
@@ -1274,7 +1342,8 @@ model ImagingOrderDetail {
   bodyPart        String? @map("body_part")
   clinicalNotes   String? @map("clinical_notes")
 
-  order ClinicalOrder @relation(fields: [clinicalOrderId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — see ClinicalOrder.encounter's comment.
+  order ClinicalOrder @relation(fields: [clinicalOrderId], references: [id], onDelete: Restrict)
 
   @@map("imaging_order_detail")
 }
@@ -1284,7 +1353,8 @@ model ProcedureOrderDetail {
   procedureName   String  @map("procedure_name")
   notes           String?
 
-  order ClinicalOrder @relation(fields: [clinicalOrderId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — see ClinicalOrder.encounter's comment.
+  order ClinicalOrder @relation(fields: [clinicalOrderId], references: [id], onDelete: Restrict)
 
   @@map("procedure_order_detail")
 }
@@ -1309,7 +1379,8 @@ model ReferralOrderDetail {
   reason               String?
   referralStatus       ReferralStatus @default(issued) @map("referral_status")
 
-  order              ClinicalOrder @relation(fields: [clinicalOrderId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — see ClinicalOrder.encounter's comment.
+  order              ClinicalOrder @relation(fields: [clinicalOrderId], references: [id], onDelete: Restrict)
   referredToProvider Provider?     @relation("ReferralTargetProvider", fields: [referredToProviderId], references: [id])
 
   @@map("referral_order_detail")
@@ -1334,7 +1405,9 @@ model Prescription {
 
   organization      Organization       @relation(fields: [organizationId], references: [id])
   patient           Patient            @relation(fields: [patientId], references: [id])
-  encounter         Encounter          @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — a prescription must not silently vanish if its
+  // Encounter is ever deleted.
+  encounter         Encounter          @relation(fields: [encounterId], references: [id], onDelete: Restrict)
   provider          Provider           @relation(fields: [providerId], references: [id])
   items             PrescriptionItem[]
   dispensingRecords DispensingRecord[]
@@ -1359,7 +1432,9 @@ model PrescriptionItem {
   quantity       Int?
   instructions   String?
 
-  prescription      Prescription       @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — which medications were prescribed must not vanish
+  // with the parent Prescription record.
+  prescription      Prescription       @relation(fields: [prescriptionId], references: [id], onDelete: Restrict)
   dispensingRecords DispensingRecord[]
 
   @@map("prescription_item")
@@ -1386,7 +1461,9 @@ model FollowUpRecommendation {
   createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
 
   organization Organization @relation(fields: [organizationId], references: [id])
-  encounter    Encounter    @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — a follow-up recommendation must not vanish with
+  // its Encounter.
+  encounter    Encounter    @relation(fields: [encounterId], references: [id], onDelete: Restrict)
   patient      Patient      @relation(fields: [patientId], references: [id])
   appointment  Appointment? @relation(fields: [appointmentId], references: [id])
 
@@ -1433,6 +1510,12 @@ model Charge {
   patientId         String           @map("patient_id")
   encounterId       String?          @map("encounter_id")
   serviceId         String?          @map("service_id")
+  // P1 §9: the retail-product-sale counterpart to serviceId — set only for
+  // sourceType "product" ad-hoc POS charges (never system-generated). Its
+  // presence, not sourceType alone, is what insertCharge (charges.ts) uses
+  // to decide whether to consume real inventory for this line — sourceType
+  // is descriptive; productId is the actual trigger.
+  productId         String?          @map("product_id")
   providerId        String?          @map("provider_id")
   sourceType        ChargeSourceType @map("source_type")
   sourceReferenceId String?          @map("source_reference_id")
@@ -1450,6 +1533,7 @@ model Charge {
   patient            Patient             @relation(fields: [patientId], references: [id])
   encounter          Encounter?          @relation(fields: [encounterId], references: [id])
   service            Service?            @relation(fields: [serviceId], references: [id])
+  product            Product?            @relation(fields: [productId], references: [id])
   provider           Provider?           @relation(fields: [providerId], references: [id])
   invoiceLine        InvoiceLine?
   commissionAccruals CommissionAccrual[]
@@ -1462,6 +1546,7 @@ model Charge {
   @@index([branchId])
   @@index([providerId])
   @@index([serviceId])
+  @@index([productId])
   @@map("charge")
 }
 
@@ -1546,7 +1631,10 @@ model InvoiceLine {
   taxAmount      Decimal @default(0) @map("tax_amount") @db.Decimal(14, 2)
   lineTotal      Decimal @map("line_total") @db.Decimal(14, 2)
 
-  invoice    Invoice     @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — directly contradicts this codebase's own "an
+  // invoice is never deleted to reverse a mistake, a reversal is a Refund
+  // against it" discipline; a line item must not vanish with its Invoice.
+  invoice    Invoice     @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
   charge     Charge      @relation(fields: [chargeId], references: [id])
   claimItems ClaimItem[]
 
@@ -1616,7 +1704,9 @@ model PaymentAllocation {
   invoiceId String  @map("invoice_id")
   amount    Decimal @db.Decimal(14, 2)
 
-  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — a payment allocation is financial ledger detail;
+  // it must not vanish with its Payment.
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
   invoice Invoice @relation(fields: [invoiceId], references: [id])
 
   @@unique([paymentId, invoiceId])
@@ -1644,6 +1734,11 @@ model Refund {
   branchId         String        @map("branch_id")
   invoiceId        String        @map("invoice_id")
   paymentId        String?       @map("payment_id")
+  // P1 §30: assigned atomically via nextNumber()'s "RFD" sequence at
+  // completeRefund time (the moment the refund becomes a real, money-moving
+  // event) — null while only "requested"/"authorized"/"rejected", exactly
+  // like a Payment's own receiptNumber is only ever real once money moved.
+  refundNumber     String?       @map("refund_number")
   method           PaymentMethod
   amount           Decimal       @db.Decimal(14, 2)
   reason           String
@@ -1656,12 +1751,16 @@ model Refund {
   rejectionReason  String?       @map("rejection_reason")
   completedAt      DateTime?     @map("completed_at") @db.Timestamptz(3)
 
-  organization   Organization    @relation(fields: [organizationId], references: [id])
-  branch         Branch          @relation(fields: [branchId], references: [id])
-  invoice        Invoice         @relation(fields: [invoiceId], references: [id])
-  payment        Payment?        @relation(fields: [paymentId], references: [id])
-  cashierSession CashierSession? @relation(fields: [cashierSessionId], references: [id])
+  organization        Organization        @relation(fields: [organizationId], references: [id])
+  branch              Branch              @relation(fields: [branchId], references: [id])
+  invoice             Invoice             @relation(fields: [invoiceId], references: [id])
+  payment             Payment?            @relation(fields: [paymentId], references: [id])
+  cashierSession      CashierSession?     @relation(fields: [cashierSessionId], references: [id])
+  // P1 §19: negative CommissionAccrual rows this refund caused — see
+  // CommissionAccrual.refundId's own doc comment.
+  commissionReversals CommissionAccrual[]
 
+  @@unique([organizationId, refundNumber])
   @@index([organizationId, status])
   @@index([invoiceId])
   @@index([branchId])
@@ -1815,7 +1914,11 @@ model PatientPackageSession {
   consumedAt       DateTime @default(now()) @map("consumed_at") @db.Timestamptz(3)
 
   organization   Organization   @relation(fields: [organizationId], references: [id])
-  patientPackage PatientPackage @relation(fields: [patientPackageId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — directly contradicts this model's own purpose:
+  // "there is deliberately no mutable 'sessions used' counter... every
+  // session consumption requires history." That history must not vanish
+  // with the parent PatientPackage.
+  patientPackage PatientPackage @relation(fields: [patientPackageId], references: [id], onDelete: Restrict)
   packageService PackageService @relation(fields: [packageServiceId], references: [id])
   encounter      Encounter?     @relation(fields: [encounterId], references: [id])
 
@@ -1888,6 +1991,7 @@ model Product {
   serviceConsumptions  ServiceProductConsumption[]
   commissionRules      CommissionRule[]
   medication           Medication?
+  charges              Charge[]
 
   @@unique([organizationId, sku])
   @@index([organizationId, category])
@@ -2144,6 +2248,15 @@ enum GoodsReceiptStatus {
 // `purchase` StockLedgerEntry rows in one transaction, and updates the
 // parent PurchaseOrder's status (spec.md §46: "goods receipt should create
 // inventory movements").
+//
+// P1 §15: the accounting posting this triggers (postGoodsReceiptCompleted)
+// is Dr Inventory / Cr "Goods Received Not Invoiced" (a GR/IR clearing
+// liability), NOT Cr Accounts Payable directly — physical receipt and the
+// legal AP obligation are two different events that can be days/weeks
+// apart, and crediting real AP before a supplier invoice ever exists would
+// overstate payables. The real AP account is only credited later, when
+// createSupplierInvoice's own postSupplierInvoiceCreated posting clears
+// this same GR/IR account. See INVENTORY.md.
 model GoodsReceipt {
   id              String             @id @default(uuid())
   organizationId  String             @map("organization_id")
@@ -2193,8 +2306,10 @@ enum SupplierInvoiceStatus {
 
 // Supplier invoice creates the accounts-payable obligation (spec.md §46) —
 // the obligation itself is recorded here; the actual AP ledger/journal
-// posting is Phase 6's central accounting engine, same deferred-accounting
-// pattern as Phase 4's revenue side.
+// posting is P1 §15's postSupplierInvoiceCreated (posting-service.ts),
+// clearing whatever was provisionally recognized at goods-receipt time
+// (see GoodsReceipt's own doc comment for the GR/IR pattern this
+// participates in).
 model SupplierInvoice {
   id              String                @id @default(uuid())
   organizationId  String                @map("organization_id")
@@ -2203,6 +2318,14 @@ model SupplierInvoice {
   purchaseOrderId String?               @map("purchase_order_id")
   invoiceNumber   String                @map("invoice_number")
   amount          Decimal               @db.Decimal(14, 2)
+  // P1 §15: recoverable purchase tax (e.g. input VAT) invoiced alongside the
+  // goods/services amount above — manually entered (no supplier-side
+  // TaxRule engine exists, unlike the sales side), defaults to 0, and when
+  // > 0 debits a dedicated Recoverable Tax asset account rather than being
+  // folded into `amount`/COGS. The total AP obligation this invoice creates
+  // is `amount + taxAmount`, not `amount` alone — see recordSupplierPayment
+  // (supplier-invoices.ts) for the matching outstanding-balance computation.
+  taxAmount       Decimal               @default(0) @map("tax_amount") @db.Decimal(14, 2)
   paidAmount      Decimal               @default(0) @map("paid_amount") @db.Decimal(14, 2)
   status          SupplierInvoiceStatus @default(pending)
   dueDate         DateTime?             @map("due_date") @db.Date
@@ -2326,6 +2449,40 @@ model AccountMapping {
   @@map("account_mapping")
 }
 
+enum AccountingPeriodStatus {
+  open
+  closed
+}
+
+// P1 §31: a row exists here ONLY for a calendar month that has actually been
+// closed — a month with no row is implicitly open, so nothing has to be
+// pre-created going forward. `periodStart`/`periodEnd` are always the first
+// instant of the month and the first instant of the following month (in
+// UTC), an exclusive [start, end) range checked against `journal.journalDate`
+// by `assertPeriodOpen` (posting-service.ts's `postJournal`, the single
+// chokepoint every posting function funnels through — this one guard
+// protects all of them at once, not each individually). Reopening flips
+// `status` back to `open` on the SAME row rather than deleting it, so the
+// row's own existence plus the audit log (closedBy/closedAt captured there,
+// same convention as Patient.status/Encounter.status) is the full open ->
+// closed -> reopened history — no separate history table needed for what's
+// fundamentally a two-state toggle with an audit trail already available.
+model AccountingPeriod {
+  id             String                 @id @default(uuid())
+  organizationId String                 @map("organization_id")
+  periodStart    DateTime               @map("period_start") @db.Timestamptz(3)
+  periodEnd      DateTime               @map("period_end") @db.Timestamptz(3)
+  status         AccountingPeriodStatus @default(closed)
+  closedBy       String?                @map("closed_by")
+  closedAt       DateTime               @default(now()) @map("closed_at") @db.Timestamptz(3)
+  reason         String
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, periodStart])
+  @@map("accounting_period")
+}
+
 // Every journal is posted by the central accounting posting service
 // (spec.md §55) — "operational modules should NOT independently invent
 // journal logic." referenceType/referenceId trace back to what caused the
@@ -2373,7 +2530,10 @@ model JournalLine {
   credit      Decimal @default(0) @db.Decimal(14, 2)
   description String?
 
-  journal Journal        @relation(fields: [journalId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — undermines the double-entry ledger's immutability
+  // the deferred balance-check trigger exists specifically to protect. A
+  // journal line must not vanish with its Journal.
+  journal Journal        @relation(fields: [journalId], references: [id], onDelete: Restrict)
   account ChartOfAccount @relation(fields: [accountId], references: [id])
 
   @@index([journalId])
@@ -2682,7 +2842,9 @@ model PayrollRunLine {
   otherDeductions      Decimal @default(0) @map("other_deductions") @db.Decimal(14, 2)
   netSalary            Decimal @map("net_salary") @db.Decimal(14, 2)
 
-  payrollRun         PayrollRun          @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — this table is the source data for individual
+  // payslips; it must not vanish with the parent PayrollRun.
+  payrollRun         PayrollRun          @relation(fields: [payrollRunId], references: [id], onDelete: Restrict)
   employee           Employee            @relation(fields: [employeeId], references: [id])
   commissionAccruals CommissionAccrual[]
 
@@ -2763,19 +2925,43 @@ model CommissionAccrual {
   amount           Decimal                 @db.Decimal(14, 2)
   status           CommissionAccrualStatus @default(pending)
   payrollRunLineId String?                 @map("payroll_run_line_id")
+  // P1 §19: set only on a reversal row this refund caused
+  // (reverseCommissionsForRefund, commissions.ts) — a NEGATIVE `amount`
+  // clawing back some or all of a `collected_revenue`-basis accrual whose
+  // underlying payment was later refunded. Deliberately NOT set on ordinary
+  // accrual rows, and deliberately leaves `paymentId` null on the reversal
+  // row itself (copying the original row's paymentId here would collide
+  // with @@unique([chargeId, paymentId]), since the original row already
+  // occupies that pair).
+  refundId         String?                 @map("refund_id")
+  // P1 §19: which ORIGINAL accrual this row reverses — required for
+  // idempotency to be precise when one charge has multiple originating
+  // payments (so multiple collected_revenue accruals): checking only
+  // (refundId, chargeId) would wrongly treat the reversal of a second
+  // payment's accrual as "already done" once the first payment's reversal
+  // existed, silently under-reversing. `@@unique([refundId, reversalOfId])`
+  // below is the real, DB-enforced idempotency key for reversal rows (both
+  // columns null on ordinary accrual rows, where NULL-is-distinct means no
+  // false collisions between them).
+  reversalOfId     String?                 @map("reversal_of_id")
   accruedAt        DateTime                @default(now()) @map("accrued_at") @db.Timestamptz(3)
 
-  organization   Organization    @relation(fields: [organizationId], references: [id])
-  branch         Branch          @relation(fields: [branchId], references: [id])
-  provider       Provider        @relation(fields: [providerId], references: [id])
-  charge         Charge          @relation(fields: [chargeId], references: [id])
-  invoice        Invoice         @relation(fields: [invoiceId], references: [id])
-  payment        Payment?        @relation(fields: [paymentId], references: [id])
-  commissionRule CommissionRule  @relation(fields: [commissionRuleId], references: [id])
-  payrollRunLine PayrollRunLine? @relation(fields: [payrollRunLineId], references: [id])
+  organization   Organization        @relation(fields: [organizationId], references: [id])
+  branch         Branch              @relation(fields: [branchId], references: [id])
+  provider       Provider            @relation(fields: [providerId], references: [id])
+  charge         Charge              @relation(fields: [chargeId], references: [id])
+  invoice        Invoice             @relation(fields: [invoiceId], references: [id])
+  payment        Payment?            @relation(fields: [paymentId], references: [id])
+  commissionRule CommissionRule      @relation(fields: [commissionRuleId], references: [id])
+  payrollRunLine PayrollRunLine?     @relation(fields: [payrollRunLineId], references: [id])
+  refund         Refund?             @relation(fields: [refundId], references: [id])
+  reversalOf     CommissionAccrual?  @relation("CommissionReversal", fields: [reversalOfId], references: [id])
+  reversals      CommissionAccrual[] @relation("CommissionReversal")
 
   @@unique([chargeId, paymentId])
+  @@unique([refundId, reversalOfId])
   @@index([organizationId, providerId, status])
+  @@index([refundId])
   @@index([branchId])
   @@index([invoiceId])
   @@map("commission_accrual")
@@ -2798,26 +2984,40 @@ enum AssetStatus {
 // redundant posting path specifically for Asset isn't named in spec.md §47
 // and isn't built ahead of a real need for it.
 model Asset {
-  id                 String      @id @default(uuid())
-  organizationId     String      @map("organization_id")
-  branchId           String      @map("branch_id")
-  departmentId       String?     @map("department_id")
-  roomId             String?     @map("room_id")
-  assetNumber        String      @map("asset_number")
-  barcode            String?
-  name               String
-  category           String
-  manufacturer       String?
-  model              String?
-  serialNumber       String?     @map("serial_number")
-  assignedEmployeeId String?     @map("assigned_employee_id")
-  supplierId         String?     @map("supplier_id")
-  purchaseDate       DateTime?   @map("purchase_date") @db.Date
-  cost               Decimal?    @db.Decimal(14, 2)
-  warrantyExpiryDate DateTime?   @map("warranty_expiry_date") @db.Date
-  status             AssetStatus @default(available)
-  createdAt          DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt          DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                    String         @id @default(uuid())
+  organizationId        String         @map("organization_id")
+  branchId              String         @map("branch_id")
+  departmentId          String?        @map("department_id")
+  roomId                String?        @map("room_id")
+  assetNumber           String         @map("asset_number")
+  barcode               String?
+  name                  String
+  category              String
+  manufacturer          String?
+  model                 String?
+  serialNumber          String?        @map("serial_number")
+  assignedEmployeeId    String?        @map("assigned_employee_id")
+  supplierId            String?        @map("supplier_id")
+  purchaseDate          DateTime?      @map("purchase_date") @db.Date
+  cost                  Decimal?       @db.Decimal(14, 2)
+  // P1 §17: which tender the acquisition was paid with — set, `cost` is
+  // posted Dr Fixed Asset / Cr [resolved tender account]; left null (bought
+  // on credit), Dr Fixed Asset / Cr Accounts Payable. See createAsset
+  // (assets.ts) and postAssetAcquired (posting-service.ts).
+  paidVia               PaymentMethod? @map("paid_via")
+  // P1 §17: depreciation-readiness fields only — "prepare architecture,
+  // don't build the integration" (same precedent as ImagingOrder's PACS
+  // fields). No depreciation schedule, calculation, or posting logic reads
+  // these yet; they exist so a future phase can add that without another
+  // migration. All nullable, all currently unused by any service function.
+  depreciationMethod    String?        @map("depreciation_method")
+  usefulLifeMonths      Int?           @map("useful_life_months")
+  salvageValue          Decimal?       @map("salvage_value") @db.Decimal(14, 2)
+  depreciationStartDate DateTime?      @map("depreciation_start_date") @db.Date
+  warrantyExpiryDate    DateTime?      @map("warranty_expiry_date") @db.Date
+  status                AssetStatus    @default(available)
+  createdAt             DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   organization       Organization        @relation(fields: [organizationId], references: [id])
   branch             Branch              @relation(fields: [branchId], references: [id])
@@ -2915,6 +3115,15 @@ model LabTest {
   referenceRangeLow  Decimal?      @map("reference_range_low") @db.Decimal(10, 3)
   referenceRangeHigh Decimal?      @map("reference_range_high") @db.Decimal(10, 3)
   referenceRangeText String?       @map("reference_range_text")
+  // P1 §22: optional critical-panic thresholds, independent of the normal
+  // reference band above — a value can be "high" without being critical.
+  // Nullable and deliberately separate from referenceRangeLow/High rather
+  // than inferred from them: not configuring these means computeAbnormalFlag
+  // (laboratory/results.ts) never determines critical_low/critical_high for
+  // this test, matching P1 §22's own "where reference ranges exist"
+  // qualifier — no fabricated thresholds.
+  criticalLow        Decimal?      @map("critical_low") @db.Decimal(10, 3)
+  criticalHigh       Decimal?      @map("critical_high") @db.Decimal(10, 3)
   price              Decimal       @db.Decimal(14, 2)
   turnaroundHours    Int?          @map("turnaround_hours")
   isActive           Boolean       @default(true) @map("is_active")
@@ -2992,7 +3201,9 @@ model Specimen {
 
   organization  Organization   @relation(fields: [organizationId], references: [id])
   branch        Branch         @relation(fields: [branchId], references: [id])
-  clinicalOrder ClinicalOrder  @relation(fields: [clinicalOrderId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — a collected specimen record must not vanish with
+  // its parent ClinicalOrder.
+  clinicalOrder ClinicalOrder  @relation(fields: [clinicalOrderId], references: [id], onDelete: Restrict)
   orderTests    LabOrderTest[]
 
   @@unique([organizationId, specimenNumber])
@@ -3051,14 +3262,25 @@ model LabOrderTest {
   verifiedBy         String?            @map("verified_by")
   verifiedAt         DateTime?          @map("verified_at") @db.Timestamptz(3)
   notes              String?
+  // P1 §21: a verified ("Final Result") line is never edited in place —
+  // amendLabResult (laboratory/results.ts) creates a new row instead,
+  // marking this one isCurrent:false and pointing the new row's amendsId
+  // back here. Same isCurrent+amendsId chain shape as ClinicalNote (Phase
+  // 3) — reused, not reinvented.
+  isCurrent          Boolean            @default(true) @map("is_current")
+  amendsId           String?            @map("amends_id")
   createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  organization  Organization  @relation(fields: [organizationId], references: [id])
-  clinicalOrder ClinicalOrder @relation(fields: [clinicalOrderId], references: [id], onDelete: Cascade)
-  labTest       LabTest       @relation(fields: [labTestId], references: [id])
-  labPanel      LabPanel?     @relation(fields: [labPanelId], references: [id])
-  specimen      Specimen?     @relation(fields: [specimenId], references: [id])
-  charge        Charge?       @relation(fields: [chargeId], references: [id])
+  organization  Organization   @relation(fields: [organizationId], references: [id])
+  // P0-05: was Cascade — an actual lab result must not vanish with its
+  // parent ClinicalOrder.
+  clinicalOrder ClinicalOrder  @relation(fields: [clinicalOrderId], references: [id], onDelete: Restrict)
+  labTest       LabTest        @relation(fields: [labTestId], references: [id])
+  labPanel      LabPanel?      @relation(fields: [labPanelId], references: [id])
+  specimen      Specimen?      @relation(fields: [specimenId], references: [id])
+  charge        Charge?        @relation(fields: [chargeId], references: [id])
+  amends        LabOrderTest?  @relation("LabResultAmendment", fields: [amendsId], references: [id])
+  amendments    LabOrderTest[] @relation("LabResultAmendment")
 
   @@index([organizationId, status])
   @@index([clinicalOrderId])
@@ -3168,7 +3390,10 @@ model DispensingReturn {
   returnedAt         DateTime @default(now()) @map("returned_at") @db.Timestamptz(3)
 
   organization     Organization     @relation(fields: [organizationId], references: [id])
-  dispensingRecord DispensingRecord @relation(fields: [dispensingRecordId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — contradicts this model's own "a correcting record,
+  // never an edit" purpose; a return record must not vanish with the
+  // dispensing record it corrects.
+  dispensingRecord DispensingRecord @relation(fields: [dispensingRecordId], references: [id], onDelete: Restrict)
 
   @@index([dispensingRecordId])
   @@map("dispensing_return")
@@ -3254,7 +3479,9 @@ model ImagingOrder {
   createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
 
   organization   Organization   @relation(fields: [organizationId], references: [id])
-  clinicalOrder  ClinicalOrder  @relation(fields: [clinicalOrderId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — an actual radiology report must not vanish with
+  // its parent ClinicalOrder.
+  clinicalOrder  ClinicalOrder  @relation(fields: [clinicalOrderId], references: [id], onDelete: Restrict)
   imagingService ImagingService @relation(fields: [imagingServiceId], references: [id])
   charge         Charge?        @relation(fields: [chargeId], references: [id])
   room           Room?          @relation(fields: [roomId], references: [id])
@@ -3519,7 +3746,9 @@ model ClaimItem {
   rejectedAmount  Decimal? @map("rejected_amount") @db.Decimal(14, 2)
   denialReason    String?  @map("denial_reason")
 
-  claim       Claim       @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  // P0-05: was Cascade — claim line-item history must not vanish with the
+  // parent Claim.
+  claim       Claim       @relation(fields: [claimId], references: [id], onDelete: Restrict)
   invoiceLine InvoiceLine @relation(fields: [invoiceLineId], references: [id])
   diagnosis   Diagnosis?  @relation(fields: [diagnosisId], references: [id])
 

@@ -1,6 +1,7 @@
 import "server-only"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
+import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 
 const PRESCRIPTION_INCLUDE = {
@@ -19,9 +20,14 @@ const PRESCRIPTION_INCLUDE = {
  */
 export async function listPharmacyQueue(session: SessionContext) {
   assertCan(session, "prescription.dispense")
+  const scope = getAuthorizedBranchScope(session)
 
   const prescriptions = await db.prescription.findMany({
-    where: { organizationId: session.user.organizationId, status: "active" },
+    where: {
+      organizationId: session.user.organizationId,
+      status: "active",
+      encounter: { branchId: narrowBranchFilter(scope) },
+    },
     include: PRESCRIPTION_INCLUDE,
     orderBy: { issuedAt: "asc" },
   })
@@ -47,9 +53,11 @@ export async function getPrescriptionForDispensing(session: SessionContext, pres
     where: { id: prescriptionId, organizationId: session.user.organizationId },
     include: {
       ...PRESCRIPTION_INCLUDE,
+      encounter: { select: { branchId: true } },
       items: { include: { dispensingRecords: { include: { medication: { include: { product: true } }, returns: true } } } },
     },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), prescription.encounter.branchId)
 
   const items = prescription.items.map((item) => {
     const dispensed = item.dispensingRecords

@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
 import { createLabTest, updateLabTest, deactivateLabTest, createLabPanel, deactivateLabPanel } from "@/lib/domains/laboratory/catalog"
 import { assignTests, collectSpecimen, rejectSpecimen, receiveSpecimen } from "@/lib/domains/laboratory/orders"
-import { enterNumericResult, enterTextResult, verifyResult } from "@/lib/domains/laboratory/results"
+import { enterNumericResult, enterTextResult, verifyResult, amendLabResult } from "@/lib/domains/laboratory/results"
 import { labTestSchema, labPanelSchema, assignTestsSchema, enterNumericResultSchema, enterTextResultSchema } from "@/lib/domains/laboratory/schemas"
 
 export type ActionState = { error?: string; success?: boolean }
@@ -170,4 +170,41 @@ export async function verifyResultAction(labOrderTestId: string, clinicalOrderId
   const session = await requireSession()
   await verifyResult(session, labOrderTestId)
   revalidatePath(`/laboratory/orders/${clinicalOrderId}`)
+}
+
+/** P1 §21: corrects an already-verified result via a new, isCurrent row — never edits the original in place. */
+export async function amendNumericResultAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const session = await requireSession()
+  const labOrderTestId = String(formData.get("labOrderTestId") ?? "")
+  const clinicalOrderId = String(formData.get("clinicalOrderId") ?? "")
+  const parsed = enterNumericResultSchema.safeParse({
+    numericValue: formData.get("numericValue"),
+    notes: formData.get("notes"),
+  })
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
+  try {
+    await amendLabResult(session, labOrderTestId, parsed.data)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to amend result." }
+  }
+  revalidatePath(`/laboratory/orders/${clinicalOrderId}`)
+  return { success: true }
+}
+
+export async function amendTextResultAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const session = await requireSession()
+  const labOrderTestId = String(formData.get("labOrderTestId") ?? "")
+  const clinicalOrderId = String(formData.get("clinicalOrderId") ?? "")
+  const parsed = enterTextResultSchema.safeParse({
+    textValue: formData.get("textValue"),
+    notes: formData.get("notes"),
+  })
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
+  try {
+    await amendLabResult(session, labOrderTestId, parsed.data)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to amend result." }
+  }
+  revalidatePath(`/laboratory/orders/${clinicalOrderId}`)
+  return { success: true }
 }

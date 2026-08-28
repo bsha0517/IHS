@@ -4,6 +4,7 @@ import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { nextNumber } from "@/lib/platform/sequences"
+import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { PurchaseOrderInput } from "@/lib/domains/procurement/schemas"
 
@@ -70,6 +71,7 @@ export async function getPurchaseOrder(session: SessionContext, id: string) {
     where: { id, organizationId: session.user.organizationId },
     include: PO_INCLUDE,
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), po.branchId)
   return {
     ...po,
     lines: po.lines.map((line) => ({
@@ -81,8 +83,9 @@ export async function getPurchaseOrder(session: SessionContext, id: string) {
 
 export async function listPurchaseOrders(session: SessionContext, filters: { status?: string } = {}) {
   assertCan(session, "purchase_order.create")
+  const scope = getAuthorizedBranchScope(session)
   return db.purchaseOrder.findMany({
-    where: { organizationId: session.user.organizationId, status: filters.status as never },
+    where: { organizationId: session.user.organizationId, status: filters.status as never, branchId: narrowBranchFilter(scope) },
     include: { supplier: true, branch: true },
     orderBy: { createdAt: "desc" },
     take: 100,
@@ -92,6 +95,7 @@ export async function listPurchaseOrders(session: SessionContext, filters: { sta
 export async function cancelPurchaseOrder(session: SessionContext, id: string, reason: string) {
   assertCan(session, "purchase_order.create")
   const po = await db.purchaseOrder.findFirstOrThrow({ where: { id, organizationId: session.user.organizationId } })
+  assertBranchAccess(getAuthorizedBranchScope(session), po.branchId)
   if (po.status === "received") throw new Error("Cannot cancel a fully received purchase order.")
 
   const updated = await db.purchaseOrder.update({ where: { id }, data: { status: "cancelled", notes: reason } })

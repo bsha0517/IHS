@@ -172,6 +172,7 @@ export default async function PurchasingPage() {
                       <TableHead>Invoice #</TableHead>
                       <TableHead>Supplier</TableHead>
                       <TableHead>Amount</TableHead>
+                      <TableHead>Tax</TableHead>
                       <TableHead>Outstanding</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Due</TableHead>
@@ -181,18 +182,23 @@ export default async function PurchasingPage() {
                   <TableBody>
                     {invoices.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={7} className="text-center text-muted-foreground">
+                        <TableCell colSpan={8} className="text-center text-muted-foreground">
                           No supplier invoices yet.
                         </TableCell>
                       </TableRow>
                     )}
                     {invoices.map((inv) => {
-                      const outstanding = Number(inv.amount) - Number(inv.paidAmount)
+                      // Total AP obligation is amount + taxAmount (P1 §15) — matching
+                      // what postSupplierInvoiceCreated actually credited to Accounts
+                      // Payable, and what recordSupplierPayment's own outstanding-balance
+                      // guard (supplier-invoices.ts) checks against.
+                      const outstanding = Number(inv.amount) + Number(inv.taxAmount) - Number(inv.paidAmount)
                       return (
                         <TableRow key={inv.id}>
                           <TableCell className="font-medium">{inv.invoiceNumber}</TableCell>
                           <TableCell>{inv.supplier.companyName}</TableCell>
                           <TableCell>{Number(inv.amount).toFixed(2)}</TableCell>
+                          <TableCell>{Number(inv.taxAmount) > 0 ? Number(inv.taxAmount).toFixed(2) : "—"}</TableCell>
                           <TableCell>{outstanding.toFixed(2)}</TableCell>
                           <TableCell>
                             <Badge variant={inv.status === "paid" ? "default" : inv.status === "cancelled" ? "destructive" : "outline"}>

@@ -1,6 +1,7 @@
 import "server-only"
 import { db } from "@/lib/db"
 import { can, ForbiddenError } from "@/lib/platform/permissions-core"
+import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { ReportFilters } from "@/lib/domains/analytics/schemas"
 
@@ -16,7 +17,9 @@ export async function getRevenueCycleReport(session: SessionContext, filters: Re
     throw new ForbiddenError("invoice.view|claim.create")
   }
   const organizationId = session.user.organizationId
-  const branchWhere = filters.branchId ? { branchId: filters.branchId } : {}
+  const scope = getAuthorizedBranchScope(session)
+  const scopedBranchId = narrowBranchFilter(scope, filters.branchId)
+  const branchWhere = scopedBranchId !== undefined ? { branchId: scopedBranchId } : {}
 
   const [chargesByStatus, claimsByStatus, rejectedClaims, collections, patientResponsibility] = await Promise.all([
     db.charge.groupBy({ by: ["status"], where: { organizationId, ...branchWhere, createdAt: { gte: filters.from, lte: filters.to } }, _count: { _all: true }, _sum: { amount: true } }),

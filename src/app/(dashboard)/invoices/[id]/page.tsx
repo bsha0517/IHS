@@ -229,6 +229,7 @@ export default async function InvoiceDetailPage({ params }: { params: Promise<{ 
               <div key={r.id} className="flex items-center justify-between rounded-md border border-border p-2 text-sm">
                 <div>
                   <p>
+                    {r.refundNumber ? `${r.refundNumber} — ` : ""}
                     {Number(r.amount).toFixed(2)} via {r.method} — {r.reason}
                   </p>
                   <p className="text-xs text-muted-foreground">Requested {formatDateTime(r.requestedAt)}</p>

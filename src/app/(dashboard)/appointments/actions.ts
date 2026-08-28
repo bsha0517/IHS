@@ -55,6 +55,7 @@ export async function rescheduleAppointmentAction(_prev: ActionState, formData: 
     durationMinutes: formData.get("durationMinutes"),
     providerId: formData.get("providerId"),
     roomId: formData.get("roomId"),
+    reason: formData.get("reason"),
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 

@@ -1,6 +1,7 @@
 import "server-only"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
+import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { ReportFilters } from "@/lib/domains/analytics/schemas"
 
@@ -36,10 +37,12 @@ function weekdayOccurrences(from: Date, to: Date, dayOfWeek: number) {
 export async function getPracticeReport(session: SessionContext, filters: ReportFilters) {
   assertCan(session, "appointment.view")
   const organizationId = session.user.organizationId
+  const scope = getAuthorizedBranchScope(session)
+  const scopedBranchId = narrowBranchFilter(scope, filters.branchId)
   const where = {
     organizationId,
     startTime: { gte: filters.from, lte: filters.to },
-    ...(filters.branchId ? { branchId: filters.branchId } : {}),
+    ...(scopedBranchId !== undefined ? { branchId: scopedBranchId } : {}),
     ...(filters.providerId ? { providerId: filters.providerId } : {}),
   }
 
@@ -61,7 +64,7 @@ export async function getPracticeReport(session: SessionContext, filters: Report
   const providerIds = filters.providerId ? [filters.providerId] : [...new Set(appointments.map((a) => a.providerId))]
   const [providers, schedules] = await Promise.all([
     db.provider.findMany({ where: { id: { in: providerIds } } }),
-    db.providerSchedule.findMany({ where: { providerId: { in: providerIds }, isActive: true, ...(filters.branchId ? { branchId: filters.branchId } : {}) } }),
+    db.providerSchedule.findMany({ where: { providerId: { in: providerIds }, isActive: true, ...(scopedBranchId !== undefined ? { branchId: scopedBranchId } : {}) } }),
   ])
   const providerUtilization = providers.map((provider) => {
     const providerAppointments = appointments.filter((a) => a.providerId === provider.id && a.status !== "cancelled" && a.status !== "no_show" && a.status !== "rescheduled")

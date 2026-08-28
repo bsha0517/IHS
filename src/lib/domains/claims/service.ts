@@ -8,6 +8,8 @@ import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/ou
 import "@/lib/platform/event-handlers"
 import { ManualSubmissionAdapter } from "@/lib/domains/claims/adapters/manual-adapter"
 import type { ClaimSubmissionAdapter } from "@/lib/domains/claims/adapters/types"
+import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
+import { applyPaymentAtomically } from "@/lib/domains/billing/invoices"
 import type { SessionContext } from "@/lib/auth/session"
 import type { CreateClaimInput, AdjudicateClaimInput, RecordRemittanceInput } from "@/lib/domains/claims/schemas"
 
@@ -202,12 +204,22 @@ export async function recordRemittance(session: SessionContext, claimId: string,
   if (claim.status !== "adjudicated") throw new Error(`Only an adjudicated claim can be remitted (this one is "${claim.status}").`)
 
   const invoice = claim.invoice
-  const outstanding = new Decimal(invoice.totalAmount).sub(invoice.paidAmount)
-  if (new Decimal(input.amount).greaterThan(outstanding)) {
-    throw new Error(`Remittance of ${input.amount.toFixed(2)} exceeds the invoice's outstanding balance of ${outstanding.toFixed(2)}.`)
+  // Fast, pre-transaction check for the common (non-racing) case — see
+  // applyPaymentAtomically's own doc comment (billing/invoices.ts) for the
+  // actual safety mechanism, shared with payments.ts's recordPayment
+  // precisely because both write the same invoice.paid_amount column and
+  // must be guarded together, not independently (P1 §29).
+  const preliminaryOutstanding = new Decimal(invoice.totalAmount).sub(invoice.paidAmount)
+  if (new Decimal(input.amount).greaterThan(preliminaryOutstanding)) {
+    throw new Error(`Remittance of ${input.amount.toFixed(2)} exceeds the invoice's outstanding balance of ${preliminaryOutstanding.toFixed(2)}.`)
   }
 
+  // Timeout widened from Prisma's 5000ms default — see posting-service.ts's
+  // POSTING_TRANSACTION_OPTIONS for why this environment's real Supabase
+  // latency needs the headroom.
   const payment = await db.$transaction(async (tx) => {
+    await applyPaymentAtomically(tx, invoice.id, new Decimal(input.amount))
+
     const receiptNumber = await nextNumber({ organizationId: session.user.organizationId, sequenceType: "PAY", prefix: "PAY" })
     const created = await tx.payment.create({
       data: {
@@ -225,13 +237,12 @@ export async function recordRemittance(session: SessionContext, claimId: string,
       data: { paymentId: created.id, invoiceId: invoice.id, amount: new Decimal(input.amount) },
     })
 
-    const newPaidAmount = new Decimal(invoice.paidAmount).add(input.amount)
-    const newStatus = newPaidAmount.greaterThanOrEqualTo(invoice.totalAmount) ? "paid" : "partially_paid"
+    // Not part of the balance invariant applyPaymentAtomically guards — a
+    // plain overwrite of this remittance's own responsibility-split fields
+    // is safe under concurrency regardless of paid_amount's current value.
     await tx.invoice.update({
       where: { id: invoice.id },
       data: {
-        paidAmount: newPaidAmount,
-        status: newStatus,
         finalPayorResponsibility: new Decimal(input.amount),
         finalPatientResponsibility: claim.patientResponsibilityAmount ?? new Decimal(0),
       },
@@ -252,7 +263,7 @@ export async function recordRemittance(session: SessionContext, claimId: string,
     })
 
     return created
-  })
+  }, { timeout: 20_000, maxWait: 10_000 })
 
   await auditFromSession(session, "create", "payment", payment.id, { new: { claimId, amount: input.amount, method: "insurance" } })
   await dispatchPendingOutboxEvents(session.user.organizationId)
@@ -297,10 +308,12 @@ export async function resubmitClaimAsIs(session: SessionContext, claimId: string
 
 export async function listClaims(session: SessionContext, filters: { status?: string } = {}) {
   assertCan(session, "claim.create")
+  const scope = getAuthorizedBranchScope(session)
   return db.claim.findMany({
     where: {
       organizationId: session.user.organizationId,
       status: filters.status ? (filters.status as never) : undefined,
+      branchId: narrowBranchFilter(scope),
     },
     include: { patient: true, payor: true, invoice: true },
     orderBy: { createdAt: "desc" },
@@ -309,8 +322,10 @@ export async function listClaims(session: SessionContext, filters: { status?: st
 
 export async function getClaim(session: SessionContext, id: string) {
   assertCan(session, "claim.create")
-  return db.claim.findFirstOrThrow({
+  const claim = await db.claim.findFirstOrThrow({
     where: { id, organizationId: session.user.organizationId },
     include: CLAIM_INCLUDE,
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), claim.branchId)
+  return claim
 }

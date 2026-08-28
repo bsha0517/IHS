@@ -3,6 +3,7 @@ import { Decimal } from "@prisma/client/runtime/client"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
+import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { OpenCashierSessionInput, CashMovementInput, CloseCashierSessionInput } from "@/lib/domains/billing/schemas"
 
@@ -108,10 +109,11 @@ export async function closeSession(session: SessionContext, cashierSessionId: st
 
 export async function listCashierSessions(session: SessionContext, filters: { branchId?: string; status?: string } = {}) {
   assertCan(session, "cashier.view")
+  const scope = getAuthorizedBranchScope(session)
   return db.cashierSession.findMany({
     where: {
       organizationId: session.user.organizationId,
-      branchId: filters.branchId,
+      branchId: narrowBranchFilter(scope, filters.branchId),
       status: filters.status as never,
     },
     orderBy: { openedAt: "desc" },
@@ -126,6 +128,7 @@ export async function getCashierSession(session: SessionContext, id: string) {
   })
   if (cashierSession.cashierUserId !== session.user.id) {
     assertCan(session, "cashier.view")
+    assertBranchAccess(getAuthorizedBranchScope(session), cashierSession.branchId)
   }
   return cashierSession
 }

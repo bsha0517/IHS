@@ -1,13 +1,96 @@
 import "server-only"
 import { Decimal } from "@prisma/client/runtime/client"
 import { db } from "@/lib/db"
+import { Prisma } from "@/generated/prisma/client"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { nextNumber } from "@/lib/platform/sequences"
 import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/outbox"
 import "@/lib/platform/event-handlers"
+import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { GenerateInvoiceInput } from "@/lib/domains/billing/schemas"
+
+type Db = Prisma.TransactionClient | typeof db
+
+/**
+ * P1 §29: the one and only place `invoice.paid_amount` is ever incremented
+ * — by a patient payment (payments.ts) or an insurance remittance
+ * (claims/service.ts), both of which write the same column and must
+ * therefore share the same guard, not two independently-racing ones. A
+ * plain "read paidAmount, check in application code, then write" (what
+ * every caller did before P1) has a real gap: two concurrent calls both
+ * read the same stale paidAmount, both pass validation, both write —
+ * together overpaying an invoice with neither ever seeing the other's
+ * write. Fixed with a single atomic UPDATE whose WHERE clause re-validates
+ * the invariant (`paid_amount + amount <= total_amount`) against
+ * whatever the row's value actually is *at the moment Postgres evaluates
+ * this statement*, which is what makes it safe under concurrency — the
+ * same "one atomic conditional statement, not check-then-update" pattern
+ * `sequences.ts`'s `nextNumber()` already established for its own
+ * concurrency guarantee. Two concurrent calls against the same invoice
+ * serialize on the row (the second genuinely waits for the first's
+ * transaction to commit or roll back before its own UPDATE evaluates),
+ * so the second sees the first's already-applied increment and correctly
+ * fails the WHERE clause if there's no room left — 0 rows updated, and
+ * this throws rather than silently truncating or overpaying.
+ */
+export async function applyPaymentAtomically(tx: Db, invoiceId: string, amount: Decimal): Promise<{ status: string }> {
+  const updated = await tx.$queryRaw<{ status: string }[]>(Prisma.sql`
+    UPDATE "invoice"
+    SET
+      "paid_amount" = "paid_amount" + ${amount.toFixed(2)}::numeric,
+      "status" = CASE
+        WHEN "paid_amount" + ${amount.toFixed(2)}::numeric >= "total_amount" THEN 'paid'::"InvoiceStatus"
+        ELSE 'partially_paid'::"InvoiceStatus"
+      END
+    WHERE "id" = ${invoiceId}
+      AND "paid_amount" + ${amount.toFixed(2)}::numeric <= "total_amount"
+    RETURNING "status"
+  `)
+  if (updated.length === 0) {
+    throw new Error(
+      `Payment of ${amount.toFixed(2)} exceeds the invoice's outstanding balance — another payment or remittance was recorded first. Refresh and try again.`
+    )
+  }
+  return updated[0]
+}
+
+/**
+ * The refund-side mirror of `applyPaymentAtomically` — same reasoning, same
+ * pattern, guarding the opposite direction: `paid_amount - amount >= 0`
+ * (a refund can never make the recorded paid amount negative, which is
+ * exactly "cannot exceed the remaining refundable balance," since
+ * `paid_amount` already reflects every prior completed refund's
+ * decrement). This is P1 §7's literal scenario: Payment 1,000, an existing
+ * completed refund of 600 (paid_amount already down to 400), two new
+ * simultaneous requests to refund 300 each — the first to actually commit
+ * its UPDATE succeeds (400 - 300 = 100 >= 0); the second, evaluated after
+ * the first commits, sees paid_amount already at 100 and correctly fails
+ * (100 - 300 < 0) rather than letting the combined 600 exceed the 400 that
+ * was actually still refundable.
+ */
+export async function applyRefundAtomically(tx: Db, invoiceId: string, amount: Decimal): Promise<{ status: string }> {
+  const updated = await tx.$queryRaw<{ status: string }[]>(Prisma.sql`
+    UPDATE "invoice"
+    SET
+      "paid_amount" = "paid_amount" - ${amount.toFixed(2)}::numeric,
+      "status" = CASE
+        WHEN "paid_amount" - ${amount.toFixed(2)}::numeric <= 0 THEN 'issued'::"InvoiceStatus"
+        WHEN "paid_amount" - ${amount.toFixed(2)}::numeric < "total_amount" THEN 'partially_paid'::"InvoiceStatus"
+        ELSE 'paid'::"InvoiceStatus"
+      END
+    WHERE "id" = ${invoiceId}
+      AND "paid_amount" - ${amount.toFixed(2)}::numeric >= 0
+    RETURNING "status"
+  `)
+  if (updated.length === 0) {
+    throw new Error(
+      `Refund of ${amount.toFixed(2)} exceeds the invoice's remaining refundable balance — another refund was completed first. Refresh and try again.`
+    )
+  }
+  return updated[0]
+}
 
 const INVOICE_INCLUDE = {
   patient: true,
@@ -53,6 +136,14 @@ async function getTaxRate(organizationId: string, serviceId: string | null): Pro
 export async function generateInvoice(session: SessionContext, input: GenerateInvoiceInput) {
   assertCan(session, "invoice.create", { branchId: input.branchId })
 
+  // P1 §32/§33 (finding A5): fast, pre-transaction read for the common
+  // (non-racing) case only — NOT the safety mechanism, same "friendly error
+  // without opening a transaction" discipline as recordPayment's own
+  // preliminary check. Two overlapping "Generate Invoice" submissions (a
+  // double-click, or two staff members both invoicing from the same
+  // pending-charges list) could both pass this read; the atomic claim
+  // inside the transaction below is what actually prevents both from
+  // succeeding and double-billing the same charge on two invoices.
   const charges = await db.charge.findMany({
     where: {
       id: { in: input.chargeIds },
@@ -113,6 +204,24 @@ export async function generateInvoice(session: SessionContext, input: GenerateIn
   }
 
   const invoice = await db.$transaction(async (tx) => {
+    // P1 §32/§33 (finding A5) — the actual guard: atomically claim every
+    // charge (pending -> invoiced) *before* creating the invoice, with a
+    // `status: "pending"` precondition in the WHERE clause itself, not a
+    // plain `where: { id }` update. Two concurrent generateInvoice calls
+    // selecting the same charge(s) both pass the pre-transaction read above,
+    // but only the first to reach this claim actually flips them — the
+    // second's `claimed.count` comes up short and the whole transaction
+    // (including the invoice/lines it hadn't created yet) rolls back, the
+    // same "claim before acting" discipline dispenseRecord/completeRefund
+    // already established.
+    const claimed = await tx.charge.updateMany({
+      where: { id: { in: input.chargeIds }, organizationId: session.user.organizationId, patientId: input.patientId, status: "pending" },
+      data: { status: "invoiced" },
+    })
+    if (claimed.count !== input.chargeIds.length) {
+      throw new Error("One or more selected charges were already invoiced by another request — refresh and try again.")
+    }
+
     const invoiceNumber = await nextNumber({
       organizationId: session.user.organizationId,
       sequenceType: "INV",
@@ -150,7 +259,6 @@ export async function generateInvoice(session: SessionContext, input: GenerateIn
           lineTotal,
         },
       })
-      await tx.charge.update({ where: { id: charge.id }, data: { status: "invoiced" } })
     }
 
     await writeOutboxEvent(tx, {
@@ -160,7 +268,7 @@ export async function generateInvoice(session: SessionContext, input: GenerateIn
     })
 
     return created
-  })
+  }, { timeout: 20_000, maxWait: 10_000 }) // widened for the same reason posting-service.ts's POSTING_TRANSACTION_OPTIONS is — nextNumber()'s own nested transaction plus one invoiceLine create and one charge update PER LINE add up under this environment's real Supabase pooler latency, and a real P1 Batch 6 full-suite run caught this exact transaction genuinely exceeding Prisma's 5000ms default
 
   await auditFromSession(session, "create", "invoice", invoice.id, {
     new: { invoiceNumber: invoice.invoiceNumber, totalAmount: Number(totalAmount) },
@@ -172,10 +280,12 @@ export async function generateInvoice(session: SessionContext, input: GenerateIn
 
 export async function getInvoice(session: SessionContext, id: string) {
   assertCan(session, "invoice.view")
-  return db.invoice.findFirstOrThrow({
+  const invoice = await db.invoice.findFirstOrThrow({
     where: { id, organizationId: session.user.organizationId },
     include: INVOICE_INCLUDE,
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), invoice.branchId)
+  return invoice
 }
 
 export async function listInvoices(
@@ -183,12 +293,13 @@ export async function listInvoices(
   filters: { patientId?: string; status?: string; branchId?: string } = {}
 ) {
   assertCan(session, "invoice.view")
+  const scope = getAuthorizedBranchScope(session)
   return db.invoice.findMany({
     where: {
       organizationId: session.user.organizationId,
       patientId: filters.patientId,
       status: filters.status as never,
-      branchId: filters.branchId,
+      branchId: narrowBranchFilter(scope, filters.branchId),
     },
     include: { patient: true, branch: true },
     orderBy: { createdAt: "desc" },
@@ -199,10 +310,11 @@ export async function listInvoices(
 /** Backs the Receivables page (spec.md §56) — every invoice still owed money, oldest first. */
 export async function listOutstandingInvoices(session: SessionContext, filters: { branchId?: string } = {}) {
   assertCan(session, "invoice.view")
+  const scope = getAuthorizedBranchScope(session)
   return db.invoice.findMany({
     where: {
       organizationId: session.user.organizationId,
-      branchId: filters.branchId,
+      branchId: narrowBranchFilter(scope, filters.branchId),
       status: { in: ["issued", "partially_paid"] },
     },
     include: { patient: true, branch: true },
@@ -212,14 +324,27 @@ export async function listOutstandingInvoices(session: SessionContext, filters: 
 
 export async function listPatientInvoices(session: SessionContext, patientId: string) {
   assertCan(session, "invoice.view")
+  const scope = getAuthorizedBranchScope(session)
   return db.invoice.findMany({
-    where: { organizationId: session.user.organizationId, patientId },
+    where: { organizationId: session.user.organizationId, patientId, branchId: narrowBranchFilter(scope) },
     include: { lines: true },
     orderBy: { createdAt: "desc" },
   })
 }
 
-/** Never deletes — voiding is a status flag, and every consumed Charge reverts to pending so it can be re-invoiced. */
+/**
+ * Never deletes — voiding is a status flag, and every consumed Charge
+ * reverts to pending so it can be re-invoiced.
+ *
+ * P1 §24: also reverses the `Dr AR / Cr Revenue` postInvoiceIssued posted
+ * for this invoice (postInvoiceVoided, posting-service.ts) — fired via the
+ * outbox, the same async-notification-of-a-cross-cutting-concern pattern
+ * every other accounting trigger in this codebase uses, so a posting
+ * failure never blocks the void itself from completing. See
+ * postInvoiceVoided's own doc comment for why this was a real gap, not a
+ * defensive addition: without it, re-invoicing the same reverted-to-pending
+ * charges would double-count revenue.
+ */
 export async function voidInvoice(session: SessionContext, id: string, reason: string) {
   assertCan(session, "invoice.void")
 
@@ -227,6 +352,7 @@ export async function voidInvoice(session: SessionContext, id: string, reason: s
     where: { id, organizationId: session.user.organizationId },
     include: { lines: true },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), invoice.branchId)
   if (Number(invoice.paidAmount) > 0) {
     throw new Error("Cannot void an invoice that has payments applied — issue a refund instead.")
   }
@@ -239,9 +365,16 @@ export async function voidInvoice(session: SessionContext, id: string, reason: s
       where: { id: { in: invoice.lines.map((l) => l.chargeId) } },
       data: { status: "pending" },
     })
-    return tx.invoice.update({ where: { id }, data: { status: "void", voidReason: reason } })
-  })
+    const result = await tx.invoice.update({ where: { id }, data: { status: "void", voidReason: reason } })
+    await writeOutboxEvent(tx, {
+      organizationId: session.user.organizationId,
+      eventType: "InvoiceVoided",
+      payload: { invoiceId: id },
+    })
+    return result
+  }, { timeout: 20_000, maxWait: 10_000 }) // same headroom as generateInvoice above — this batch added the writeOutboxEvent call on top of what was already close to Prisma's 5000ms default
 
   await auditFromSession(session, "void", "invoice", id, { old: invoice, new: { status: "void", reason } })
+  await dispatchPendingOutboxEvents(session.user.organizationId)
   return updated
 }

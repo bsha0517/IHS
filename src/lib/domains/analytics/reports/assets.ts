@@ -1,6 +1,7 @@
 import "server-only"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
+import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { ReportFilters } from "@/lib/domains/analytics/schemas"
 
@@ -8,7 +9,9 @@ import type { ReportFilters } from "@/lib/domains/analytics/schemas"
 export async function getAssetsReport(session: SessionContext, filters: ReportFilters) {
   assertCan(session, "inventory.view")
   const organizationId = session.user.organizationId
-  const branchWhere = filters.branchId ? { branchId: filters.branchId } : {}
+  const scope = getAuthorizedBranchScope(session)
+  const scopedBranchId = narrowBranchFilter(scope, filters.branchId)
+  const branchWhere = scopedBranchId !== undefined ? { branchId: scopedBranchId } : {}
 
   const [registerByStatus, registerByCategory, register, maintenanceRecords, calibrationRecords, acquisitionCost] = await Promise.all([
     db.asset.groupBy({ by: ["status"], where: { organizationId, ...branchWhere }, _count: { _all: true } }),

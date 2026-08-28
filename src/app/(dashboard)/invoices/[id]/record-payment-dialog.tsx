@@ -28,6 +28,13 @@ export function RecordPaymentDialog({
 }) {
   const { open, setOpen, state, pending, submit } = useActionDialog(recordPaymentAction, initialState)
   const [tenders, setTenders] = useState<Tender[]>([{ method: "cash", amount: outstanding.toFixed(2), reference: "" }])
+  // P1 §33: one key per dialog-open, resubmitted unchanged by every retry of
+  // that attempt — a double-click can't collect the same tender twice. See
+  // recordPayment (billing/payments.ts) for what the server does with it.
+  // Regenerated in the onOpenChange handler below (an event, not an effect —
+  // see use-action-dialog.ts's own doc comment for why this codebase avoids
+  // setState-in-effect for dialog-open resets).
+  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID())
 
   function update(index: number, field: keyof Tender, value: string) {
     setTenders((prev) => prev.map((t, i) => (i === index ? { ...t, [field]: value } : t)))
@@ -38,13 +45,20 @@ export function RecordPaymentDialog({
       "tenders",
       JSON.stringify(tenders.filter((t) => Number(t.amount) > 0).map((t) => ({ ...t, reference: t.reference || undefined })))
     )
+    formData.set("idempotencyKey", idempotencyKey)
     submit(formData)
   }
 
   const totalTendered = tenders.reduce((sum, t) => sum + (Number(t.amount) || 0), 0)
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (o) setIdempotencyKey(crypto.randomUUID())
+        setOpen(o)
+      }}
+    >
       <DialogTrigger asChild>
         <Button size="sm">Record payment</Button>
       </DialogTrigger>

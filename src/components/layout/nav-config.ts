@@ -34,6 +34,7 @@ import {
   KeySquare,
   History,
   Settings,
+  AlertTriangle,
 } from "lucide-react"
 
 export type NavItem = {
@@ -139,6 +140,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: "Users", href: "/admin/users", icon: ShieldCheck, permission: "users.manage" },
       { label: "Roles", href: "/admin/roles", icon: KeySquare, permission: "users.manage" },
       { label: "Audit", href: "/admin/audit", icon: History, permission: "audit.review" },
+      { label: "System Events", href: "/admin/system-events", icon: AlertTriangle, permission: "system_events.view" },
       { label: "Settings", href: "/admin/settings", icon: Settings, permission: "settings.view" },
     ],
   },

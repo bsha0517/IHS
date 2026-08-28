@@ -21,5 +21,7 @@ export const rescheduleAppointmentSchema = z.object({
   durationMinutes: z.coerce.number().int().min(5).max(480),
   providerId: z.preprocess(emptyToNull, z.uuid().nullable().optional()),
   roomId: z.preprocess(emptyToNull, z.uuid().nullable().optional()),
+  // P1 §26: rescheduling must record why, not just what changed.
+  reason: z.string().min(1, "A reason for rescheduling is required.").max(500),
 })
 export type RescheduleAppointmentInput = z.infer<typeof rescheduleAppointmentSchema>

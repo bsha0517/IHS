@@ -1,14 +1,21 @@
 "use client"
 
 import Link from "next/link"
-import { useTransition } from "react"
+import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { AlertTriangle } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { calculateAge, formatDateTime } from "@/lib/utils/dates"
-import { completeEncounterAction, finalizeEncounterAction } from "@/app/(dashboard)/encounters/actions"
+import {
+  completeEncounterAction,
+  finalizeEncounterAction,
+  cancelEncounterAction,
+  markEncounterEnteredInErrorAction,
+} from "@/app/(dashboard)/encounters/actions"
 import type { Patient, PatientAllergy, PatientCondition, Provider, Encounter } from "@/generated/prisma/client"
 
 type EncounterWithRelations = Encounter & {
@@ -25,6 +32,8 @@ export function EncounterHeader({
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
+  const [cancelMode, setCancelMode] = useState<"cancel" | "entered_in_error" | null>(null)
+  const [reason, setReason] = useState("")
 
   const alerts = [
     ...encounter.patient.allergies.filter((a) => a.isAlert).map((a) => `Allergy: ${a.allergen}`),
@@ -80,8 +89,59 @@ export function EncounterHeader({
               Finalize
             </Button>
           )}
+          {["draft", "active"].includes(encounter.status) && (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={pending}
+              onClick={() => {
+                setReason("")
+                setCancelMode("cancel")
+              }}
+            >
+              Cancel
+            </Button>
+          )}
+          {canFinalize && !["cancelled", "entered_in_error"].includes(encounter.status) && (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={pending}
+              onClick={() => {
+                setReason("")
+                setCancelMode("entered_in_error")
+              }}
+            >
+              Entered in error
+            </Button>
+          )}
         </div>
       </CardContent>
+
+      <Dialog open={cancelMode !== null} onOpenChange={(open) => !open && setCancelMode(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{cancelMode === "entered_in_error" ? "Mark encounter entered in error" : "Cancel encounter"}</DialogTitle>
+          </DialogHeader>
+          <Input placeholder="Reason" value={reason} onChange={(e) => setReason(e.target.value)} />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCancelMode(null)}>
+              Back
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={pending || !reason.trim()}
+              onClick={() => {
+                const mode = cancelMode
+                setCancelMode(null)
+                run(() => (mode === "entered_in_error" ? markEncounterEnteredInErrorAction(encounter.id, reason) : cancelEncounterAction(encounter.id, reason)))
+              }}
+            >
+              Confirm
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   )
 }

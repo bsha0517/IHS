@@ -2,6 +2,7 @@ import "server-only"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
+import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { ShiftInput, CheckInInput, AttendanceAdjustInput } from "@/lib/domains/hr/schemas"
 
@@ -119,11 +120,12 @@ export async function adjustAttendance(session: SessionContext, attendanceRecord
 
 export async function listAttendance(session: SessionContext, filters: { employeeId?: string; branchId?: string; from?: Date; to?: Date } = {}) {
   assertCan(session, "payroll.view")
+  const scope = getAuthorizedBranchScope(session)
   return db.attendanceRecord.findMany({
     where: {
       organizationId: session.user.organizationId,
       employeeId: filters.employeeId,
-      branchId: filters.branchId,
+      branchId: narrowBranchFilter(scope, filters.branchId),
       date: { gte: filters.from, lte: filters.to },
     },
     include: { employee: true, shift: true },

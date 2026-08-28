@@ -18,6 +18,9 @@ export const adHocChargeSchema = z.object({
   branchId: z.uuid(),
   encounterId: z.preprocess(emptyToNull, z.uuid().nullable().optional()),
   serviceId: z.preprocess(emptyToNull, z.uuid().nullable().optional()),
+  // P1 §9: presence (not sourceType) is what triggers real inventory
+  // consumption for this charge — see Charge.productId's schema comment.
+  productId: z.preprocess(emptyToNull, z.uuid().nullable().optional()),
   providerId: z.preprocess(emptyToNull, z.uuid().nullable().optional()),
   sourceType: z.enum(chargeSourceTypes),
   description: z.string().min(1).max(300),

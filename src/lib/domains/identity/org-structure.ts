@@ -2,6 +2,7 @@ import "server-only"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
+import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { BranchInput, DepartmentInput, RoomInput, OrganizationInput } from "@/lib/domains/identity/schemas"
 
@@ -60,10 +61,11 @@ export async function updateBranch(session: SessionContext, branchId: string, in
 
 export async function listDepartments(session: SessionContext, branchId?: string) {
   assertCan(session, "department.view")
+  const scope = getAuthorizedBranchScope(session)
   return db.department.findMany({
     where: {
       branch: { organizationId: session.user.organizationId },
-      ...(branchId ? { branchId } : {}),
+      branchId: narrowBranchFilter(scope, branchId),
     },
     orderBy: { name: "asc" },
   })
@@ -90,9 +92,13 @@ export async function updateDepartment(session: SessionContext, departmentId: st
 
 export async function listRooms(session: SessionContext, departmentId?: string) {
   assertCan(session, "room.view")
+  const scope = getAuthorizedBranchScope(session)
   return db.room.findMany({
     where: {
-      department: { branch: { organizationId: session.user.organizationId } },
+      department: {
+        branch: { organizationId: session.user.organizationId },
+        branchId: narrowBranchFilter(scope),
+      },
       ...(departmentId ? { departmentId } : {}),
     },
     orderBy: { name: "asc" },

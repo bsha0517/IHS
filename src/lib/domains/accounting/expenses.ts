@@ -4,6 +4,7 @@ import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { postExpense } from "@/lib/domains/accounting/posting-service"
+import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { ExpenseInput } from "@/lib/domains/accounting/schemas"
 
@@ -52,8 +53,9 @@ export async function createExpense(session: SessionContext, input: ExpenseInput
 
 export async function listExpenses(session: SessionContext, filters: { branchId?: string } = {}) {
   assertCan(session, "accounting.view")
+  const scope = getAuthorizedBranchScope(session)
   return db.expense.findMany({
-    where: { organizationId: session.user.organizationId, branchId: filters.branchId },
+    where: { organizationId: session.user.organizationId, branchId: narrowBranchFilter(scope, filters.branchId) },
     include: { expenseAccount: true, branch: true },
     orderBy: { expenseDate: "desc" },
     take: 200,

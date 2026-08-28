@@ -28,6 +28,7 @@ function readAssetForm(formData: FormData) {
     supplierId: formData.get("supplierId"),
     purchaseDate: formData.get("purchaseDate"),
     cost: formData.get("cost"),
+    paidVia: formData.get("paidVia"),
     warrantyExpiryDate: formData.get("warrantyExpiryDate"),
   })
 }

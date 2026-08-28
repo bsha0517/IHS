@@ -7,6 +7,7 @@ import { listPendingCharges } from "@/lib/domains/billing/charges"
 import { listPatientInvoices } from "@/lib/domains/billing/invoices"
 import { getPatient } from "@/lib/domains/patients/service"
 import { listServices } from "@/lib/domains/services/service"
+import { listSellableProducts } from "@/lib/domains/inventory/products"
 import { listProviders } from "@/lib/domains/providers/service"
 import { listPatientCoverage } from "@/lib/domains/claims/coverage"
 import { formatDateTime } from "@/lib/utils/dates"
@@ -54,11 +55,12 @@ export default async function PosPage({ searchParams }: { searchParams: Promise<
     )
   }
 
-  const [patient, charges, invoices, services, providers, coverages] = await Promise.all([
+  const [patient, charges, invoices, services, products, providers, coverages] = await Promise.all([
     getPatient(session, patientId),
     listPendingCharges(session, patientId),
     listPatientInvoices(session, patientId),
     listServices(session),
+    listSellableProducts(session),
     listProviders(session),
     can(session, "coverage.manage") ? listPatientCoverage(session, patientId) : Promise.resolve([]),
   ])
@@ -72,6 +74,7 @@ export default async function PosPage({ searchParams }: { searchParams: Promise<
     amount: Number(c.amount),
   }))
   const serviceOptions = services.map((s) => ({ id: s.id, name: s.name, price: Number(s.price) }))
+  const productOptions = products.map((p) => ({ id: p.id, name: p.name, price: p.price, unit: p.unit }))
   const providerOptions = providers.map((p) => ({ id: p.id, firstName: p.firstName, lastName: p.lastName }))
   const coverageOptions = coverages
     .filter((c) => c.status === "active")
@@ -103,6 +106,7 @@ export default async function PosPage({ searchParams }: { searchParams: Promise<
         branchId={openSession.branchId}
         charges={chargeRows}
         services={serviceOptions}
+        products={productOptions}
         providers={providerOptions}
         coverages={coverageOptions}
         canVoid={can(session, "charge.void")}

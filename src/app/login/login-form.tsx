@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import Link from "next/link"
 import { loginAction, type LoginFormState } from "@/app/login/actions"
 
 const initialState: LoginFormState = {}
@@ -28,7 +29,12 @@ export function LoginForm({ from }: { from?: string }) {
       </div>
 
       <div className="grid gap-2">
-        <Label htmlFor="password">Password</Label>
+        <div className="flex items-center justify-between">
+          <Label htmlFor="password">Password</Label>
+          <Link href="/reset-password" className="text-sm text-muted-foreground underline-offset-4 hover:underline">
+            Forgot password?
+          </Link>
+        </div>
         <Input id="password" name="password" type="password" autoComplete="current-password" required />
       </div>
 

@@ -2,6 +2,8 @@ import "server-only"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
+import { getAuthorizedBranchScope, patientVisibilityWhere } from "@/lib/platform/branch-scope"
+import { ForbiddenError } from "@/lib/platform/permissions-core"
 import type { SessionContext } from "@/lib/auth/session"
 import type { FollowUpInput } from "@/lib/domains/clinical/schemas"
 
@@ -50,11 +52,16 @@ export async function linkFollowUpToAppointment(session: SessionContext, followU
 
 export async function listOpenFollowUps(session: SessionContext, params: { branchId?: string } = {}) {
   assertCan(session, "clinical_notes.view")
+  const scope = getAuthorizedBranchScope(session)
+  if (params.branchId && !scope.isOrgWide && !scope.branchIds.includes(params.branchId)) {
+    throw new ForbiddenError("branch.access")
+  }
+  const visibility = patientVisibilityWhere(scope)
   return db.followUpRecommendation.findMany({
     where: {
       organizationId: session.user.organizationId,
       status: "open",
-      ...(params.branchId ? { patient: { registrationBranchId: params.branchId } } : {}),
+      ...(params.branchId ? { patient: { registrationBranchId: params.branchId } } : visibility ? { patient: visibility } : {}),
     },
     include: { patient: true, encounter: { include: { provider: true } } },
     orderBy: { recommendedDate: "asc" },
@@ -63,8 +70,9 @@ export async function listOpenFollowUps(session: SessionContext, params: { branc
 
 export async function listPatientFollowUps(session: SessionContext, patientId: string) {
   assertCan(session, "encounter.view")
+  const visibility = patientVisibilityWhere(getAuthorizedBranchScope(session))
   return db.followUpRecommendation.findMany({
-    where: { organizationId: session.user.organizationId, patientId },
+    where: { organizationId: session.user.organizationId, patientId, ...(visibility ? { patient: visibility } : {}) },
     orderBy: { recommendedDate: "desc" },
   })
 }

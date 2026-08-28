@@ -3,6 +3,8 @@ import { Decimal } from "@prisma/client/runtime/client"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
+import { getAuthorizedBranchScope } from "@/lib/platform/branch-scope"
+import { ForbiddenError } from "@/lib/platform/permissions-core"
 import type { StockTransferInput } from "@/lib/domains/inventory/schemas"
 import type { SessionContext } from "@/lib/auth/session"
 
@@ -106,11 +108,20 @@ export async function cancelTransfer(session: SessionContext, transferId: string
 
 export async function listTransfers(session: SessionContext, filters: { branchId?: string; status?: string } = {}) {
   assertCan(session, "inventory.view")
+  const scope = getAuthorizedBranchScope(session)
+  if (filters.branchId && !scope.isOrgWide && !scope.branchIds.includes(filters.branchId)) {
+    throw new ForbiddenError("branch.access")
+  }
+  const branchTouch = filters.branchId
+    ? [{ fromBranchId: filters.branchId }, { toBranchId: filters.branchId }]
+    : scope.isOrgWide
+      ? undefined
+      : [{ fromBranchId: { in: scope.branchIds } }, { toBranchId: { in: scope.branchIds } }]
   return db.stockTransfer.findMany({
     where: {
       organizationId: session.user.organizationId,
       status: filters.status as never,
-      OR: filters.branchId ? [{ fromBranchId: filters.branchId }, { toBranchId: filters.branchId }] : undefined,
+      OR: branchTouch,
     },
     include: { fromBranch: true, toBranch: true, product: true },
     orderBy: { requestedAt: "desc" },

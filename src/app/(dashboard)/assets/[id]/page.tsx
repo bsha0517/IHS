@@ -47,6 +47,7 @@ export default async function AssetDetailPage({ params }: { params: Promise<{ id
             <Row label="Supplier" value={asset.supplier?.companyName} />
             <Row label="Purchase date" value={asset.purchaseDate ? formatDate(asset.purchaseDate) : null} />
             <Row label="Cost" value={asset.cost ? Number(asset.cost).toFixed(2) : null} />
+            <Row label="Paid via" value={asset.paidVia ?? (asset.cost ? "On credit" : null)} />
             <Row label="Warranty expiry" value={asset.warrantyExpiryDate ? formatDate(asset.warrantyExpiryDate) : null} />
             <Row label="Status" value={asset.status.replace("_", " ")} />
           </CardContent>

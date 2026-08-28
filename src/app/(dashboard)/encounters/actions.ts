@@ -3,11 +3,11 @@
 import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
 import { getCurrentSession } from "@/lib/auth/session"
-import { startEncounter, completeEncounter, finalizeEncounter } from "@/lib/domains/clinical/encounters"
+import { startEncounter, completeEncounter, finalizeEncounter, cancelEncounter, markEncounterEnteredInError } from "@/lib/domains/clinical/encounters"
 import { recordVitals } from "@/lib/domains/clinical/vitals"
 import { saveNote, createAmendment } from "@/lib/domains/clinical/notes"
 import { addDiagnosis, updateDiagnosisStatus, searchDiagnosisCodes } from "@/lib/domains/clinical/diagnoses"
-import { createOrder, updateOrderStatus } from "@/lib/domains/clinical/orders"
+import { createOrder, updateOrderStatus, cancelOrder } from "@/lib/domains/clinical/orders"
 import { createPrescription, cancelPrescription } from "@/lib/domains/clinical/prescriptions"
 import { recommendFollowUp, dismissFollowUp } from "@/lib/domains/clinical/follow-ups"
 import {
@@ -60,6 +60,18 @@ export async function startEncounterAction(_prev: ActionState, formData: FormDat
 export async function completeEncounterAction(encounterId: string) {
   const session = await requireSession()
   await completeEncounter(session, encounterId)
+  revalidateEncounter(encounterId)
+}
+
+export async function cancelEncounterAction(encounterId: string, reason: string) {
+  const session = await requireSession()
+  await cancelEncounter(session, encounterId, reason)
+  revalidateEncounter(encounterId)
+}
+
+export async function markEncounterEnteredInErrorAction(encounterId: string, reason: string) {
+  const session = await requireSession()
+  await markEncounterEnteredInError(session, encounterId, reason)
   revalidateEncounter(encounterId)
 }
 
@@ -203,10 +215,16 @@ export async function createOrderAction(_prev: ActionState, formData: FormData):
 export async function updateOrderStatusAction(
   encounterId: string,
   orderId: string,
-  status: "acknowledged" | "in_progress" | "completed" | "cancelled"
+  status: "acknowledged" | "in_progress" | "completed"
 ) {
   const session = await requireSession()
   await updateOrderStatus(session, orderId, status)
+  revalidateEncounter(encounterId)
+}
+
+export async function cancelOrderAction(encounterId: string, orderId: string, reason: string) {
+  const session = await requireSession()
+  await cancelOrder(session, orderId, reason)
   revalidateEncounter(encounterId)
 }
 

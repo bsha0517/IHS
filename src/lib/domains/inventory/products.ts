@@ -14,6 +14,26 @@ export async function listProducts(session: SessionContext) {
   })
 }
 
+/**
+ * P1 §9: a narrow catalog projection for POS's "From product catalog"
+ * picker, gated on `charge.create` (which Cashier already holds) rather
+ * than `inventory.view` (which Cashier does not) — the same "narrow
+ * bypass projection for a specific workflow, not the broader admin view"
+ * precedent this codebase already uses for `listEmployeeDirectory()`
+ * (name-only, gated on the assignment workflows that need it, not
+ * `payroll.view`). Selling a product at POS needs its name/price, not
+ * stock counts or cost data `inventory.view` protects.
+ */
+export async function listSellableProducts(session: SessionContext) {
+  assertCan(session, "charge.create")
+  const products = await db.product.findMany({
+    where: { organizationId: session.user.organizationId, isActive: true },
+    orderBy: [{ category: "asc" }, { name: "asc" }],
+    select: { id: true, name: true, sellingPrice: true, purchaseCost: true, unit: true },
+  })
+  return products.map((p) => ({ id: p.id, name: p.name, price: Number(p.sellingPrice ?? p.purchaseCost), unit: p.unit }))
+}
+
 export async function getProduct(session: SessionContext, id: string) {
   assertCan(session, "inventory.view")
   return db.product.findFirstOrThrow({

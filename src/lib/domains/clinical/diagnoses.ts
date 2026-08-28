@@ -2,6 +2,7 @@ import "server-only"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
+import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { DiagnosisInput } from "@/lib/domains/clinical/schemas"
 
@@ -60,8 +61,13 @@ export async function searchDiagnosisCodes(query: string) {
 
 export async function listPatientDiagnoses(session: SessionContext, patientId: string) {
   assertCan(session, "encounter.view")
+  const scope = getAuthorizedBranchScope(session)
   return db.diagnosis.findMany({
-    where: { organizationId: session.user.organizationId, patientId },
+    where: {
+      organizationId: session.user.organizationId,
+      patientId,
+      ...(scope.isOrgWide ? {} : { encounter: { branchId: narrowBranchFilter(scope) } }),
+    },
     include: { code: true, encounter: true },
     orderBy: { diagnosedAt: "desc" },
   })

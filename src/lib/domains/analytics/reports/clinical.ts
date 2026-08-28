@@ -1,6 +1,7 @@
 import "server-only"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
+import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { ReportFilters } from "@/lib/domains/analytics/schemas"
 
@@ -8,28 +9,31 @@ import type { ReportFilters } from "@/lib/domains/analytics/schemas"
 export async function getClinicalReport(session: SessionContext, filters: ReportFilters) {
   assertCan(session, "encounter.view")
   const organizationId = session.user.organizationId
+  const scope = getAuthorizedBranchScope(session)
+  const scopedBranchId = narrowBranchFilter(scope, filters.branchId)
   const encounterWhere = {
     organizationId,
     startAt: { gte: filters.from, lte: filters.to },
-    ...(filters.branchId ? { branchId: filters.branchId } : {}),
+    ...(scopedBranchId !== undefined ? { branchId: scopedBranchId } : {}),
     ...(filters.providerId ? { providerId: filters.providerId } : {}),
   }
+  const encounterFilterActive = scopedBranchId !== undefined || !!filters.providerId
 
   const [encountersByStatus, encountersByType, diagnoses, ordersByTypeAndStatus, followUpsByStatus] = await Promise.all([
     db.encounter.groupBy({ by: ["status"], where: encounterWhere, _count: { _all: true } }),
     db.encounter.groupBy({ by: ["encounterType"], where: encounterWhere, _count: { _all: true } }),
     db.diagnosis.findMany({
-      where: { organizationId, diagnosedAt: { gte: filters.from, lte: filters.to }, encounter: filters.branchId || filters.providerId ? encounterWhere : undefined },
+      where: { organizationId, diagnosedAt: { gte: filters.from, lte: filters.to }, encounter: encounterFilterActive ? encounterWhere : undefined },
       select: { description: true, diagnosisCode: true },
     }),
     db.clinicalOrder.groupBy({
       by: ["orderType", "status"],
-      where: { organizationId, orderedAt: { gte: filters.from, lte: filters.to }, ...(filters.branchId ? { branchId: filters.branchId } : {}), ...(filters.providerId ? { orderingProviderId: filters.providerId } : {}) },
+      where: { organizationId, orderedAt: { gte: filters.from, lte: filters.to }, ...(scopedBranchId !== undefined ? { branchId: scopedBranchId } : {}), ...(filters.providerId ? { orderingProviderId: filters.providerId } : {}) },
       _count: { _all: true },
     }),
     db.followUpRecommendation.groupBy({
       by: ["status"],
-      where: { organizationId, recommendedDate: { gte: filters.from, lte: filters.to }, encounter: filters.branchId || filters.providerId ? encounterWhere : undefined },
+      where: { organizationId, recommendedDate: { gte: filters.from, lte: filters.to }, encounter: encounterFilterActive ? encounterWhere : undefined },
       _count: { _all: true },
     }),
   ])

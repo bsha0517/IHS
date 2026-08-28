@@ -19,6 +19,7 @@ import { ClinicalTabs } from "@/app/(dashboard)/patients/[id]/clinical-tabs"
 import { BillingTabs } from "@/app/(dashboard)/patients/[id]/billing-tabs"
 import { InsuranceTabs } from "@/app/(dashboard)/patients/[id]/insurance-tabs"
 import { PortalAccessCard } from "@/app/(dashboard)/patients/[id]/portal-access-card"
+import { PatientStatusControl } from "@/app/(dashboard)/patients/[id]/patient-status-control"
 import { getPortalAccountForPatient } from "@/lib/domains/portal/service"
 import { listMessageHistory } from "@/lib/domains/communications/service"
 
@@ -37,6 +38,9 @@ const LIVE_BILLING_TABS = [
   { value: "packages", label: "Packages" },
   { value: "invoices", label: "Invoices" },
   { value: "payments", label: "Payments" },
+  // P1 §36: one chronological ledger of invoices/payments/refunds with a
+  // running balance, reconciled to AR — see billing/statement.ts.
+  { value: "statement", label: "Statement" },
   { value: "insurance", label: "Insurance" },
   { value: "communications", label: "Communications" },
 ]
@@ -76,6 +80,7 @@ export default async function PatientProfilePage({ params }: { params: Promise<{
               </h1>
               <Badge variant="outline">{patient.mrn}</Badge>
               <Badge variant={patient.status === "active" ? "default" : "secondary"}>{patient.status}</Badge>
+              {can(session, "patient.edit") && <PatientStatusControl patientId={patient.id} currentStatus={patient.status} />}
             </div>
             <p className="text-sm text-muted-foreground">
               {calculateAge(patient.dob)}y · {patient.gender} · DOB {formatDate(patient.dob)}

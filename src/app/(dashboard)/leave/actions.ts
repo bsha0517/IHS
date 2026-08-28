@@ -33,10 +33,15 @@ export async function requestLeaveAction(_prev: ActionState, formData: FormData)
   return { success: true }
 }
 
-export async function approveLeaveAction(leaveRequestId: string) {
+export async function approveLeaveAction(leaveRequestId: string, allowOverride = false): Promise<ActionState> {
   const session = await requireSession()
-  await approveLeave(session, leaveRequestId)
+  try {
+    await approveLeave(session, leaveRequestId, { allowOverride })
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to approve leave request." }
+  }
   revalidatePath("/leave")
+  return { success: true }
 }
 
 export async function rejectLeaveAction(leaveRequestId: string, reason: string) {

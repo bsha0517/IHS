@@ -85,6 +85,7 @@ export async function createAdHocChargeAction(_prev: ActionState, formData: Form
     branchId: formData.get("branchId"),
     encounterId: formData.get("encounterId"),
     serviceId: formData.get("serviceId"),
+    productId: formData.get("productId"),
     providerId: formData.get("providerId"),
     sourceType: formData.get("sourceType"),
     description: formData.get("description"),
@@ -146,8 +147,13 @@ export async function recordPaymentAction(_prev: ActionState, formData: FormData
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
+  // P1 §33: the form generates this once per open and resubmits it unchanged
+  // on any retry — a double-click or network retry replays the original
+  // payment instead of collecting the same tender twice.
+  const idempotencyKey = String(formData.get("idempotencyKey") ?? "") || undefined
+
   try {
-    await recordPayment(session, parsed.data)
+    await recordPayment(session, { ...parsed.data, idempotencyKey })
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to record payment." }
   }

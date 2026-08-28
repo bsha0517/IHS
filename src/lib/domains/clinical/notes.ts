@@ -2,6 +2,7 @@ import "server-only"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
+import { getAuthorizedBranchScope, assertBranchAccess } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { ClinicalNoteInput } from "@/lib/domains/clinical/schemas"
 
@@ -118,11 +119,19 @@ export async function getNoteHistory(session: SessionContext, currentNoteId: str
   const chain = []
   let cursor = await db.clinicalNote.findFirst({
     where: { id: currentNoteId, organizationId: session.user.organizationId },
+    include: { encounter: true },
   })
+  if (cursor) assertBranchAccess(getAuthorizedBranchScope(session), cursor.encounter.branchId)
   while (cursor) {
     chain.unshift(cursor)
     if (!cursor.amendsId) break
-    cursor = await db.clinicalNote.findUnique({ where: { id: cursor.amendsId } })
+    // Re-check organizationId on every hop — amendsId is a same-org chain by
+    // construction, but this is the boundary of a fetch reachable with only
+    // a note id, so it must not implicitly trust that invariant.
+    cursor = await db.clinicalNote.findFirst({
+      where: { id: cursor.amendsId, organizationId: session.user.organizationId },
+      include: { encounter: true },
+    })
   }
   return chain
 }

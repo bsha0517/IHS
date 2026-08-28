@@ -2,6 +2,7 @@ import "server-only"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { incomeStatement, balanceSheet, cashFlow } from "@/lib/domains/accounting/reports"
+import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { ReportFilters } from "@/lib/domains/analytics/schemas"
 
@@ -20,13 +21,15 @@ import type { ReportFilters } from "@/lib/domains/analytics/schemas"
 export async function getFinancialReport(session: SessionContext, filters: ReportFilters) {
   assertCan(session, "accounting.view")
   const organizationId = session.user.organizationId
-  const branchWhere = filters.branchId ? { branchId: filters.branchId } : {}
+  const scope = getAuthorizedBranchScope(session)
+  const scopedBranchId = narrowBranchFilter(scope, filters.branchId)
+  const branchWhere = scopedBranchId !== undefined ? { branchId: scopedBranchId } : {}
 
   const [revenue, collections, ar, ap, expenses, income, balance, cash] = await Promise.all([
     db.invoice.aggregate({ where: { organizationId, ...branchWhere, status: { not: "void" }, issuedAt: { gte: filters.from, lte: filters.to } }, _sum: { totalAmount: true } }),
     db.payment.aggregate({ where: { organizationId, ...branchWhere, status: "completed", receivedAt: { gte: filters.from, lte: filters.to } }, _sum: { amount: true } }),
-    db.invoice.aggregate({ where: { organizationId, status: { in: ["issued", "partially_paid"] } }, _sum: { totalAmount: true, paidAmount: true } }),
-    db.supplierInvoice.aggregate({ where: { organizationId, status: { in: ["pending", "partially_paid"] } }, _sum: { amount: true, paidAmount: true } }),
+    db.invoice.aggregate({ where: { organizationId, ...branchWhere, status: { in: ["issued", "partially_paid"] } }, _sum: { totalAmount: true, paidAmount: true } }),
+    db.supplierInvoice.aggregate({ where: { organizationId, ...branchWhere, status: { in: ["pending", "partially_paid"] } }, _sum: { amount: true, paidAmount: true } }),
     db.expense.aggregate({ where: { organizationId, ...branchWhere, expenseDate: { gte: filters.from, lte: filters.to } }, _sum: { amount: true } }),
     incomeStatement(session, { branchId: filters.branchId, asOf: filters.to }),
     balanceSheet(session, { branchId: filters.branchId, asOf: filters.to }),

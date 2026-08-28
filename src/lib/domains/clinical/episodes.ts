@@ -3,13 +3,15 @@ import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { nextNumber } from "@/lib/platform/sequences"
+import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { EpisodeInput } from "@/lib/domains/clinical/schemas"
 
 export async function listPatientEpisodes(session: SessionContext, patientId: string) {
   assertCan(session, "encounter.view")
+  const scope = getAuthorizedBranchScope(session)
   return db.episode.findMany({
-    where: { organizationId: session.user.organizationId, patientId },
+    where: { organizationId: session.user.organizationId, patientId, branchId: narrowBranchFilter(scope) },
     include: { primaryProvider: true, encounters: { orderBy: { startAt: "desc" } } },
     orderBy: { startDate: "desc" },
   })
@@ -17,7 +19,7 @@ export async function listPatientEpisodes(session: SessionContext, patientId: st
 
 export async function getEpisode(session: SessionContext, episodeId: string) {
   assertCan(session, "encounter.view")
-  return db.episode.findFirstOrThrow({
+  const episode = await db.episode.findFirstOrThrow({
     where: { id: episodeId, organizationId: session.user.organizationId },
     include: {
       primaryProvider: true,
@@ -26,6 +28,8 @@ export async function getEpisode(session: SessionContext, episodeId: string) {
       diagnoses: { include: { code: true }, orderBy: { diagnosedAt: "desc" } },
     },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), episode.branchId)
+  return episode
 }
 
 export async function createEpisode(session: SessionContext, input: EpisodeInput) {

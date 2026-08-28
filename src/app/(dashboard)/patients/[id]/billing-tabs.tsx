@@ -9,6 +9,7 @@ import { listPatientPackages } from "@/lib/domains/packages/service"
 import { listPackages } from "@/lib/domains/packages/service"
 import { listPatientInvoices } from "@/lib/domains/billing/invoices"
 import { listPatientPayments } from "@/lib/domains/billing/payments"
+import { getPatientStatement } from "@/lib/domains/billing/statement"
 import type { SessionContext } from "@/lib/auth/session"
 import { SellPackageDialog } from "@/app/(dashboard)/patients/[id]/sell-package-dialog"
 import { UseSessionDialog } from "@/app/(dashboard)/patients/[id]/use-session-dialog"
@@ -29,11 +30,12 @@ export async function BillingTabs({
   patientId: string
   branchId: string
 }) {
-  const [patientPackages, invoices, payments, catalogPackages] = await Promise.all([
+  const [patientPackages, invoices, payments, catalogPackages, statement] = await Promise.all([
     listPatientPackages(session, patientId),
     listPatientInvoices(session, patientId),
     listPatientPayments(session, patientId),
     can(session, "package.sell") ? listPackages(session) : Promise.resolve([]),
+    getPatientStatement(session, patientId),
   ])
 
   const canSell = can(session, "package.sell")
@@ -164,6 +166,59 @@ export async function BillingTabs({
                     <TableCell className="capitalize">{p.method}</TableCell>
                     <TableCell>{Number(p.amount).toFixed(2)}</TableCell>
                     <TableCell>{formatDateTime(p.receivedAt)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      </TabsContent>
+
+      <TabsContent value="statement">
+        <Card>
+          <CardContent className="grid gap-4 pt-6">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border p-3">
+              <div>
+                <p className="text-sm text-muted-foreground">Outstanding balance</p>
+                <p className="text-xl font-semibold">{statement.outstandingBalance.toFixed(2)}</p>
+              </div>
+              {!statement.reconciled && (
+                <Badge variant="destructive">Running balance does not reconcile — contact support</Badge>
+              )}
+            </div>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Description</TableHead>
+                  <TableHead>Charge</TableHead>
+                  <TableHead>Credit</TableHead>
+                  <TableHead>Balance</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {statement.lines.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-center text-muted-foreground">
+                      No billing activity yet.
+                    </TableCell>
+                  </TableRow>
+                )}
+                {statement.lines.map((line, i) => (
+                  <TableRow key={`${line.type}-${line.referenceId}-${i}`}>
+                    <TableCell>{formatDateTime(line.date)}</TableCell>
+                    <TableCell>
+                      {line.type === "invoice" ? (
+                        <Link href={`/invoices/${line.referenceId}`} className="hover:underline">
+                          {line.description}
+                        </Link>
+                      ) : (
+                        line.description
+                      )}
+                    </TableCell>
+                    <TableCell>{line.charge > 0 ? line.charge.toFixed(2) : "—"}</TableCell>
+                    <TableCell>{line.credit > 0 ? line.credit.toFixed(2) : "—"}</TableCell>
+                    <TableCell className="font-medium">{line.runningBalance.toFixed(2)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

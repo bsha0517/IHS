@@ -10,7 +10,14 @@ import { Textarea } from "@/components/ui/textarea"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { useActionDialog } from "@/hooks/use-action-dialog"
-import { enterNumericResultAction, enterTextResultAction, verifyResultAction, type ActionState } from "@/app/(dashboard)/laboratory/actions"
+import {
+  enterNumericResultAction,
+  enterTextResultAction,
+  amendNumericResultAction,
+  amendTextResultAction,
+  verifyResultAction,
+  type ActionState,
+} from "@/app/(dashboard)/laboratory/actions"
 
 const initialState: ActionState = {}
 
@@ -20,26 +27,39 @@ export function ResultEntryDialog({
   resultType,
   testName,
   unit,
+  mode = "enter",
 }: {
   labOrderTestId: string
   clinicalOrderId: string
   resultType: "numeric" | "text"
   testName: string
   unit: string | null
+  /** P1 §21: "amend" targets a verified result, creating a new isCurrent row rather than editing it in place. */
+  mode?: "enter" | "amend"
 }) {
-  const action = resultType === "numeric" ? enterNumericResultAction : enterTextResultAction
+  const action =
+    mode === "amend"
+      ? resultType === "numeric"
+        ? amendNumericResultAction
+        : amendTextResultAction
+      : resultType === "numeric"
+        ? enterNumericResultAction
+        : enterTextResultAction
   const { open, setOpen, state, pending, submit } = useActionDialog(action, initialState)
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button size="sm" variant="outline">
-          Enter result
+          {mode === "amend" ? "Amend result" : "Enter result"}
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>{testName}</DialogTitle>
+          <DialogTitle>
+            {mode === "amend" ? "Amend " : ""}
+            {testName}
+          </DialogTitle>
         </DialogHeader>
         <form action={submit} className="grid gap-4">
           <input type="hidden" name="labOrderTestId" value={labOrderTestId} />
@@ -66,7 +86,7 @@ export function ResultEntryDialog({
           </div>
           <DialogFooter>
             <Button type="submit" disabled={pending}>
-              {pending ? "Saving..." : "Save result"}
+              {pending ? "Saving..." : mode === "amend" ? "Save amendment" : "Save result"}
             </Button>
           </DialogFooter>
         </form>

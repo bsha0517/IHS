@@ -26,8 +26,17 @@ type ExistingAsset = {
   supplierId: string | null
   purchaseDate: string | null
   cost: number | null
+  paidVia: string | null
   warrantyExpiryDate: string | null
 }
+
+const PAID_VIA_OPTIONS = [
+  { value: "cash", label: "Cash" },
+  { value: "card", label: "Card" },
+  { value: "bank", label: "Bank transfer" },
+  { value: "online", label: "Online" },
+  { value: "other", label: "Other" },
+]
 
 export function AssetDialog({
   branches,
@@ -176,6 +185,22 @@ export function AssetDialog({
               <Label htmlFor="warrantyExpiryDate">Warranty expiry</Label>
               <Input id="warrantyExpiryDate" name="warrantyExpiryDate" type="date" defaultValue={existing?.warrantyExpiryDate ?? ""} />
             </div>
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="paidVia">Paid via</Label>
+            <Select name="paidVia" defaultValue={existing?.paidVia ?? undefined}>
+              <SelectTrigger id="paidVia" className="w-full">
+                <SelectValue placeholder="On credit (Accounts Payable)" />
+              </SelectTrigger>
+              <SelectContent>
+                {PAID_VIA_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">Leave blank if this asset was bought on credit rather than paid immediately.</p>
           </div>
           <DialogFooter>
             <Button type="submit" disabled={pending}>

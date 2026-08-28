@@ -4,6 +4,7 @@ import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { nextNumber } from "@/lib/platform/sequences"
+import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { EmployeeInput, EmployeeDocumentInput } from "@/lib/domains/hr/schemas"
 
@@ -11,8 +12,9 @@ const EMPLOYEE_INCLUDE = { branch: true, department: true, manager: true, provid
 
 export async function listEmployees(session: SessionContext, filters: { branchId?: string; status?: string } = {}) {
   assertCan(session, "payroll.view")
+  const scope = getAuthorizedBranchScope(session)
   return db.employee.findMany({
-    where: { organizationId: session.user.organizationId, branchId: filters.branchId, status: filters.status as never },
+    where: { organizationId: session.user.organizationId, branchId: narrowBranchFilter(scope, filters.branchId), status: filters.status as never },
     include: EMPLOYEE_INCLUDE,
     orderBy: { firstName: "asc" },
   })
@@ -29,10 +31,12 @@ export async function listEmployeeDirectory(session: SessionContext) {
 
 export async function getEmployee(session: SessionContext, id: string) {
   assertCan(session, "payroll.view")
-  return db.employee.findFirstOrThrow({
+  const employee = await db.employee.findFirstOrThrow({
     where: { id, organizationId: session.user.organizationId },
     include: { ...EMPLOYEE_INCLUDE, documents: { orderBy: { expiryDate: "asc" } } },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), employee.branchId)
+  return employee
 }
 
 export async function createEmployee(session: SessionContext, input: EmployeeInput) {
@@ -119,9 +123,13 @@ export async function addEmployeeDocument(session: SessionContext, employeeId: s
 /** Every employee document expiring within the next 90 days, computed live — never a stored flag (same discipline as Phase 5's near-expiry batch alert). */
 export async function listExpiringDocuments(session: SessionContext) {
   assertCan(session, "payroll.view")
-  const horizon = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000)
+  const scope = getAuthorizedBranchScope(session)
   return db.employeeDocument.findMany({
-    where: { organizationId: session.user.organizationId, expiryDate: { not: null, lte: horizon } },
+    where: {
+      organizationId: session.user.organizationId,
+      expiryDate: { not: null, lte: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000) },
+      employee: { branchId: narrowBranchFilter(scope) },
+    },
     include: { employee: true },
     orderBy: { expiryDate: "asc" },
   })

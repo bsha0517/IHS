@@ -72,8 +72,12 @@ export async function consumeSessionAction(_prev: ActionState, formData: FormDat
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
+  // P1 §33: generated once per dialog-open, resubmitted unchanged on retry —
+  // see use-session-dialog.tsx.
+  const idempotencyKey = String(formData.get("idempotencyKey") ?? "") || undefined
+
   try {
-    await consumeSession(session, parsed.data)
+    await consumeSession(session, { ...parsed.data, idempotencyKey })
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to record session usage." }
   }

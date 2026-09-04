@@ -19,6 +19,26 @@ import { getPortalSessionContext } from "@/lib/auth/portal-session"
 // staff-authenticated (unchanged from every prior phase).
 const PUBLIC_PATHS = ["/login", "/reset-password", "/book", "/portal/login"]
 
+// P2 §16: a per-request correlation id, generated once here (the one place
+// that sees every request) and forwarded as a request header so any
+// server-side code downstream — Server Components, Server Actions, Route
+// Handlers — can read it back via `next/headers`'s `headers()` and attach
+// it to a structured log line (`platform/logger.ts`'s `getCorrelationId`).
+// Not a distributed trace id (no external system participates), just
+// enough to tie together the handful of log lines one request produces —
+// P2.md §16 asks for a correlation id "where available," not a full
+// tracing system. `NextResponse.next({ request: { headers } })` (not
+// `NextResponse.next({ headers })`) is what makes a header visible to the
+// request handler rather than only the client — see Next's own proxy docs.
+function withCorrelationId(request: NextRequest, response: (requestHeaders: Headers) => NextResponse): NextResponse {
+  const requestHeaders = new Headers(request.headers)
+  const correlationId = requestHeaders.get("x-correlation-id") ?? crypto.randomUUID()
+  requestHeaders.set("x-correlation-id", correlationId)
+  const res = response(requestHeaders)
+  res.headers.set("x-correlation-id", correlationId)
+  return res
+}
+
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
 
@@ -30,9 +50,16 @@ export async function proxy(request: NextRequest) {
     // check (see src/app/api/cron/outbox-sweep/route.ts) — every other
     // route under /api/* still goes through the staff-session check below.
     pathname.startsWith("/api/cron") ||
+    // P4.1 §23: a load balancer / uptime monitor / hosting platform health
+    // probe never carries a staff session cookie — without this exclusion
+    // it would be redirected to /login (a 307, not the 200/503 JSON a
+    // health check expects) instead of ever reaching the route handler.
+    // The route itself returns no patient/secret data, so this is safe to
+    // leave reachable without a session, the same reasoning as /api/cron.
+    pathname === "/api/health" ||
     pathname.startsWith("/_next")
   ) {
-    return NextResponse.next()
+    return withCorrelationId(request, (headers) => NextResponse.next({ request: { headers } }))
   }
 
   if (pathname.startsWith("/portal")) {
@@ -41,7 +68,7 @@ export async function proxy(request: NextRequest) {
     if (!portalSession) {
       return NextResponse.redirect(new URL("/portal/login", request.url))
     }
-    return NextResponse.next()
+    return withCorrelationId(request, (headers) => NextResponse.next({ request: { headers } }))
   }
 
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value
@@ -53,7 +80,7 @@ export async function proxy(request: NextRequest) {
     return NextResponse.redirect(loginUrl)
   }
 
-  return NextResponse.next()
+  return withCorrelationId(request, (headers) => NextResponse.next({ request: { headers } }))
 }
 
 export const config = {

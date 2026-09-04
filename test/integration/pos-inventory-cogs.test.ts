@@ -19,6 +19,7 @@ describe("P1 §9-§13: POS product sales, FEFO, COGS, and inventory adjustment a
   let organizationId: string
   let branchId: string
   let patientId: string
+  let userId: string
   let cogsAccountId: string
   let inventoryAccountId: string
   let writeOffAccountId: string
@@ -29,7 +30,7 @@ describe("P1 §9-§13: POS product sales, FEFO, COGS, and inventory adjustment a
   function session(): SessionContext {
     return {
       sessionId: "test-pos-inventory-cogs",
-      user: { id: "00000000-0000-0000-0000-0000000000f3", organizationId, email: "pos-cogs-test@test.local", firstName: "Pos", lastName: "Test" },
+      user: { id: userId, organizationId, email: "pos-cogs-test@test.local", firstName: "Pos", lastName: "Test" },
       activeBranchId: branchId,
       branchIds: [branchId],
       permissions: new Set(["charge.create", "charge.void", "invoice.view", "inventory.view", "inventory.adjust"]),
@@ -75,6 +76,12 @@ describe("P1 §9-§13: POS product sales, FEFO, COGS, and inventory adjustment a
     const branch = await db.branch.findFirstOrThrow()
     organizationId = branch.organizationId
     branchId = branch.id
+    // P2 §14: previously a hardcoded, never-created id — createAdHocCharge
+    // writes this straight into Charge.createdBy, which now has a real FK
+    // to `user` (§14, Category A). Same class of fix as
+    // pharmacy-dispensing-integrity.test.ts / procurement-ap-integrity.test.ts.
+    const user = await db.user.findFirstOrThrow({ where: { organizationId } })
+    userId = user.id
 
     const [cogs, inventory, writeOff, gain] = await Promise.all([
       db.chartOfAccount.findFirstOrThrow({ where: { organizationId, code: "5100" } }),
@@ -275,13 +282,23 @@ describe("P1 §9-§13: POS product sales, FEFO, COGS, and inventory adjustment a
     expect(Number(journal.lines.find((l) => l.accountId === writeOffAccountId)?.debit)).toBe(18)
   }, TIMEOUT)
 
-  it("a positive count-correction adjustment posts Dr Inventory Asset / Cr Inventory Adjustment Gain, falling back to the product's purchaseCost with no batch", async () => {
+  // P2 §5: a batch-less "in" adjustment is no longer possible at all
+  // (recordAdjustment now requires either an existing batchId or new-batch
+  // fields — see its own doc comment in stock.ts) — this test now exercises
+  // the "create a new batch inline, no cost given" path, which is what
+  // preserves the same fallback-to-the-product's-purchaseCost valuation the
+  // pre-P2 batch-less case used to test.
+  it("a positive count-correction adjustment with a newly-created batch (no cost given) posts Dr Inventory Asset / Cr Inventory Adjustment Gain, falling back to the product's purchaseCost", async () => {
     const product = await createProduct(11)
 
     const entry = await recordAdjustment(session(), {
       branchId, productId: product.id,
       direction: "in", quantity: 5, transactionType: "adjustment", reason: "physical count found more",
+      newBatchNumber: `B-COUNT-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     })
+    expect(entry.batchId).not.toBeNull()
+    const newBatch = await db.productBatch.findUniqueOrThrow({ where: { id: entry.batchId! } })
+    expect(Number(newBatch.purchaseCost)).toBe(11) // defaulted from product.purchaseCost — no newBatchPurchaseCost given
 
     const journal = await db.journal.findFirstOrThrow({
       where: { organizationId, referenceType: "stock_ledger_entry", referenceId: entry.id },
@@ -289,7 +306,7 @@ describe("P1 §9-§13: POS product sales, FEFO, COGS, and inventory adjustment a
     })
     const gainLine = journal.lines.find((l) => l.accountId === gainAccountId)
     const inventoryLine = journal.lines.find((l) => l.accountId === inventoryAccountId)
-    expect(Number(gainLine?.credit)).toBe(55) // 5 x product.purchaseCost (11) — no batch given
+    expect(Number(gainLine?.credit)).toBe(55) // 5 x product.purchaseCost (11), inherited by the new batch
     expect(Number(inventoryLine?.debit)).toBe(55)
   }, TIMEOUT)
 

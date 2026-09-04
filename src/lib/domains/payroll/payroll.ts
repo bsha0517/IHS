@@ -1,6 +1,7 @@
 import "server-only"
 import { Decimal } from "@prisma/client/runtime/client"
 import { db } from "@/lib/db"
+import { Prisma } from "@/generated/prisma/client"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/outbox"
@@ -37,6 +38,7 @@ export async function getPayrollRun(session: SessionContext, id: string) {
  */
 export async function createPayrollRun(session: SessionContext, input: PayrollRunInput) {
   assertCan(session, "payroll.process", { branchId: input.branchId })
+  if (input.periodEnd < input.periodStart) throw new Error("Period end cannot be before the period start.")
 
   const employees = await db.employee.findMany({
     where: { organizationId: session.user.organizationId, branchId: input.branchId, status: { not: "terminated" } },
@@ -44,7 +46,9 @@ export async function createPayrollRun(session: SessionContext, input: PayrollRu
   })
   if (employees.length === 0) throw new Error("No active employees in this branch to run payroll for.")
 
-  const run = await db.$transaction(async (tx) => {
+  let run
+  try {
+    run = await db.$transaction(async (tx) => {
     const created = await tx.payrollRun.create({
       data: {
         organizationId: session.user.organizationId,
@@ -88,7 +92,18 @@ export async function createPayrollRun(session: SessionContext, input: PayrollRu
     }
 
     return created
-  })
+    })
+  } catch (e) {
+    // P3.10 §34/§35: the real guard against two payroll runs racing for the
+    // same branch+period is the DB-level unique index added this batch
+    // (schema.prisma's PayrollRun @@unique) — this only translates its raw
+    // constraint-violation text into an actionable message (same discipline
+    // as encounters.ts's own appointmentId race).
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      throw new Error("A payroll run already exists for this branch and period. Open the existing run instead of creating a new one.")
+    }
+    throw e
+  }
 
   await auditFromSession(session, "create", "payroll_run", run.id, {
     new: { branchId: input.branchId, periodStart: input.periodStart, periodEnd: input.periodEnd, employeeCount: employees.length },
@@ -104,6 +119,7 @@ export async function updatePayrollLine(session: SessionContext, lineId: string,
     where: { id: lineId, payrollRun: { organizationId: session.user.organizationId } },
     include: { payrollRun: true },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), line.payrollRun.branchId)
   if (line.payrollRun.status === "approved" || line.payrollRun.status === "paid") {
     throw new Error("Cannot edit a line on an approved or paid payroll run.")
   }
@@ -136,6 +152,7 @@ export async function updatePayrollLine(session: SessionContext, lineId: string,
 export async function movePayrollToReview(session: SessionContext, payrollRunId: string) {
   assertCan(session, "payroll.process")
   const run = await db.payrollRun.findFirstOrThrow({ where: { id: payrollRunId, organizationId: session.user.organizationId } })
+  assertBranchAccess(getAuthorizedBranchScope(session), run.branchId)
   if (run.status !== "draft") throw new Error(`This payroll run is already "${run.status}".`)
   return db.payrollRun.update({ where: { id: payrollRunId }, data: { status: "review" } })
 }
@@ -163,6 +180,7 @@ export async function approvePayrollRun(session: SessionContext, payrollRunId: s
   assertCan(session, "payroll.process")
 
   const run = await db.payrollRun.findFirstOrThrow({ where: { id: payrollRunId, organizationId: session.user.organizationId } })
+  assertBranchAccess(getAuthorizedBranchScope(session), run.branchId)
   if (run.status === "approved" || run.status === "paid") throw new Error(`This payroll run is already "${run.status}".`)
 
   const updated = await db.$transaction(async (tx) => {
@@ -199,6 +217,7 @@ export async function markPayrollPaid(session: SessionContext, payrollRunId: str
   assertCan(session, "payroll.process")
 
   const run = await db.payrollRun.findFirstOrThrow({ where: { id: payrollRunId, organizationId: session.user.organizationId } })
+  assertBranchAccess(getAuthorizedBranchScope(session), run.branchId)
   if (run.status !== "approved") throw new Error("Only an approved payroll run can be marked paid.")
 
   const updated = await db.$transaction(async (tx) => {
@@ -224,4 +243,51 @@ export async function markPayrollPaid(session: SessionContext, payrollRunId: str
   await auditFromSession(session, "update", "payroll_run", payrollRunId, { new: { status: "paid", paidVia } })
   await dispatchPendingOutboxEvents(session.user.organizationId)
   return updated
+}
+
+/**
+ * P3.10 §39/§40: Case B — payroll (PayrollRun/PayrollRunLine) already fully
+ * existed, but no payslip output ever read it. This is that missing read,
+ * not a new accounting/payroll model: `PayrollRunLine` IS the payslip's
+ * data source (see the schema's own doc comment on that model — "Also
+ * serves as the payslip's data source, no separate payslip table"), so
+ * this returns exactly the stored line + its parent run + the employee's
+ * own branch/department context, nothing computed or invented.
+ *
+ * §43 (historical integrity): once a run is `approved`/`paid`,
+ * `updatePayrollLine` above already refuses further edits — the row this
+ * reads is therefore a genuinely frozen historical fact from that point
+ * on, not something that could silently drift if today's Employee.basicSalary
+ * changes later. A still-`draft`/`review` line legitimately reflects the
+ * current in-progress figures; the print page marks this explicitly.
+ *
+ * Gated on `payroll.view` only (§41/§49) — the SAME permission that already
+ * gates seeing this employee's compensation anywhere else in the app, never
+ * `settings.view`. Branch-checked against the run's branch, matching
+ * getPayrollRun's own check.
+ */
+/** P3.10 §8: the employee detail page's "Payroll / payslips" section — this employee's own lines across every run, most recent period first. */
+export async function listPayrollLinesForEmployee(session: SessionContext, employeeId: string) {
+  assertCan(session, "payroll.view")
+  const employee = await db.employee.findFirstOrThrow({ where: { id: employeeId, organizationId: session.user.organizationId } })
+  assertBranchAccess(getAuthorizedBranchScope(session), employee.branchId)
+  return db.payrollRunLine.findMany({
+    where: { employeeId, payrollRun: { organizationId: session.user.organizationId } },
+    include: { payrollRun: true },
+    orderBy: { payrollRun: { periodStart: "desc" } },
+    take: 24,
+  })
+}
+
+export async function getPayrollLinePayslip(session: SessionContext, lineId: string) {
+  assertCan(session, "payroll.view")
+  const line = await db.payrollRunLine.findFirstOrThrow({
+    where: { id: lineId, payrollRun: { organizationId: session.user.organizationId } },
+    include: {
+      payrollRun: true,
+      employee: { include: { branch: true, department: true } },
+    },
+  })
+  assertBranchAccess(getAuthorizedBranchScope(session), line.payrollRun.branchId)
+  return line
 }

@@ -1,6 +1,6 @@
 "use client"
 
-import { useTransition } from "react"
+import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { Pencil } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -98,18 +98,31 @@ export function ResultEntryDialog({
 export function VerifyButton({ labOrderTestId, clinicalOrderId }: { labOrderTestId: string; clinicalOrderId: string }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
+  // P3.5 §27/§34: this had no error handling — a stale-state race (e.g. a
+  // second technician verifying the same line first) or this batch's own
+  // new branch-access check would have surfaced only the generic error
+  // boundary instead of the domain layer's real message.
+  const [error, setError] = useState<string | null>(null)
   return (
-    <Button
-      size="sm"
-      disabled={pending}
-      onClick={() =>
-        startTransition(async () => {
-          await verifyResultAction(labOrderTestId, clinicalOrderId)
-          router.refresh()
-        })
-      }
-    >
-      <Pencil className="size-3.5" /> Verify
-    </Button>
+    <div className="flex flex-col items-end gap-1">
+      <Button
+        size="sm"
+        disabled={pending}
+        onClick={() => {
+          setError(null)
+          startTransition(async () => {
+            try {
+              await verifyResultAction(labOrderTestId, clinicalOrderId)
+              router.refresh()
+            } catch (e) {
+              setError(e instanceof Error ? e.message : "Couldn't verify this result.")
+            }
+          })
+        }}
+      >
+        <Pencil className="size-3.5" /> Verify
+      </Button>
+      {error && <p className="text-xs text-destructive">{error}</p>}
+    </div>
   )
 }

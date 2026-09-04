@@ -35,6 +35,10 @@ import {
   History,
   Settings,
   AlertTriangle,
+  ScrollText,
+  LayoutGrid,
+  Activity,
+  ClipboardCheck,
 } from "lucide-react"
 
 export type NavItem = {
@@ -104,6 +108,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: "Workforce",
     items: [
+      { label: "HR Workspace", href: "/hr", icon: LayoutGrid, permission: "payroll.view" },
       { label: "Employees", href: "/employees", icon: UserCog, permission: "payroll.view" },
       { label: "Attendance", href: "/attendance", icon: Clock, permission: "payroll.view" },
       { label: "Leave", href: "/leave", icon: CalendarOff, permission: "payroll.view" },
@@ -140,8 +145,11 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: "Users", href: "/admin/users", icon: ShieldCheck, permission: "users.manage" },
       { label: "Roles", href: "/admin/roles", icon: KeySquare, permission: "users.manage" },
       { label: "Audit", href: "/admin/audit", icon: History, permission: "audit.review" },
+      { label: "Clinical Access Log", href: "/admin/clinical-access-log", icon: ScrollText, permission: "audit.review" },
       { label: "System Events", href: "/admin/system-events", icon: AlertTriangle, permission: "system_events.view" },
+      { label: "Operations", href: "/admin/operations", icon: Activity, permission: "system_events.view" },
       { label: "Settings", href: "/admin/settings", icon: Settings, permission: "settings.view" },
+      { label: "Onboarding", href: "/admin/onboarding", icon: ClipboardCheck, permission: "data_import.manage" },
     ],
   },
 ]

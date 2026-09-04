@@ -7,6 +7,7 @@ import { listProviders } from "@/lib/domains/providers/service"
 import { listProducts } from "@/lib/domains/inventory/products"
 import { listAllServiceConsumption } from "@/lib/domains/inventory/consumption-templates"
 import { Card, CardContent } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { ServiceDialog } from "@/app/(dashboard)/services/service-dialog"
@@ -33,13 +34,11 @@ export default async function ServicesPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Services</h1>
-          <p className="text-sm text-muted-foreground">{services.length} service(s)</p>
-        </div>
-        {canManage && <ServiceDialog departments={departments} providers={providers} />}
-      </div>
+      <PageHeader
+        title="Services"
+        description={`${services.length} service(s)`}
+        primaryAction={canManage && <ServiceDialog departments={departments} providers={providers} />}
+      />
 
       <Card>
         <CardContent>

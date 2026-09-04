@@ -5,10 +5,12 @@ import { listUsers } from "@/lib/domains/identity/users"
 import { listRoles } from "@/lib/domains/identity/roles"
 import { listBranches } from "@/lib/domains/identity/org-structure"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { NewUserDialog } from "@/app/(dashboard)/admin/users/new-user-dialog"
 import { StatusToggle } from "@/app/(dashboard)/admin/users/status-toggle"
+import { EditUserDialog } from "@/app/(dashboard)/admin/users/edit-user-dialog"
 
 export default async function UsersPage() {
   const session = await getCurrentSession()
@@ -24,13 +26,11 @@ export default async function UsersPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Users</h1>
-          <p className="text-sm text-muted-foreground">Staff accounts, roles, and branch access.</p>
-        </div>
-        <NewUserDialog roles={roles} branches={branches} />
-      </div>
+      <PageHeader
+        title="Users"
+        description="Staff accounts, roles, and branch access."
+        primaryAction={<NewUserDialog roles={roles} branches={branches} />}
+      />
 
       <Card>
         <CardHeader>
@@ -45,6 +45,7 @@ export default async function UsersPage() {
                 <TableHead>Email</TableHead>
                 <TableHead>Roles</TableHead>
                 <TableHead>Branch access</TableHead>
+                <TableHead>Linked employee</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Last login</TableHead>
                 <TableHead />
@@ -71,6 +72,9 @@ export default async function UsersPage() {
                       {user.branchAccess.map((a) => a.branch.name).join(", ") || "—"}
                     </div>
                   </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {user.employeeProfile ? `${user.employeeProfile.firstName} ${user.employeeProfile.lastName}` : "—"}
+                  </TableCell>
                   <TableCell>
                     <Badge
                       variant={
@@ -84,7 +88,10 @@ export default async function UsersPage() {
                     {user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : "Never"}
                   </TableCell>
                   <TableCell>
-                    <StatusToggle userId={user.id} status={user.status} />
+                    <div className="flex items-center gap-1">
+                      <EditUserDialog user={user} roles={roles} branches={branches} isSelf={user.id === session.user.id} />
+                      <StatusToggle userId={user.id} status={user.status} />
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}

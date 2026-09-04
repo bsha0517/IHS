@@ -5,8 +5,10 @@ import { can } from "@/lib/platform/permissions-core"
 import { listClaims } from "@/lib/domains/claims/service"
 import { formatDate } from "@/lib/utils/dates"
 import { Card, CardContent } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import { PaginationControls } from "@/components/domain/pagination-controls"
 
 const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
   draft: "outline",
@@ -17,15 +19,20 @@ const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "
   void: "destructive",
 }
 
-export default async function ClaimsPage() {
+export default async function ClaimsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>
+}) {
   const session = await getCurrentSession()
   if (!session || !can(session, "claim.create")) redirect("/dashboard")
 
-  const claims = await listClaims(session)
+  const sp = await searchParams
+  const { claims, total, page, totalPages } = await listClaims(session, { page: sp.page ? Number(sp.page) : undefined })
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Claims</h1>
+      <PageHeader title="Claims" description={`${total} claim(s)`} />
 
       <Card>
         <CardContent className="pt-6">
@@ -76,6 +83,7 @@ export default async function ClaimsPage() {
               ))}
             </TableBody>
           </Table>
+          <PaginationControls page={page} totalPages={totalPages} total={total} basePath="/claims" searchParams={sp} />
         </CardContent>
       </Card>
     </div>

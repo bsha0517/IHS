@@ -7,10 +7,12 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { EmptyState } from "@/components/ui/empty-state"
 import { useActionDialog } from "@/hooks/use-action-dialog"
 import { addDiagnosisAction, updateDiagnosisStatusAction, searchDiagnosisCodesAction, type ActionState } from "@/app/(dashboard)/encounters/actions"
 import type { Diagnosis, DiagnosisCode } from "@/generated/prisma/client"
@@ -30,6 +32,24 @@ export function DiagnosesSection({
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
+  // Targeted backlog closure, item 5 (BACKLOG.md's "Void-returning
+  // encounter-section actions... still swallow errors into the generic
+  // error boundary") — same local try/catch + inline Alert pattern P3.3
+  // already established for EncounterHeader's own status actions.
+  const [actionError, setActionError] = useState<string | null>(null)
+
+  function run(fn: () => Promise<ActionState>) {
+    setActionError(null)
+    startTransition(async () => {
+      try {
+        const result = await fn()
+        if (result?.error) setActionError(result.error)
+        else router.refresh()
+      } catch (e) {
+        setActionError(e instanceof Error ? e.message : "That action couldn't be completed.")
+      }
+    })
+  }
 
   return (
     <Card>
@@ -38,28 +58,28 @@ export function DiagnosesSection({
         {canEdit && <AddDiagnosisDialog encounterId={encounterId} />}
       </CardHeader>
       <CardContent className="grid gap-2">
-        {diagnoses.length === 0 && <p className="text-sm text-muted-foreground">No diagnoses recorded.</p>}
+        {actionError && (
+          <Alert variant="destructive">
+            <AlertDescription>{actionError}</AlertDescription>
+          </Alert>
+        )}
+        {diagnoses.length === 0 && <EmptyState title="No diagnoses recorded" />}
         {diagnoses.map((d) => (
           <div key={d.id} className="flex items-center justify-between rounded-md border border-border p-2 text-sm">
             <div>
               <p className="font-medium">
                 {d.description} {d.isPrimary && <Badge className="ml-1">Primary</Badge>}
               </p>
-              {d.code && <p className="text-xs text-muted-foreground">{d.code.code}</p>}
+              {d.code && <p className="font-mono text-xs text-muted-foreground">{d.code.code}</p>}
             </div>
             <div className="flex items-center gap-2">
-              <Badge variant={d.status === "active" ? "outline" : "secondary"}>{d.status.replace("_", " ")}</Badge>
+              <StatusBadge status={d.status} />
               {canEdit && d.status === "active" && (
                 <Button
                   size="sm"
                   variant="ghost"
                   disabled={pending}
-                  onClick={() =>
-                    startTransition(async () => {
-                      await updateDiagnosisStatusAction(encounterId, d.id, "resolved")
-                      router.refresh()
-                    })
-                  }
+                  onClick={() => run(() => updateDiagnosisStatusAction(encounterId, d.id, "resolved"))}
                 >
                   Mark resolved
                 </Button>

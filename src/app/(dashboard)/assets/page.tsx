@@ -12,7 +12,9 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { PageHeader } from "@/components/ui/page-header"
 import { AssetDialog } from "@/app/(dashboard)/assets/asset-dialog"
+import { PaginationControls } from "@/components/domain/pagination-controls"
 
 const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
   available: "default",
@@ -24,15 +26,20 @@ const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "
   disposed: "outline",
 }
 
-export default async function AssetsPage() {
+export default async function AssetsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>
+}) {
   const session = await getCurrentSession()
   if (!session || !can(session, "inventory.view")) redirect("/dashboard")
 
   const canManage = can(session, "asset.manage")
   const canViewSuppliers = can(session, "supplier.view")
+  const sp = await searchParams
 
-  const [assets, alerts, branches, departments, employees, suppliers] = await Promise.all([
-    listAssets(session),
+  const [{ assets, total, page, totalPages }, alerts, branches, departments, employees, suppliers] = await Promise.all([
+    listAssets(session, { page: sp.page ? Number(sp.page) : undefined }),
     listAssetAlerts(session),
     listAccessibleBranches(session),
     listDepartments(session).catch(() => []),
@@ -47,13 +54,11 @@ export default async function AssetsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Assets</h1>
-          <p className="text-sm text-muted-foreground">{assets.length} asset(s)</p>
-        </div>
-        {canManage && <AssetDialog branches={branchOptions} departments={departmentOptions} employees={employeeOptions} suppliers={supplierOptions} />}
-      </div>
+      <PageHeader
+        title="Assets"
+        description={`${total} asset(s)`}
+        primaryAction={canManage && <AssetDialog branches={branchOptions} departments={departmentOptions} employees={employeeOptions} suppliers={supplierOptions} />}
+      />
 
       <Tabs defaultValue="all">
         <TabsList>
@@ -131,6 +136,7 @@ export default async function AssetsPage() {
                   ))}
                 </TableBody>
               </Table>
+              <PaginationControls page={page} totalPages={totalPages} total={total} basePath="/assets" searchParams={sp} />
             </CardContent>
           </Card>
         </TabsContent>

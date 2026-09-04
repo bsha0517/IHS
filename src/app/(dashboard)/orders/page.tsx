@@ -5,6 +5,7 @@ import { getCurrentSession } from "@/lib/auth/session"
 import { can } from "@/lib/platform/permissions-core"
 import { listOrders } from "@/lib/domains/clinical/orders"
 import { Card, CardContent } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -71,13 +72,10 @@ export default async function OrdersPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Orders</h1>
-        <p className="text-sm text-muted-foreground">
-          {total} clinical order(s) — every order type placed across the practice. Lab and imaging orders also have
-          their own dedicated queues under Laboratory and Radiology.
-        </p>
-      </div>
+      <PageHeader
+        title="Orders"
+        description={`${total} clinical order(s) — every order type placed across the practice. Lab and imaging orders also have their own dedicated queues under Laboratory and Radiology.`}
+      />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <form className="flex max-w-md items-center gap-2">

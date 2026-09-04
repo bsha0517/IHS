@@ -8,6 +8,7 @@ import { nextNumber } from "@/lib/platform/sequences"
 import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/outbox"
 import "@/lib/platform/event-handlers"
 import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
+import { resolvePage, paginationSkipTake, totalPages } from "@/lib/platform/pagination"
 import type { SessionContext } from "@/lib/auth/session"
 import type { GenerateInvoiceInput } from "@/lib/domains/billing/schemas"
 
@@ -110,18 +111,46 @@ const INVOICE_INCLUDE = {
  * TaxRule at all — including no default — means 0% tax, which is a valid
  * configuration for a self-pay clinic in a no-VAT jurisdiction; this
  * function never invents a nonzero fallback.
+ *
+ * P2 §18: previously `getTaxRate`, called once per invoice line (SYSTEM_AUDIT
+ * Medium #40) — one to two queries per charge, unbatched. Replaced with a
+ * single prefetch of every TaxRule this invoice's charges could possibly
+ * need (one query for the distinct service-specific rules, one for the
+ * org-wide default — same two queries `getTaxRate` always made per call,
+ * now made exactly once per invoice regardless of line count) plus an
+ * in-memory resolver closure. Precedence is byte-for-byte identical to the
+ * function it replaces: a specific active rule for the charge's own
+ * serviceId wins if one exists; otherwise the org-wide default (isDefault
+ * + isActive) if one exists; otherwise zero. (The one pre-existing,
+ * unspecified edge case — multiple active rules configured for the same
+ * service, which DATABASE.md already documents as enforced at the service
+ * layer, not the database, and which `findFirst()`'s own undefined
+ * ordering already made implementation-dependent before this change too —
+ * is not a precedence question this function's contract ever defined, so
+ * preserving it exactly isn't a "calculation behavior" this refactor could
+ * regress.)
  */
-async function getTaxRate(organizationId: string, serviceId: string | null): Promise<Decimal> {
-  if (serviceId) {
-    const specific = await db.taxRule.findFirst({
-      where: { organizationId, serviceId, isActive: true },
-    })
-    if (specific) return new Decimal(specific.rate)
+async function prefetchTaxRateResolver(
+  organizationId: string,
+  serviceIds: (string | null)[]
+): Promise<(serviceId: string | null) => Decimal> {
+  const uniqueServiceIds = [...new Set(serviceIds.filter((id): id is string => id !== null))]
+  const [specificRules, defaultRule] = await Promise.all([
+    uniqueServiceIds.length > 0
+      ? db.taxRule.findMany({ where: { organizationId, serviceId: { in: uniqueServiceIds }, isActive: true } })
+      : Promise.resolve([]),
+    db.taxRule.findFirst({ where: { organizationId, isDefault: true, isActive: true } }),
+  ])
+  const specificByService = new Map(specificRules.map((r) => [r.serviceId, new Decimal(r.rate)]))
+  const defaultRate = defaultRule ? new Decimal(defaultRule.rate) : null
+
+  return (serviceId: string | null): Decimal => {
+    if (serviceId) {
+      const specific = specificByService.get(serviceId)
+      if (specific) return specific
+    }
+    return defaultRate ?? new Decimal(0)
   }
-  const defaultRule = await db.taxRule.findFirst({
-    where: { organizationId, isDefault: true, isActive: true },
-  })
-  return defaultRule ? new Decimal(defaultRule.rate) : new Decimal(0)
 }
 
 /**
@@ -149,24 +178,36 @@ export async function generateInvoice(session: SessionContext, input: GenerateIn
       id: { in: input.chargeIds },
       organizationId: session.user.organizationId,
       patientId: input.patientId,
+      // P3.7 §12/§13/§41: previously absent — `assertCan(...,{branchId:
+      // input.branchId})` above only verifies the *session* is authorized
+      // for the invoice's own branch; it says nothing about whether the
+      // *charges themselves* actually belong to that branch. Without this,
+      // a request naming a branch the session legitimately operates at
+      // could still merge in chargeIds that were actually incurred at a
+      // completely different branch, producing an invoice whose own
+      // branchId disagrees with the branch its line items were really
+      // billed at — real cross-branch financial data corruption, not just
+      // an authorization gap.
+      branchId: input.branchId,
       status: "pending",
     },
   })
   if (charges.length !== input.chargeIds.length) {
-    throw new Error("One or more selected charges are no longer pending — refresh and try again.")
+    throw new Error("One or more selected charges are no longer pending, or don't belong to this branch — refresh and try again.")
   }
   if (input.discountAmount > 0) {
     assertCan(session, "invoice.discount", { branchId: input.branchId })
   }
 
-  const lineComputations = await Promise.all(
-    charges.map(async (charge) => {
-      const rate = await getTaxRate(session.user.organizationId, charge.serviceId)
-      const amount = new Decimal(charge.amount)
-      const tax = amount.mul(rate).toDecimalPlaces(2)
-      return { charge, tax, lineTotal: amount.add(tax) }
-    })
-  )
+  // P2 §18: one prefetch for the whole invoice instead of a getTaxRate()
+  // round-trip per charge — see prefetchTaxRateResolver's own doc comment.
+  const resolveTaxRate = await prefetchTaxRateResolver(session.user.organizationId, charges.map((c) => c.serviceId))
+  const lineComputations = charges.map((charge) => {
+    const rate = resolveTaxRate(charge.serviceId)
+    const amount = new Decimal(charge.amount)
+    const tax = amount.mul(rate).toDecimalPlaces(2)
+    return { charge, tax, lineTotal: amount.add(tax) }
+  })
 
   const subtotal = lineComputations.reduce((sum, l) => sum.add(l.charge.amount), new Decimal(0))
   const taxAmount = lineComputations.reduce((sum, l) => sum.add(l.tax), new Decimal(0))
@@ -215,7 +256,13 @@ export async function generateInvoice(session: SessionContext, input: GenerateIn
     // same "claim before acting" discipline dispenseRecord/completeRefund
     // already established.
     const claimed = await tx.charge.updateMany({
-      where: { id: { in: input.chargeIds }, organizationId: session.user.organizationId, patientId: input.patientId, status: "pending" },
+      where: {
+        id: { in: input.chargeIds },
+        organizationId: session.user.organizationId,
+        patientId: input.patientId,
+        branchId: input.branchId,
+        status: "pending",
+      },
       data: { status: "invoiced" },
     })
     if (claimed.count !== input.chargeIds.length) {
@@ -288,38 +335,116 @@ export async function getInvoice(session: SessionContext, id: string) {
   return invoice
 }
 
+const INVOICE_LIST_PAGE_SIZE = 50
+
+/** P2 §8: was `take: 100` with no page param — the original audit's own "invoice list hard cap" finding. Real server-side pagination now, not a bigger cap. */
 export async function listInvoices(
   session: SessionContext,
-  filters: { patientId?: string; status?: string; branchId?: string } = {}
+  filters: { patientId?: string; status?: string; branchId?: string; page?: number } = {}
 ) {
   assertCan(session, "invoice.view")
   const scope = getAuthorizedBranchScope(session)
-  return db.invoice.findMany({
-    where: {
-      organizationId: session.user.organizationId,
-      patientId: filters.patientId,
-      status: filters.status as never,
-      branchId: narrowBranchFilter(scope, filters.branchId),
-    },
-    include: { patient: true, branch: true },
-    orderBy: { createdAt: "desc" },
-    take: 100,
-  })
+  const page = resolvePage(filters.page)
+  const where: Prisma.InvoiceWhereInput = {
+    organizationId: session.user.organizationId,
+    patientId: filters.patientId,
+    status: filters.status as never,
+    branchId: narrowBranchFilter(scope, filters.branchId),
+  }
+  const [invoices, total] = await Promise.all([
+    db.invoice.findMany({
+      where,
+      include: { patient: true, branch: true },
+      orderBy: { createdAt: "desc" },
+      ...paginationSkipTake(page, INVOICE_LIST_PAGE_SIZE),
+    }),
+    db.invoice.count({ where }),
+  ])
+  return { invoices, total, page, pageSize: INVOICE_LIST_PAGE_SIZE, totalPages: totalPages(total, INVOICE_LIST_PAGE_SIZE) }
 }
 
-/** Backs the Receivables page (spec.md §56) — every invoice still owed money, oldest first. */
-export async function listOutstandingInvoices(session: SessionContext, filters: { branchId?: string } = {}) {
+/**
+ * Backs the Receivables page (spec.md §56) — every invoice still owed
+ * money, oldest first.
+ *
+ * P2 §8: was fully unbounded (no `take` at all) — the status filter alone
+ * doesn't bound this in a clinic with enough history, so this needed the
+ * same real pagination as `listInvoices`, not a post-filter over an
+ * already-capped general list (see `listOutstandingSupplierInvoices`,
+ * `procurement/supplier-invoices.ts`, for why the Payables page's
+ * equivalent needed its own DB-level status filter rather than
+ * paginating-then-filtering).
+ */
+export async function listOutstandingInvoices(session: SessionContext, filters: { branchId?: string; page?: number } = {}) {
   assertCan(session, "invoice.view")
   const scope = getAuthorizedBranchScope(session)
-  return db.invoice.findMany({
-    where: {
-      organizationId: session.user.organizationId,
-      branchId: narrowBranchFilter(scope, filters.branchId),
-      status: { in: ["issued", "partially_paid"] },
-    },
-    include: { patient: true, branch: true },
-    orderBy: { issuedAt: "asc" },
-  })
+  const page = resolvePage(filters.page)
+  const where: Prisma.InvoiceWhereInput = {
+    organizationId: session.user.organizationId,
+    branchId: narrowBranchFilter(scope, filters.branchId),
+    status: { in: ["issued", "partially_paid"] },
+  }
+  // The page header's "total owed" figure must reflect every outstanding
+  // invoice, not just the current page — a real DB-level SUM (two, since
+  // "outstanding" is totalAmount - paidAmount, not a raw stored column),
+  // never derived from whatever rows happen to be on this page.
+  const [invoices, total, sums] = await Promise.all([
+    db.invoice.findMany({
+      where,
+      include: { patient: true, branch: true },
+      orderBy: { issuedAt: "asc" },
+      ...paginationSkipTake(page, INVOICE_LIST_PAGE_SIZE),
+    }),
+    db.invoice.count({ where }),
+    db.invoice.aggregate({ where, _sum: { totalAmount: true, paidAmount: true } }),
+  ])
+  const totalOutstanding = Number(sums._sum.totalAmount ?? 0) - Number(sums._sum.paidAmount ?? 0)
+  return { invoices, total, totalOutstanding, page, pageSize: INVOICE_LIST_PAGE_SIZE, totalPages: totalPages(total, INVOICE_LIST_PAGE_SIZE) }
+}
+
+/**
+ * P3.9 §26: "if [AR aging] does NOT exist, do not build a complex aging
+ * engine unless trivial using existing query infrastructure — basic
+ * buckets may be useful later." A single SUM-with-CASE aggregate over the
+ * same outstanding-invoice population `listOutstandingInvoices` already
+ * scopes and totals (not a second, parallel definition of "outstanding") —
+ * bucketed by days since `issuedAt`, the closest this model has to a due
+ * date reference for every invoice regardless of whether `dueDate` is set.
+ */
+export async function getReceivablesAging(session: SessionContext, filters: { branchId?: string } = {}) {
+  assertCan(session, "invoice.view")
+  const scope = getAuthorizedBranchScope(session)
+  if (filters.branchId) assertBranchAccess(scope, filters.branchId)
+  const branchFilter = filters.branchId
+    ? Prisma.sql`AND branch_id = ${filters.branchId}`
+    : scope.isOrgWide
+      ? Prisma.sql``
+      : scope.branchIds.length === 0
+        ? Prisma.sql`AND FALSE`
+        : Prisma.sql`AND branch_id IN (${Prisma.join(scope.branchIds)})`
+
+  const rows = await db.$queryRaw<{ bucket: string; total: number }[]>(Prisma.sql`
+    SELECT
+      CASE
+        WHEN issued_at > NOW() - INTERVAL '30 days' THEN 'current'
+        WHEN issued_at > NOW() - INTERVAL '60 days' THEN '31_60'
+        WHEN issued_at > NOW() - INTERVAL '90 days' THEN '61_90'
+        ELSE 'over_90'
+      END AS bucket,
+      COALESCE(SUM(total_amount - paid_amount), 0)::float AS total
+    FROM "invoice"
+    WHERE organization_id = ${session.user.organizationId}
+      AND status IN ('issued', 'partially_paid')
+      ${branchFilter}
+    GROUP BY bucket
+  `)
+  const byBucket = new Map(rows.map((r) => [r.bucket, r.total]))
+  return {
+    current: byBucket.get("current") ?? 0,
+    days31to60: byBucket.get("31_60") ?? 0,
+    days61to90: byBucket.get("61_90") ?? 0,
+    over90: byBucket.get("over_90") ?? 0,
+  }
 }
 
 export async function listPatientInvoices(session: SessionContext, patientId: string) {

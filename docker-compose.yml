@@ -1,0 +1,43 @@
+﻿# Local PostgreSQL for development and integration testing only — see
+# LOCAL_DATABASE_SETUP.md. Supabase remains the hosted Postgres for
+# staging/production (DEPLOYMENT.md); nothing here touches that.
+#
+# Two logical databases, one container: `his_dev` (manual local development)
+# and `his_test` (disposable, reset freely by the integration suite) — both
+# created once, automatically, by prisma/db-setup/local-init.sql the first
+# time this container starts against a fresh volume.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: avant_his_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      # Bound to localhost only — never exposed on the network (task
+      # requirement: "Expose PostgreSQL only to localhost"). Host port 5433,
+      # not Postgres's default 5432: deliberately, to avoid colliding with a
+      # native/other local Postgres install a developer's machine may
+      # already be running on 5432 (confirmed a real, not hypothetical,
+      # collision on the machine this was built on — see
+      # LOCAL_DATABASE_SETUP.md). The container's own internal port stays
+      # 5432; only the host-side mapping moved.
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - avant_his_pgdata:/var/lib/postgresql/data
+      - ./prisma/db-setup/local-init.sql:/docker-entrypoint-initdb.d/01-local-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  # Persistent, named (not anonymous) so `docker compose down` (without
+  # `-v`) never silently loses local dev data — see LOCAL_DATABASE_SETUP.md
+  # for how to actually wipe it when that's genuinely wanted.
+  avant_his_pgdata:
+    name: avant_his_pgdata

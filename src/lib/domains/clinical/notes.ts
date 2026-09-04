@@ -2,6 +2,7 @@ import "server-only"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
+import { writeClinicalAccessLog } from "@/lib/platform/access-log"
 import { getAuthorizedBranchScope, assertBranchAccess } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { ClinicalNoteInput } from "@/lib/domains/clinical/schemas"
@@ -21,9 +22,16 @@ export async function saveNote(
 ) {
   assertCan(session, "clinical_notes.edit")
 
-  const encounter = await db.encounter.findFirstOrThrow({
+  // P3.3 §33: see clinical/vitals.ts's comment — `findFirstOrThrow` leaked
+  // a raw Prisma message for a stale/invalid encounterId.
+  const encounter = await db.encounter.findFirst({
     where: { id: encounterId, organizationId: session.user.organizationId },
   })
+  if (!encounter) throw new Error("This encounter no longer exists or is not accessible.")
+  // P3.3 §34: same branch-write gap fixed across every encounter-scoped
+  // write this batch touched — see clinical/vitals.ts's comment for the
+  // full reasoning.
+  assertBranchAccess(getAuthorizedBranchScope(session), encounter.branchId)
 
   const current = await db.clinicalNote.findFirst({
     where: { encounterId, noteType, isCurrent: true },
@@ -67,9 +75,17 @@ export async function saveNote(
 export async function createAmendment(session: SessionContext, noteId: string, input: ClinicalNoteInput) {
   assertCan(session, "clinical_notes.edit")
 
-  const original = await db.clinicalNote.findFirstOrThrow({
+  // Targeted backlog closure, item 6 — see clinical/diagnoses.ts's identical comment.
+  const original = await db.clinicalNote.findFirst({
     where: { id: noteId, organizationId: session.user.organizationId },
+    include: { encounter: { select: { branchId: true } } },
   })
+  if (!original) throw new Error("This clinical note no longer exists or is not accessible.")
+  // P3.3 §34: same branch-write gap fixed across every encounter-scoped
+  // write this batch touched — see clinical/vitals.ts's comment for the
+  // full reasoning. `encounter` is only selected for this check, at no
+  // extra round trip (Prisma resolves it as part of the same query).
+  assertBranchAccess(getAuthorizedBranchScope(session), original.encounter.branchId)
   if (!original.isCurrent) {
     throw new Error("Only the current version of a note can be amended.")
   }
@@ -117,9 +133,12 @@ export async function createAmendment(session: SessionContext, noteId: string, i
 export async function getNoteHistory(session: SessionContext, currentNoteId: string) {
   assertCan(session, "clinical_notes.view")
   const chain = []
+  // P3.3 §25/§26: `authoredByUser`/`finalizedByUser` added so the encounter
+  // workspace's new history view can show a real author name — previously
+  // only the caller-invisible raw user ids were available.
   let cursor = await db.clinicalNote.findFirst({
     where: { id: currentNoteId, organizationId: session.user.organizationId },
-    include: { encounter: true },
+    include: { encounter: true, authoredByUser: { select: { firstName: true, lastName: true } }, finalizedByUser: { select: { firstName: true, lastName: true } } },
   })
   if (cursor) assertBranchAccess(getAuthorizedBranchScope(session), cursor.encounter.branchId)
   while (cursor) {
@@ -130,8 +149,15 @@ export async function getNoteHistory(session: SessionContext, currentNoteId: str
     // a note id, so it must not implicitly trust that invariant.
     cursor = await db.clinicalNote.findFirst({
       where: { id: cursor.amendsId, organizationId: session.user.organizationId },
-      include: { encounter: true },
+      include: { encounter: true, authoredByUser: { select: { firstName: true, lastName: true } }, finalizedByUser: { select: { firstName: true, lastName: true } } },
     })
+  }
+  // P2 §7: clinical notes are the most sensitive chart content this system
+  // has — SOAP/assessment/plan free text — and reading their full amendment
+  // history had no access-log coverage at all before this batch, the exact
+  // "chart access" gap P2.md names.
+  if (chain.length > 0) {
+    await writeClinicalAccessLog({ session, patientId: chain[0].patientId, resourceType: "clinical_note", resourceId: currentNoteId, action: "view" })
   }
   return chain
 }

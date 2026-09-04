@@ -1,6 +1,7 @@
 import "server-only"
 import { Decimal } from "@prisma/client/runtime/client"
 import { db } from "@/lib/db"
+import { Prisma } from "@/generated/prisma/client"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { nextNumber } from "@/lib/platform/sequences"
@@ -8,6 +9,7 @@ import { receiveStock } from "@/lib/domains/inventory/stock"
 import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/outbox"
 import "@/lib/platform/event-handlers"
 import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
+import { resolvePage, paginationSkipTake, totalPages } from "@/lib/platform/pagination"
 import { claimIdempotencyKey, recordIdempotentResult, resolveDuplicateRequest, isIdempotencyKeyConflict } from "@/lib/platform/idempotency"
 import type { SessionContext } from "@/lib/auth/session"
 import type { GoodsReceiptInput } from "@/lib/domains/procurement/schemas"
@@ -44,8 +46,21 @@ export async function createGoodsReceipt(session: SessionContext, input: GoodsRe
     where: { id: input.purchaseOrderId, organizationId: session.user.organizationId },
     include: { lines: { include: { goodsReceiptLines: true } } },
   })
+  // P3.8 §46: previously unchecked — any session holding `goods_receipt.create`
+  // anywhere could receive against a PO belonging to a branch it has no
+  // access to at all (the receipt inherits `branchId: po.branchId`, never
+  // verified against the session's authorized branches). getGoodsReceipt/
+  // listGoodsReceipts already enforced this on the read side; the write
+  // side did not.
+  assertBranchAccess(getAuthorizedBranchScope(session), po.branchId)
   if (po.status === "cancelled") throw new Error("Cannot receive against a cancelled purchase order.")
 
+  // P3.8 §39/§48: fast, pre-transaction check for the common (non-racing)
+  // case only — NOT the safety mechanism, same discipline as
+  // recordSupplierPayment's own preliminary check (supplier-invoices.ts).
+  // The re-check under lock inside the transaction below is what actually
+  // prevents two concurrent receipts against the remaining PO quantity from
+  // both passing and jointly over-receiving.
   if (!input.allowOverReceipt) {
     for (const line of input.lines) {
       const poLine = po.lines.find((l) => l.id === line.purchaseOrderLineId)
@@ -64,6 +79,32 @@ export async function createGoodsReceipt(session: SessionContext, input: GoodsRe
     receipt = await db.$transaction(async (tx) => {
       if (input.idempotencyKey) {
         await claimIdempotencyKey(tx, { organizationId: session.user.organizationId, scope: IDEMPOTENCY_SCOPE, key: input.idempotencyKey })
+      }
+
+      // P3.8 §39/§48: lock the parent PO row so two concurrent receipts
+      // against the same PO serialize here — without this, two requests
+      // could both read the same pre-receipt "already received" totals
+      // (computed above, outside any lock) and both pass the over-receipt
+      // check, jointly exceeding the ordered quantity. Re-verify under the
+      // lock, against a fresh read of every prior GoodsReceiptLine,
+      // including any receipt the other concurrent request just committed.
+      await tx.$queryRaw`SELECT "id" FROM "purchase_order" WHERE "id" = ${po.id} FOR UPDATE`
+
+      if (!input.allowOverReceipt) {
+        const freshForCheck = await tx.purchaseOrderLine.findMany({
+          where: { purchaseOrderId: po.id },
+          include: { goodsReceiptLines: true },
+        })
+        for (const line of input.lines) {
+          const poLine = freshForCheck.find((l) => l.id === line.purchaseOrderLineId)
+          if (!poLine) throw new Error("One of these lines doesn't belong to this purchase order.")
+          const alreadyReceived = poLine.goodsReceiptLines.reduce((sum, grl) => sum + grl.quantityReceived, 0)
+          if (alreadyReceived + line.quantityReceived > poLine.quantity) {
+            throw new Error(
+              `Receiving ${line.quantityReceived} would exceed the ordered quantity for this line (ordered ${poLine.quantity}, already received ${alreadyReceived} — another receipt was just recorded). Refresh and try again, or check "Allow over-receipt" to authorize it explicitly.`
+            )
+          }
+        }
       }
 
       const receiptNumber = await nextNumber({
@@ -163,13 +204,22 @@ export async function getGoodsReceipt(session: SessionContext, id: string) {
   return receipt
 }
 
-export async function listGoodsReceipts(session: SessionContext, filters: { purchaseOrderId?: string } = {}) {
+const GOODS_RECEIPT_PAGE_SIZE = 50
+
+/** P2 §8: was `take: 100` with no page param. Real server-side pagination now. */
+export async function listGoodsReceipts(session: SessionContext, filters: { purchaseOrderId?: string; page?: number } = {}) {
   assertCan(session, "goods_receipt.create")
   const scope = getAuthorizedBranchScope(session)
-  return db.goodsReceipt.findMany({
-    where: { organizationId: session.user.organizationId, purchaseOrderId: filters.purchaseOrderId, branchId: narrowBranchFilter(scope) },
-    include: { supplier: true, purchaseOrder: true },
-    orderBy: { receivedAt: "desc" },
-    take: 100,
-  })
+  const page = resolvePage(filters.page)
+  const where: Prisma.GoodsReceiptWhereInput = { organizationId: session.user.organizationId, purchaseOrderId: filters.purchaseOrderId, branchId: narrowBranchFilter(scope) }
+  const [receipts, total] = await Promise.all([
+    db.goodsReceipt.findMany({
+      where,
+      include: { supplier: true, purchaseOrder: true },
+      orderBy: { receivedAt: "desc" },
+      ...paginationSkipTake(page, GOODS_RECEIPT_PAGE_SIZE),
+    }),
+    db.goodsReceipt.count({ where }),
+  ])
+  return { receipts, total, page, pageSize: GOODS_RECEIPT_PAGE_SIZE, totalPages: totalPages(total, GOODS_RECEIPT_PAGE_SIZE) }
 }

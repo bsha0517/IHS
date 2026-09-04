@@ -8,28 +8,42 @@ import { formatDateTime } from "@/lib/utils/dates"
 import { Card, CardContent } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
+import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { PaginationControls } from "@/components/domain/pagination-controls"
+import { PageHeader } from "@/components/ui/page-header"
+import { EmptyState } from "@/components/ui/empty-state"
 import { ImagingServiceDialog } from "@/app/(dashboard)/radiology/imaging-service-dialog"
+import type { $Enums } from "@/generated/prisma/client"
 
-const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
-  ordered: "outline",
-  acknowledged: "outline",
-  in_progress: "secondary",
-  completed: "default",
-  cancelled: "destructive",
-}
+const QUEUE_STATUS_FILTERS = [
+  { value: "", label: "All active" },
+  { value: "ordered", label: "New (unassigned)" },
+  { value: "in_progress", label: "In progress" },
+  { value: "completed", label: "Completed" },
+] as const
 
-export default async function RadiologyPage() {
+// Targeted backlog closure, item 1 — see laboratory/page.tsx's identical comment.
+const VALID_STATUSES: $Enums.ClinicalOrderStatus[] = ["draft", "ordered", "acknowledged", "in_progress", "completed", "cancelled"]
+
+export default async function RadiologyPage({ searchParams }: { searchParams: Promise<{ status?: string; page?: string }> }) {
   const session = await getCurrentSession()
   if (!session || !can(session, "imaging_order.perform")) redirect("/dashboard")
 
+  const { status, page: pageParam } = await searchParams
+  const statusFilter = status && VALID_STATUSES.includes(status as $Enums.ClinicalOrderStatus) ? (status as $Enums.ClinicalOrderStatus) : undefined
+  const page = Math.max(1, Number(pageParam ?? 1) || 1)
   const canManageCatalog = can(session, "imaging_service.manage")
 
-  const [queue, services] = await Promise.all([listRadiologyQueue(session), listImagingServices(session)])
+  const [{ orders: queue, total, totalPages: queueTotalPages }, services] = await Promise.all([
+    listRadiologyQueue(session, { status: statusFilter, page }),
+    listImagingServices(session),
+  ])
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Radiology</h1>
+      <PageHeader title="Radiology" />
 
       <Tabs defaultValue="queue">
         <TabsList>
@@ -38,6 +52,13 @@ export default async function RadiologyPage() {
         </TabsList>
 
         <TabsContent value="queue" className="grid gap-4">
+          <div className="flex flex-wrap gap-2">
+            {QUEUE_STATUS_FILTERS.map((f) => (
+              <Button key={f.value} size="sm" variant={(statusFilter ?? "") === f.value ? "default" : "outline"} asChild>
+                <Link href={f.value ? `/radiology?status=${f.value}` : "/radiology"}>{f.label}</Link>
+              </Button>
+            ))}
+          </div>
           <Card>
             <CardContent className="pt-6">
               <Table>
@@ -45,8 +66,12 @@ export default async function RadiologyPage() {
                   <TableRow>
                     <TableHead>Order #</TableHead>
                     <TableHead>Patient</TableHead>
+                    <TableHead>MRN</TableHead>
                     <TableHead>Order intent</TableHead>
-                    <TableHead>Assigned service</TableHead>
+                    <TableHead>Modality</TableHead>
+                    <TableHead>Ordering provider</TableHead>
+                    <TableHead>Branch</TableHead>
+                    <TableHead>Priority</TableHead>
                     <TableHead>Ordered</TableHead>
                     <TableHead>Status</TableHead>
                   </TableRow>
@@ -54,8 +79,12 @@ export default async function RadiologyPage() {
                 <TableBody>
                   {queue.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center text-muted-foreground">
-                        No imaging orders in the queue.
+                      <TableCell colSpan={10} className="p-0">
+                        <EmptyState
+                          title="No imaging orders"
+                          description={statusFilter ? "No imaging orders match this filter." : "No imaging studies awaiting processing."}
+                          className="border-none"
+                        />
                       </TableCell>
                     </TableRow>
                   )}
@@ -69,14 +98,24 @@ export default async function RadiologyPage() {
                       <TableCell>
                         {o.patient.firstName} {o.patient.lastName}
                       </TableCell>
+                      <TableCell>{o.patient.mrn}</TableCell>
                       <TableCell>
                         {o.imagingDetail?.imagingType ?? "—"}
                         {o.imagingDetail?.bodyPart ? ` (${o.imagingDetail.bodyPart})` : ""}
                       </TableCell>
-                      <TableCell>{o.imagingOrder ? o.imagingOrder.imagingService.name : "not yet assigned"}</TableCell>
+                      <TableCell>{o.imagingOrder ? o.imagingOrder.imagingService.category : "—"}</TableCell>
+                      <TableCell>
+                        {o.orderingProvider.firstName} {o.orderingProvider.lastName}
+                      </TableCell>
+                      <TableCell>{o.branch.name}</TableCell>
+                      <TableCell>
+                        <Badge variant={o.priority === "stat" ? "destructive" : o.priority === "urgent" ? "secondary" : "outline"} className="capitalize">
+                          {o.priority}
+                        </Badge>
+                      </TableCell>
                       <TableCell>{formatDateTime(o.orderedAt)}</TableCell>
                       <TableCell>
-                        <Badge variant={STATUS_VARIANT[o.status] ?? "outline"}>{o.status.replace("_", " ")}</Badge>
+                        <StatusBadge status={o.status} />
                       </TableCell>
                     </TableRow>
                   ))}
@@ -84,6 +123,7 @@ export default async function RadiologyPage() {
               </Table>
             </CardContent>
           </Card>
+          <PaginationControls page={page} totalPages={queueTotalPages} total={total} basePath="/radiology" searchParams={{ status }} />
         </TabsContent>
 
         <TabsContent value="catalog" className="grid gap-4">
@@ -107,8 +147,8 @@ export default async function RadiologyPage() {
                 <TableBody>
                   {services.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center text-muted-foreground">
-                        No imaging services yet.
+                      <TableCell colSpan={6} className="p-0">
+                        <EmptyState title="No imaging services" description="No imaging services in the catalog yet." className="border-none" />
                       </TableCell>
                     </TableRow>
                   )}

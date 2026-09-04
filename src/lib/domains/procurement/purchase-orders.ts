@@ -5,6 +5,8 @@ import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { nextNumber } from "@/lib/platform/sequences"
 import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
+import { resolvePage, paginationSkipTake, totalPages } from "@/lib/platform/pagination"
+import type { Prisma } from "@/generated/prisma/client"
 import type { SessionContext } from "@/lib/auth/session"
 import type { PurchaseOrderInput } from "@/lib/domains/procurement/schemas"
 
@@ -81,15 +83,24 @@ export async function getPurchaseOrder(session: SessionContext, id: string) {
   }
 }
 
-export async function listPurchaseOrders(session: SessionContext, filters: { status?: string } = {}) {
+const PURCHASE_ORDER_PAGE_SIZE = 50
+
+/** P3.8 §30: was `take: 100` with no page param. Real server-side pagination now, preserving the existing status filter. */
+export async function listPurchaseOrders(session: SessionContext, filters: { status?: string; page?: number } = {}) {
   assertCan(session, "purchase_order.create")
   const scope = getAuthorizedBranchScope(session)
-  return db.purchaseOrder.findMany({
-    where: { organizationId: session.user.organizationId, status: filters.status as never, branchId: narrowBranchFilter(scope) },
-    include: { supplier: true, branch: true },
-    orderBy: { createdAt: "desc" },
-    take: 100,
-  })
+  const page = resolvePage(filters.page)
+  const where: Prisma.PurchaseOrderWhereInput = { organizationId: session.user.organizationId, status: filters.status as never, branchId: narrowBranchFilter(scope) }
+  const [orders, total] = await Promise.all([
+    db.purchaseOrder.findMany({
+      where,
+      include: { supplier: true, branch: true },
+      orderBy: { createdAt: "desc" },
+      ...paginationSkipTake(page, PURCHASE_ORDER_PAGE_SIZE),
+    }),
+    db.purchaseOrder.count({ where }),
+  ])
+  return { orders, total, page, pageSize: PURCHASE_ORDER_PAGE_SIZE, totalPages: totalPages(total, PURCHASE_ORDER_PAGE_SIZE) }
 }
 
 export async function cancelPurchaseOrder(session: SessionContext, id: string, reason: string) {

@@ -3,6 +3,7 @@ import { getCurrentSession } from "@/lib/auth/session"
 import { can } from "@/lib/platform/permissions-core"
 import { listSuppliers } from "@/lib/domains/procurement/suppliers"
 import { Card, CardContent } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { SupplierDialog } from "@/app/(dashboard)/suppliers/supplier-dialog"
@@ -16,13 +17,11 @@ export default async function SuppliersPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Suppliers</h1>
-          <p className="text-sm text-muted-foreground">{suppliers.length} supplier(s)</p>
-        </div>
-        {canManage && <SupplierDialog />}
-      </div>
+      <PageHeader
+        title="Suppliers"
+        description={`${suppliers.length} supplier(s)`}
+        primaryAction={canManage && <SupplierDialog />}
+      />
 
       <Card>
         <CardContent>

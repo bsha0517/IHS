@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
-import { createLabTest, updateLabTest, deactivateLabTest, createLabPanel, deactivateLabPanel } from "@/lib/domains/laboratory/catalog"
+import { createLabTest, updateLabTest, createLabPanel } from "@/lib/domains/laboratory/catalog"
 import { assignTests, collectSpecimen, rejectSpecimen, receiveSpecimen } from "@/lib/domains/laboratory/orders"
 import { enterNumericResult, enterTextResult, verifyResult, amendLabResult } from "@/lib/domains/laboratory/results"
 import { labTestSchema, labPanelSchema, assignTestsSchema, enterNumericResultSchema, enterTextResultSchema } from "@/lib/domains/laboratory/schemas"
@@ -58,12 +58,6 @@ export async function updateLabTestAction(_prev: ActionState, formData: FormData
   return { success: true }
 }
 
-export async function deactivateLabTestAction(id: string) {
-  const session = await requireSession()
-  await deactivateLabTest(session, id)
-  revalidatePath("/laboratory")
-}
-
 export async function createLabPanelAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const session = await requireSession()
   const parsed = labPanelSchema.safeParse({
@@ -80,12 +74,6 @@ export async function createLabPanelAction(_prev: ActionState, formData: FormDat
   }
   revalidatePath("/laboratory")
   return { success: true }
-}
-
-export async function deactivateLabPanelAction(id: string) {
-  const session = await requireSession()
-  await deactivateLabPanel(session, id)
-  revalidatePath("/laboratory")
 }
 
 export async function assignTestsAction(_prev: ActionState, formData: FormData): Promise<ActionState> {

@@ -5,6 +5,7 @@ import { getCurrentSession } from "@/lib/auth/session"
 import { can } from "@/lib/platform/permissions-core"
 import { listEncounters } from "@/lib/domains/clinical/encounters"
 import { Card, CardContent } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -48,10 +49,7 @@ export default async function EncountersPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Encounters</h1>
-        <p className="text-sm text-muted-foreground">{total} encounter(s)</p>
-      </div>
+      <PageHeader title="Encounters" description={`${total} encounter(s)`} />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <form className="flex max-w-md items-center gap-2">

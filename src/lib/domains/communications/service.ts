@@ -2,12 +2,13 @@ import "server-only"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
+import { resolvePage, paginationSkipTake, totalPages } from "@/lib/platform/pagination"
 import { NullSmsAdapter } from "@/lib/domains/communications/adapters/sms-adapter"
 import { NullWhatsAppAdapter } from "@/lib/domains/communications/adapters/whatsapp-adapter"
 import { NullEmailAdapter } from "@/lib/domains/communications/adapters/email-adapter"
 import type { CommunicationAdapter } from "@/lib/domains/communications/adapters/types"
 import type { SessionContext } from "@/lib/auth/session"
-import type { $Enums } from "@/generated/prisma/client"
+import type { $Enums, Prisma } from "@/generated/prisma/client"
 
 const SMS_ADAPTER = new NullSmsAdapter()
 const WHATSAPP_ADAPTER = new NullWhatsAppAdapter()
@@ -97,12 +98,21 @@ export async function sendTemplateMessage(
   return message
 }
 
-export async function listMessageHistory(session: SessionContext, filters: { patientId?: string } = {}) {
+const MESSAGE_HISTORY_PAGE_SIZE = 50
+
+/** P2 §8: was `take: 200` with no page param. Real server-side pagination now. */
+export async function listMessageHistory(session: SessionContext, filters: { patientId?: string; page?: number } = {}) {
   assertCan(session, "communication.send")
-  return db.commMessage.findMany({
-    where: { organizationId: session.user.organizationId, patientId: filters.patientId },
-    include: { patient: true, template: true },
-    orderBy: { createdAt: "desc" },
-    take: 200,
-  })
+  const page = resolvePage(filters.page)
+  const where: Prisma.CommMessageWhereInput = { organizationId: session.user.organizationId, patientId: filters.patientId }
+  const [messages, total] = await Promise.all([
+    db.commMessage.findMany({
+      where,
+      include: { patient: true, template: true },
+      orderBy: { createdAt: "desc" },
+      ...paginationSkipTake(page, MESSAGE_HISTORY_PAGE_SIZE),
+    }),
+    db.commMessage.count({ where }),
+  ])
+  return { messages, total, page, pageSize: MESSAGE_HISTORY_PAGE_SIZE, totalPages: totalPages(total, MESSAGE_HISTORY_PAGE_SIZE) }
 }

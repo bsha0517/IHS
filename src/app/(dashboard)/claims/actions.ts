@@ -97,6 +97,12 @@ export async function resubmitClaimAction(claimId: string) {
   return claim.id
 }
 
+export async function deactivatePatientCoverageAction(id: string, patientId: string) {
+  const session = await requireSession()
+  await deactivatePatientCoverage(session, id)
+  revalidatePath(`/patients/${patientId}`)
+}
+
 export async function addPatientCoverageAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const session = await requireSession()
   const patientId = String(formData.get("patientId") ?? "")
@@ -121,12 +127,6 @@ export async function addPatientCoverageAction(_prev: ActionState, formData: For
   }
   revalidatePath(`/patients/${patientId}`)
   return { success: true }
-}
-
-export async function deactivatePatientCoverageAction(id: string, patientId: string) {
-  const session = await requireSession()
-  await deactivatePatientCoverage(session, id)
-  revalidatePath(`/patients/${patientId}`)
 }
 
 export async function requestAuthorizationAction(_prev: ActionState, formData: FormData): Promise<ActionState> {

@@ -3,47 +3,59 @@ import { redirect } from "next/navigation"
 import { getCurrentSession } from "@/lib/auth/session"
 import { can } from "@/lib/platform/permissions-core"
 import { getLabOrder } from "@/lib/domains/laboratory/orders"
+import { loadOrNotFound } from "@/lib/platform/not-found"
 import { listLabTests, listLabPanels } from "@/lib/domains/laboratory/catalog"
 import { formatDate, formatDateTime } from "@/lib/utils/dates"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
 import { Button } from "@/components/ui/button"
+import { TriangleAlert } from "lucide-react"
 import { AssignTestsDialog } from "@/app/(dashboard)/laboratory/orders/[id]/assign-tests-dialog"
 import { CollectButton, ReceiveButton, RejectSpecimenButton } from "@/app/(dashboard)/laboratory/orders/[id]/specimen-actions"
 import { ResultEntryDialog, VerifyButton } from "@/app/(dashboard)/laboratory/orders/[id]/result-entry-dialog"
 
-const FLAG_VARIANT: Record<string, "default" | "secondary" | "destructive"> = {
-  normal: "default",
-  low: "secondary",
-  high: "secondary",
-  critical_low: "destructive",
-  critical_high: "destructive",
-}
-
 export default async function LabOrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await getCurrentSession()
-  if (!session || !can(session, "lab_result.enter")) redirect("/dashboard")
+  // P3.5 §18/§19: widened from `lab_result.enter` alone so a Doctor (who
+  // only holds `patient.view`, not the lab-ops permission) has a real,
+  // working destination when the encounter links here — see getLabOrder's
+  // own comment for the full reasoning. `canOperate` below still gates
+  // every actual lab-ops action independently.
+  if (!session || (!can(session, "lab_result.enter") && !can(session, "patient.view"))) redirect("/dashboard")
 
   const { id } = await params
+  const canOperate = can(session, "lab_result.enter")
   const canVerify = can(session, "lab_result.verify")
-  const [order, tests, panels] = await Promise.all([getLabOrder(session, id), listLabTests(session), listLabPanels(session)])
+  const [order, tests, panels] = await Promise.all([
+    // Targeted backlog closure, item 4 — see loadOrNotFound's own doc comment.
+    loadOrNotFound(() => getLabOrder(session, id)),
+    canOperate ? listLabTests(session) : Promise.resolve([]),
+    canOperate ? listLabPanels(session) : Promise.resolve([]),
+  ])
 
   const testOptions = tests.map((t) => ({ id: t.id, code: t.code, name: t.name, price: Number(t.price) }))
   const panelOptions = panels.map((p) => ({ id: p.id, code: p.code, name: p.name, price: Number(p.price) }))
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{order.orderNumber}</h1>
-          <p className="text-sm text-muted-foreground">
-            {order.patient.firstName} {order.patient.lastName} ({order.patient.mrn}) · Ordered by {order.orderingProvider.firstName}{" "}
-            {order.orderingProvider.lastName}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Badge variant={order.status === "completed" ? "default" : "outline"}>{order.status.replace("_", " ")}</Badge>
+      {/* P4.7A.1 §29 — same context-bar language as the rest of the app: who
+          this order is for, who ordered it, and its overall status, before
+          the specimen/test detail below. */}
+      <Card className="border-l-4 border-l-primary">
+        <CardContent className="flex flex-wrap items-center justify-between gap-4 pt-6">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-xl font-semibold tracking-tight">{order.orderNumber}</h1>
+              <StatusBadge status={order.status} />
+            </div>
+            <p className="text-sm text-muted-foreground">
+              <Link href={`/patients/${order.patientId}`} className="hover:underline">
+                {order.patient.firstName} {order.patient.lastName}
+              </Link>{" "}
+              ({order.patient.mrn}) · Ordered by {order.orderingProvider.firstName} {order.orderingProvider.lastName}
+            </p>
+          </div>
           {order.status === "completed" && (
             <Button size="sm" variant="outline" asChild>
               <Link href={`/laboratory/orders/${order.id}/report`} target="_blank">
@@ -51,8 +63,8 @@ export default async function LabOrderDetailPage({ params }: { params: Promise<{
               </Link>
             </Button>
           )}
-        </div>
-      </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
@@ -83,8 +95,12 @@ export default async function LabOrderDetailPage({ params }: { params: Promise<{
       {order.labOrderTests.length === 0 && (
         <Card>
           <CardContent className="flex items-center justify-between pt-6">
-            <p className="text-sm text-muted-foreground">No structured tests assigned yet — select from the catalog to generate billable lines.</p>
-            <AssignTestsDialog clinicalOrderId={order.id} tests={testOptions} panels={panelOptions} />
+            <p className="text-sm text-muted-foreground">
+              {canOperate
+                ? "No structured tests assigned yet — select from the catalog to generate billable lines."
+                : "No structured tests assigned yet."}
+            </p>
+            {canOperate && <AssignTestsDialog clinicalOrderId={order.id} tests={testOptions} panels={panelOptions} />}
           </CardContent>
         </Card>
       )}
@@ -103,14 +119,14 @@ export default async function LabOrderDetailPage({ params }: { params: Promise<{
                   {s.rejectionReason && <span className="text-destructive"> · rejected: {s.rejectionReason}</span>}
                 </div>
                 <div className="flex items-center gap-2">
-                  <Badge variant={s.status === "rejected" ? "destructive" : s.status === "pending" ? "outline" : "default"}>{s.status}</Badge>
-                  {s.status === "pending" && (
+                  <StatusBadge status={s.status} />
+                  {canOperate && s.status === "pending" && (
                     <>
                       <CollectButton specimenId={s.id} clinicalOrderId={order.id} />
                       <RejectSpecimenButton specimenId={s.id} clinicalOrderId={order.id} />
                     </>
                   )}
-                  {s.status === "collected" && <ReceiveButton specimenId={s.id} clinicalOrderId={order.id} />}
+                  {canOperate && s.status === "collected" && <ReceiveButton specimenId={s.id} clinicalOrderId={order.id} />}
                 </div>
               </div>
             ))}
@@ -122,7 +138,7 @@ export default async function LabOrderDetailPage({ params }: { params: Promise<{
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-base">Tests</CardTitle>
-            <AssignTestsDialog clinicalOrderId={order.id} tests={testOptions} panels={panelOptions} />
+            {canOperate && <AssignTestsDialog clinicalOrderId={order.id} tests={testOptions} panels={panelOptions} />}
           </CardHeader>
           <CardContent className="pt-0">
             <Table>
@@ -150,26 +166,39 @@ export default async function LabOrderDetailPage({ params }: { params: Promise<{
                         ? `${t.referenceRangeLow}–${t.referenceRangeHigh}`
                         : t.referenceRangeText ?? "—"}
                     </TableCell>
-                    <TableCell>{t.abnormalFlag && <Badge variant={FLAG_VARIANT[t.abnormalFlag] ?? "outline"}>{t.abnormalFlag.replace("_", " ")}</Badge>}</TableCell>
                     <TableCell>
-                      <Badge variant="outline">{t.status}</Badge>
+                      {t.abnormalFlag && (
+                        // P4.7A.1 §29 — critical results never rely on color
+                        // alone: an explicit icon + the word "critical" text,
+                        // on top of the destructive tone.
+                        <span className="inline-flex items-center gap-1">
+                          {t.abnormalFlag.startsWith("critical") && <TriangleAlert className="size-3.5 text-destructive" />}
+                          <StatusBadge status={t.abnormalFlag} />
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell>
-                      {(t.status === "collected" || t.status === "processing") && (
+                      <StatusBadge status={t.status} />
+                    </TableCell>
+                    <TableCell>
+                      {/* P2 §20: "processing" removed from this check — LAB_ORDER_TEST_TRANSITIONS (results.ts) allows collected -> processing as a deliberate, optional P1-named step, but no action anywhere actually sets it yet, so this branch was untested dead code, not a reflection of the workflow being unwanted. A future "mark as processing" action would re-add its own branch here alongside the new button, not resurrect this one. */}
+                      {canOperate && t.status === "collected" && (
                         <ResultEntryDialog labOrderTestId={t.id} clinicalOrderId={order.id} resultType={t.resultType} testName={t.labTest.name} unit={t.labTest.unit} />
                       )}
                       {t.status === "resulted" && canVerify && <VerifyButton labOrderTestId={t.id} clinicalOrderId={order.id} />}
                       {t.status === "verified" && (
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-muted-foreground">{t.verifiedAt && formatDate(t.verifiedAt)}</span>
-                          <ResultEntryDialog
-                            labOrderTestId={t.id}
-                            clinicalOrderId={order.id}
-                            resultType={t.resultType}
-                            testName={t.labTest.name}
-                            unit={t.labTest.unit}
-                            mode="amend"
-                          />
+                          {canOperate && (
+                            <ResultEntryDialog
+                              labOrderTestId={t.id}
+                              clinicalOrderId={order.id}
+                              resultType={t.resultType}
+                              testName={t.labTest.name}
+                              unit={t.labTest.unit}
+                              mode="amend"
+                            />
+                          )}
                         </div>
                       )}
                     </TableCell>

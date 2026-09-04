@@ -2,6 +2,7 @@
 
 import { useTransition } from "react"
 import { useRouter } from "next/navigation"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { toggleUserStatusAction } from "@/app/(dashboard)/admin/users/actions"
 
@@ -23,8 +24,15 @@ export function StatusToggle({ userId, status }: { userId: string; status: "acti
       disabled={pending}
       onClick={() =>
         startTransition(async () => {
-          await toggleUserStatusAction(userId, nextStatus)
-          router.refresh()
+          try {
+            await toggleUserStatusAction(userId, nextStatus)
+            router.refresh()
+          } catch (e) {
+            // P3.12 §51: this is where the last-admin guard's rejection
+            // (updateUser, identity/users.ts) actually surfaces — this
+            // action previously had no error handling at all.
+            toast.error(e instanceof Error ? e.message : "Failed to update status.")
+          }
         })
       }
     >

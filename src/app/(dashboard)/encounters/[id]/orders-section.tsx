@@ -2,16 +2,19 @@
 
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
+import Link from "next/link"
 import { Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
 import { Textarea } from "@/components/ui/textarea"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { EmptyState } from "@/components/ui/empty-state"
 import { useActionDialog } from "@/hooks/use-action-dialog"
 import { createOrderAction, cancelOrderAction, type ActionState } from "@/app/(dashboard)/encounters/actions"
 import type {
@@ -32,25 +35,53 @@ type OrderWithDetails = ClinicalOrder & {
   referralDetail: (ReferralOrderDetail & { referredToProvider: Provider | null }) | null
 }
 
-const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
-  ordered: "outline",
-  acknowledged: "secondary",
-  in_progress: "secondary",
-  completed: "default",
-  cancelled: "destructive",
+/** P4.7A.1 §12 — the order's own type badge (Lab / Imaging / Procedure /
+ * Referral / Other), kept visually distinct from its status badge so the
+ * two never blur into one another — orders stay clearly categorized by
+ * destination/workflow, not just by state. */
+function orderTypeLabel(order: OrderWithDetails): string {
+  if (order.labDetail) return "Lab"
+  if (order.imagingDetail) return "Imaging"
+  if (order.procedureDetail) return "Procedure"
+  if (order.referralDetail) return "Referral"
+  return "Other"
 }
 
 function orderLabel(order: OrderWithDetails): string {
-  if (order.labDetail) return `Lab: ${order.labDetail.testName}`
-  if (order.imagingDetail) return `Imaging: ${order.imagingDetail.imagingType}`
-  if (order.procedureDetail) return `Procedure: ${order.procedureDetail.procedureName}`
+  if (order.labDetail) return order.labDetail.testName
+  if (order.imagingDetail) return order.imagingDetail.imagingType
+  if (order.procedureDetail) return order.procedureDetail.procedureName
   if (order.referralDetail) {
     const target = order.referralDetail.referredToProvider
       ? `Dr. ${order.referralDetail.referredToProvider.lastName}`
       : order.referralDetail.referredToExternal ?? "external"
-    return `Referral (${order.referralDetail.referralScope}) to ${target}`
+    return `${order.referralDetail.referralScope} referral to ${target}`
   }
-  return `Other: ${order.instructions ?? order.orderNumber}`
+  return order.instructions ?? order.orderNumber
+}
+
+/**
+ * P3.5 §18/§19: closes the P3.3 backlog item — "no result destination link
+ * from an encounter's Lab/Imaging order to its eventual result." The
+ * ClinicalOrder's own status already tells the whole story with no extra
+ * query: "ordered" means not yet assigned (nothing to open yet — no link,
+ * no dead end), "in_progress" means assigned/processing (a real order page
+ * exists — link to it, but don't call it a "Result" yet), "completed"
+ * means the result/report is verified (link, labeled as the result). Both
+ * `/laboratory/orders/[id]` and `/radiology/orders/[id]` are the same
+ * pages lab/radiology staff already use — now readable (not writable) by
+ * whoever can view the patient, so this is never a dead link.
+ */
+function resultLink(order: OrderWithDetails): { href: string; label: string } | null {
+  if (order.orderType === "lab") {
+    if (order.status === "completed") return { href: `/laboratory/orders/${order.id}`, label: "View Result" }
+    if (order.status === "in_progress") return { href: `/laboratory/orders/${order.id}`, label: "View Lab Order" }
+  }
+  if (order.orderType === "imaging") {
+    if (order.status === "completed") return { href: `/radiology/orders/${order.id}`, label: "View Report" }
+    if (order.status === "in_progress") return { href: `/radiology/orders/${order.id}`, label: "View Imaging Order" }
+  }
+  return null
 }
 
 export function OrdersSection({
@@ -68,6 +99,21 @@ export function OrdersSection({
   const [pending, startTransition] = useTransition()
   const [cancelTarget, setCancelTarget] = useState<string | null>(null)
   const [reason, setReason] = useState("")
+  // Targeted backlog closure, item 5 — same pattern as diagnoses-section.tsx.
+  const [actionError, setActionError] = useState<string | null>(null)
+
+  function run(fn: () => Promise<ActionState>) {
+    setActionError(null)
+    startTransition(async () => {
+      try {
+        const result = await fn()
+        if (result?.error) setActionError(result.error)
+        else router.refresh()
+      } catch (e) {
+        setActionError(e instanceof Error ? e.message : "That action couldn't be completed.")
+      }
+    })
+  }
 
   return (
     <Card>
@@ -76,17 +122,32 @@ export function OrdersSection({
         {canEdit && <AddOrderDialog encounterId={encounterId} providers={providers} />}
       </CardHeader>
       <CardContent className="grid gap-2">
-        {orders.length === 0 && <p className="text-sm text-muted-foreground">No orders placed.</p>}
-        {orders.map((order) => (
+        {actionError && (
+          <Alert variant="destructive">
+            <AlertDescription>{actionError}</AlertDescription>
+          </Alert>
+        )}
+        {orders.length === 0 && <EmptyState title="No orders placed" />}
+        {orders.map((order) => {
+          const link = resultLink(order)
+          return (
           <div key={order.id} className="flex items-center justify-between rounded-md border border-border p-2 text-sm">
-            <div>
-              <p className="font-medium">{orderLabel(order)}</p>
-              <p className="text-xs text-muted-foreground">
-                {order.orderNumber} · {order.priority}
-              </p>
+            <div className="flex items-center gap-2">
+              <Badge variant="neutral" className="shrink-0">{orderTypeLabel(order)}</Badge>
+              <div>
+                <p className="font-medium">{orderLabel(order)}</p>
+                <p className="text-xs text-muted-foreground">
+                  {order.orderNumber} · {order.priority}
+                </p>
+              </div>
             </div>
             <div className="flex items-center gap-2">
-              <Badge variant={STATUS_VARIANT[order.status] ?? "outline"}>{order.status.replace("_", " ")}</Badge>
+              <StatusBadge status={order.status} />
+              {link && (
+                <Button size="sm" variant="ghost" asChild>
+                  <Link href={link.href}>{link.label}</Link>
+                </Button>
+              )}
               {canEdit && order.status === "ordered" && (
                 <Button
                   size="sm"
@@ -102,7 +163,8 @@ export function OrdersSection({
               )}
             </div>
           </div>
-        ))}
+          )
+        })}
       </CardContent>
 
       <Dialog open={cancelTarget !== null} onOpenChange={(open) => !open && setCancelTarget(null)}>
@@ -121,10 +183,7 @@ export function OrdersSection({
               onClick={() => {
                 const orderId = cancelTarget!
                 setCancelTarget(null)
-                startTransition(async () => {
-                  await cancelOrderAction(encounterId, orderId, reason)
-                  router.refresh()
-                })
+                run(() => cancelOrderAction(encounterId, orderId, reason))
               }}
             >
               Cancel order

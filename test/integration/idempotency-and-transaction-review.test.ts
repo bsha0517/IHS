@@ -115,12 +115,16 @@ describe("P1 §32/§33: transaction boundaries and idempotency", () => {
   }, TIMEOUT)
 
   afterAll(async () => {
+    // P3.13: a "payment" journal's referenceId is the Payment's own id, not
+    // the invoice's (posting-service.ts's postPaymentReceived, fixed this
+    // batch) — resolve the real payment ids first so this cleanup still finds them.
+    const paymentIds = (await db.payment.findMany({ where: { allocations: { some: { invoiceId: { in: invoiceIds } } } }, select: { id: true } })).map((p) => p.id)
     const journals = await db.journal.findMany({
       where: {
         organizationId,
         OR: [
           { referenceType: "invoice", referenceId: { in: invoiceIds } },
-          { referenceType: "payment", referenceId: { in: invoiceIds } },
+          { referenceType: "payment", referenceId: { in: paymentIds } },
           { referenceType: "goods_receipt", referenceId: { in: goodsReceiptIds } },
           { referenceType: "supplier_invoice", referenceId: { in: supplierInvoiceIds } },
         ],

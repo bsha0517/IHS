@@ -1,12 +1,14 @@
 import "server-only"
 import { Decimal } from "@prisma/client/runtime/client"
 import { db } from "@/lib/db"
+import { Prisma } from "@/generated/prisma/client"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { nextNumber } from "@/lib/platform/sequences"
 import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/outbox"
 import "@/lib/platform/event-handlers"
-import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
+import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
+import { resolvePage, paginationSkipTake, totalPages } from "@/lib/platform/pagination"
 import { applyPaymentAtomically } from "@/lib/domains/billing/invoices"
 import { claimIdempotencyKey, recordIdempotentResult, resolveDuplicateRequest, isIdempotencyKeyConflict } from "@/lib/platform/idempotency"
 import type { SessionContext } from "@/lib/auth/session"
@@ -38,6 +40,10 @@ export async function recordPayment(session: SessionContext, input: RecordPaymen
   const invoice = await db.invoice.findFirstOrThrow({
     where: { id: input.invoiceId, organizationId: session.user.organizationId },
   })
+  // P3.7 §41: previously absent — see charges.ts's `voidCharge` comment for
+  // the full reasoning. Every other write in this file already narrows read
+  // lists by branch; this write path had no equivalent check at all.
+  assertBranchAccess(getAuthorizedBranchScope(session), invoice.branchId)
   if (invoice.status === "void") throw new Error("Cannot record a payment against a void invoice.")
   if (invoice.status === "paid") throw new Error("This invoice is already fully paid.")
 
@@ -47,6 +53,14 @@ export async function recordPayment(session: SessionContext, input: RecordPaymen
   if (cashierSession.status !== "open") throw new Error("The cashier session is closed.")
   if (cashierSession.cashierUserId !== session.user.id) {
     throw new Error("You can only record payments against your own open cashier session.")
+  }
+  // A register opened at one branch shouldn't collect payment for an
+  // invoice billed at a different one, even if the cashier's own account is
+  // nominally authorized across several branches — the payment's own
+  // branchId (below) is always the invoice's, so this keeps the register
+  // that physically took the money aligned with what it's recorded against.
+  if (cashierSession.branchId !== invoice.branchId) {
+    throw new Error("This invoice belongs to a different branch than your open register — open a register at the correct branch.")
   }
 
   const totalTendered = input.tenders.reduce((sum, t) => sum.add(t.amount), new Decimal(0))
@@ -151,6 +165,21 @@ export async function recordPayment(session: SessionContext, input: RecordPaymen
   return payments
 }
 
+/**
+ * P3.7 §21: backs the new payment-receipt print view — a single Payment
+ * (with its allocated invoice(s) and patient) is a different, narrower read
+ * than any of the list functions below, which is why none of them fit.
+ */
+export async function getPayment(session: SessionContext, id: string) {
+  assertCan(session, "payment.view")
+  const payment = await db.payment.findFirstOrThrow({
+    where: { id, organizationId: session.user.organizationId },
+    include: { allocations: { include: { invoice: { include: { patient: true } } } } },
+  })
+  assertBranchAccess(getAuthorizedBranchScope(session), payment.branchId)
+  return payment
+}
+
 export async function listInvoicePayments(session: SessionContext, invoiceId: string) {
   assertCan(session, "payment.view")
   const scope = getAuthorizedBranchScope(session)
@@ -178,13 +207,22 @@ export async function listPatientPayments(session: SessionContext, patientId: st
   })
 }
 
-export async function listPayments(session: SessionContext, filters: { branchId?: string } = {}) {
+const PAYMENT_LIST_PAGE_SIZE = 50
+
+/** P2 §8: was `take: 100` with no page param. Real server-side pagination now. */
+export async function listPayments(session: SessionContext, filters: { branchId?: string; page?: number } = {}) {
   assertCan(session, "payment.view")
   const scope = getAuthorizedBranchScope(session)
-  return db.payment.findMany({
-    where: { organizationId: session.user.organizationId, branchId: narrowBranchFilter(scope, filters.branchId) },
-    include: { allocations: { include: { invoice: { include: { patient: true } } } } },
-    orderBy: { receivedAt: "desc" },
-    take: 100,
-  })
+  const page = resolvePage(filters.page)
+  const where: Prisma.PaymentWhereInput = { organizationId: session.user.organizationId, branchId: narrowBranchFilter(scope, filters.branchId) }
+  const [payments, total] = await Promise.all([
+    db.payment.findMany({
+      where,
+      include: { allocations: { include: { invoice: { include: { patient: true } } } } },
+      orderBy: { receivedAt: "desc" },
+      ...paginationSkipTake(page, PAYMENT_LIST_PAGE_SIZE),
+    }),
+    db.payment.count({ where }),
+  ])
+  return { payments, total, page, pageSize: PAYMENT_LIST_PAGE_SIZE, totalPages: totalPages(total, PAYMENT_LIST_PAGE_SIZE) }
 }

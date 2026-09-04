@@ -48,19 +48,60 @@ export async function deactivateCommissionRule(session: SessionContext, id: stri
   return updated
 }
 
-/** Most-specific-wins: (provider, service) > (provider, null) > (null, service) > (null, null) org default. */
-async function resolveCommissionRule(tx: Db, organizationId: string, providerId: string, serviceId: string | null) {
-  const rules = await tx.commissionRule.findMany({ where: { organizationId, providerId, isActive: true } })
-  const orgRules = providerId ? await tx.commissionRule.findMany({ where: { organizationId, providerId: null, isActive: true } }) : []
-  const candidates = [...rules, ...orgRules]
+type ResolvedCommissionRule = Prisma.CommissionRuleGetPayload<Record<string, never>>
 
-  return (
-    candidates.find((r) => r.providerId === providerId && r.serviceId === serviceId) ??
-    candidates.find((r) => r.providerId === providerId && r.serviceId === null) ??
-    candidates.find((r) => r.providerId === null && r.serviceId === serviceId) ??
-    candidates.find((r) => r.providerId === null && r.serviceId === null) ??
-    null
-  )
+/**
+ * P2 §4: the original audit's ~90-sequential-query finding — this used to
+ * be `resolveCommissionRule`, called fresh once PER (line) in
+ * `accrueInvoiceBasisCommissions` and once per (payment × line) in
+ * `accruePaymentBasisCommissions`, each call issuing its own 2 queries
+ * (provider-specific rules + org-wide rules) even though the same
+ * (providerId, serviceId) combination — and often the exact same provider
+ * across every line on an invoice — repeats constantly within one
+ * accrual pass. Replaced with a single prefetch covering every provider
+ * that could possibly need resolving on this invoice (one query, an `OR`
+ * across every distinct providerId plus the org-wide-provider rows,
+ * instead of 2 queries × N callers) plus an in-memory resolver + cache.
+ *
+ * Most-specific-wins precedence is byte-for-byte identical to the
+ * function this replaces: (provider, service) > (provider, null) >
+ * (null, service) > (null, null) org default. The candidate list and its
+ * find-order are reconstructed exactly — `[...this provider's own rules,
+ * ...org-wide rules]`, filtered from the single prefetch rather than two
+ * separate queries — so a caller can never observe a different resolved
+ * rule than the original two-query-per-call version would have returned.
+ */
+async function buildCommissionRuleResolver(
+  tx: Db,
+  organizationId: string,
+  providerIds: string[]
+): Promise<(providerId: string, serviceId: string | null) => ResolvedCommissionRule | null> {
+  const uniqueProviderIds = [...new Set(providerIds)]
+  const allRules = await tx.commissionRule.findMany({
+    where: { organizationId, isActive: true, OR: [{ providerId: { in: uniqueProviderIds } }, { providerId: null }] },
+  })
+  const orgWideRules = allRules.filter((r) => r.providerId === null)
+  const rulesByProvider = new Map<string, typeof allRules>()
+  for (const pid of uniqueProviderIds) {
+    rulesByProvider.set(pid, allRules.filter((r) => r.providerId === pid))
+  }
+
+  const cache = new Map<string, ResolvedCommissionRule | null>()
+  return (providerId: string, serviceId: string | null): ResolvedCommissionRule | null => {
+    const cacheKey = `${providerId}:${serviceId ?? ""}`
+    const cached = cache.get(cacheKey)
+    if (cached !== undefined) return cached
+
+    const candidates = [...(rulesByProvider.get(providerId) ?? []), ...orgWideRules]
+    const resolved =
+      candidates.find((r) => r.providerId === providerId && r.serviceId === serviceId) ??
+      candidates.find((r) => r.providerId === providerId && r.serviceId === null) ??
+      candidates.find((r) => r.providerId === null && r.serviceId === serviceId) ??
+      candidates.find((r) => r.providerId === null && r.serviceId === null) ??
+      null
+    cache.set(cacheKey, resolved)
+    return resolved
+  }
 }
 
 export function computeAmount(rule: { type: string; fixedAmount: Prisma.Decimal | null; percentageRate: Prisma.Decimal | null; tiers: unknown }, basisAmount: number): number {
@@ -86,32 +127,52 @@ export async function accrueInvoiceBasisCommissions(tx: Db, invoiceId: string) {
     where: { id: invoiceId },
     include: { lines: { include: { charge: true } } },
   })
+  const linesWithProvider = invoice.lines.filter((line) => line.charge.providerId)
+  if (linesWithProvider.length === 0) return
 
-  for (const line of invoice.lines) {
-    if (!line.charge.providerId) continue
-    const rule = await resolveCommissionRule(tx, invoice.organizationId, line.charge.providerId, line.charge.serviceId)
+  // P2 §4: was up to 3 queries PER LINE (2 for rule resolution + 1
+  // existing-accrual check) — batched to at most 2 queries total for the
+  // whole invoice, regardless of line count. See buildCommissionRuleResolver's
+  // own doc comment for why the resolved rule is identical either way.
+  const resolveRule = await buildCommissionRuleResolver(
+    tx,
+    invoice.organizationId,
+    linesWithProvider.map((line) => line.charge.providerId as string)
+  )
+  const existingAccruals = await tx.commissionAccrual.findMany({
+    where: { chargeId: { in: linesWithProvider.map((line) => line.chargeId) }, paymentId: null },
+    select: { chargeId: true },
+  })
+  const alreadyAccrued = new Set(existingAccruals.map((a) => a.chargeId))
+
+  const rowsToInsert: Prisma.CommissionAccrualCreateManyInput[] = []
+  for (const line of linesWithProvider) {
+    if (alreadyAccrued.has(line.chargeId)) continue
+    const rule = resolveRule(line.charge.providerId as string, line.charge.serviceId)
     if (!rule || rule.basis === "collected_revenue") continue
-
-    const existing = await tx.commissionAccrual.findFirst({ where: { chargeId: line.chargeId, paymentId: null } })
-    if (existing) continue
 
     const basisAmount = rule.basis === "gross_invoice" ? Number(line.lineTotal) : Number(line.charge.amount)
     const amount = computeAmount(rule, basisAmount)
     if (amount <= 0) continue
 
-    await tx.commissionAccrual.create({
-      data: {
-        organizationId: invoice.organizationId,
-        branchId: invoice.branchId,
-        providerId: line.charge.providerId,
-        chargeId: line.chargeId,
-        invoiceId: invoice.id,
-        paymentId: null,
-        commissionRuleId: rule.id,
-        basisAmount: new Decimal(basisAmount),
-        amount: new Decimal(amount),
-      },
+    rowsToInsert.push({
+      organizationId: invoice.organizationId,
+      branchId: invoice.branchId,
+      providerId: line.charge.providerId as string,
+      chargeId: line.chargeId,
+      invoiceId: invoice.id,
+      paymentId: null,
+      commissionRuleId: rule.id,
+      basisAmount: new Decimal(basisAmount),
+      amount: new Decimal(amount),
     })
+  }
+  // P2 §4: bulk insert — every row above was already proven safe to create
+  // (no existing row for its chargeId, computed independently of every
+  // other row in this batch) so a single createMany is exactly equivalent
+  // to N individual creates, just one round trip instead of N.
+  if (rowsToInsert.length > 0) {
+    await tx.commissionAccrual.createMany({ data: rowsToInsert })
   }
 }
 
@@ -130,34 +191,59 @@ export async function accruePaymentBasisCommissions(tx: Db, invoiceId: string, p
   if (subtotal <= 0) return
 
   const payments = await tx.payment.findMany({ where: { id: { in: paymentIds } } })
+  const linesWithProvider = invoice.lines.filter((line) => line.charge.providerId)
+  if (linesWithProvider.length === 0 || payments.length === 0) return
 
+  // P2 §4: this was the original audit's own literal ~90-query example —
+  // up to 3 queries PER (payment × line) pair (2 for rule resolution + 1
+  // existing-accrual check), so a 3-payment, 6-line invoice alone could
+  // hit 3 x 3 x 6 = 54 queries, before counting the invoice/payment reads.
+  // Batched to at most 3 queries total for the whole invoice/payment
+  // batch, regardless of how many payments or lines are involved — one
+  // rule prefetch (shared with accrueInvoiceBasisCommissions's identical
+  // helper), one existing-accrual prefetch across every (charge, payment)
+  // pair at once, one bulk insert.
+  const resolveRule = await buildCommissionRuleResolver(
+    tx,
+    invoice.organizationId,
+    linesWithProvider.map((line) => line.charge.providerId as string)
+  )
+  const existingAccruals = await tx.commissionAccrual.findMany({
+    where: { chargeId: { in: linesWithProvider.map((line) => line.chargeId) }, paymentId: { in: payments.map((p) => p.id) } },
+    select: { chargeId: true, paymentId: true },
+  })
+  const alreadyAccrued = new Set(existingAccruals.map((a) => `${a.chargeId}:${a.paymentId}`))
+
+  const rowsToInsert: Prisma.CommissionAccrualCreateManyInput[] = []
   for (const payment of payments) {
-    for (const line of invoice.lines) {
-      if (!line.charge.providerId) continue
-      const rule = await resolveCommissionRule(tx, invoice.organizationId, line.charge.providerId, line.charge.serviceId)
+    for (const line of linesWithProvider) {
+      if (alreadyAccrued.has(`${line.chargeId}:${payment.id}`)) continue
+      const rule = resolveRule(line.charge.providerId as string, line.charge.serviceId)
       if (!rule || rule.basis !== "collected_revenue") continue
-
-      const existing = await tx.commissionAccrual.findFirst({ where: { chargeId: line.chargeId, paymentId: payment.id } })
-      if (existing) continue
 
       const proportionalCollected = (Number(line.charge.amount) / subtotal) * Number(payment.amount)
       const amount = computeAmount(rule, proportionalCollected)
       if (amount <= 0) continue
 
-      await tx.commissionAccrual.create({
-        data: {
-          organizationId: invoice.organizationId,
-          branchId: invoice.branchId,
-          providerId: line.charge.providerId,
-          chargeId: line.chargeId,
-          invoiceId: invoice.id,
-          paymentId: payment.id,
-          commissionRuleId: rule.id,
-          basisAmount: new Decimal(proportionalCollected),
-          amount: new Decimal(amount),
-        },
+      rowsToInsert.push({
+        organizationId: invoice.organizationId,
+        branchId: invoice.branchId,
+        providerId: line.charge.providerId as string,
+        chargeId: line.chargeId,
+        invoiceId: invoice.id,
+        paymentId: payment.id,
+        commissionRuleId: rule.id,
+        basisAmount: new Decimal(proportionalCollected),
+        amount: new Decimal(amount),
       })
     }
+  }
+  // P2 §4: bulk insert — every (chargeId, paymentId) pair here is unique
+  // within this batch by construction (one row per distinct line x payment
+  // combination, already filtered against what exists in the database), so
+  // a single createMany is exactly equivalent to N individual creates.
+  if (rowsToInsert.length > 0) {
+    await tx.commissionAccrual.createMany({ data: rowsToInsert })
   }
 }
 

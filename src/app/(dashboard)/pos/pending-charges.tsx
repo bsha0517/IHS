@@ -10,10 +10,24 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { EmptyState } from "@/components/ui/empty-state"
 import { AddChargeDialog } from "@/app/(dashboard)/pos/add-charge-dialog"
 import { generateInvoiceAction, voidChargeAction, type ActionState } from "@/app/(dashboard)/pos/actions"
 
 const initialState: ActionState = {}
+
+// P3.7 §11: readable labels for the raw `sourceType` enum — a cashier
+// shouldn't need to know what "imaging"/"product" mean internally.
+const SOURCE_TYPE_LABEL: Record<string, string> = {
+  consultation: "Consultation",
+  procedure: "Procedure",
+  lab: "Laboratory",
+  imaging: "Radiology",
+  pharmacy: "Pharmacy",
+  product: "POS product",
+  package: "Package",
+  other: "Other",
+}
 
 type ChargeRow = {
   id: string
@@ -33,6 +47,7 @@ export function PendingCharges({
   providers,
   coverages,
   canVoid,
+  canDiscount,
 }: {
   patientId: string
   branchId: string
@@ -42,12 +57,19 @@ export function PendingCharges({
   providers: { id: string; firstName: string; lastName: string }[]
   coverages: { id: string; label: string }[]
   canVoid: boolean
+  /** P3.7 §37: neither Cashier nor Receptionist holds `invoice.discount` in
+   * the seeded roles — showing the field to a session that can't actually
+   * use it (generateInvoice rejects server-side the moment discountAmount >
+   * 0) just invites a confusing rejection. Hidden entirely rather than
+   * shown-then-blocked. */
+  canDiscount: boolean
 }) {
   const router = useRouter()
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [discount, setDiscount] = useState(0)
   const [state, formAction, pending] = useActionState(generateInvoiceAction, initialState)
   const [voiding, startVoidTransition] = useTransition()
+  const [voidError, setVoidError] = useState<string | null>(null)
 
   const selectedTotal = useMemo(
     () => charges.filter((c) => selected.has(c.id)).reduce((sum, c) => sum + c.amount, 0),
@@ -70,7 +92,12 @@ export function PendingCharges({
         <AddChargeDialog patientId={patientId} branchId={branchId} services={services} products={products} providers={providers} />
       </CardHeader>
       <CardContent className="grid gap-4">
-        {charges.length === 0 && <p className="text-sm text-muted-foreground">No pending charges for this patient.</p>}
+        {charges.length === 0 && <EmptyState title="No pending charges" description="This patient has no pending charges." className="border-none py-6" />}
+        {voidError && (
+          <Alert variant="destructive">
+            <AlertDescription>{voidError}</AlertDescription>
+          </Alert>
+        )}
 
         {charges.length > 0 && (
           <form action={formAction} className="grid gap-4">
@@ -96,23 +123,29 @@ export function PendingCharges({
                     />
                     <span>
                       {charge.description}
-                      <span className="ml-2 text-xs text-muted-foreground capitalize">({charge.sourceType})</span>
+                      <span className="ml-2 text-xs text-muted-foreground">({SOURCE_TYPE_LABEL[charge.sourceType] ?? charge.sourceType})</span>
                     </span>
                   </span>
                   <span className="flex items-center gap-3">
-                    <span>
-                      {charge.quantity} × {charge.unitPrice.toFixed(2)} = {charge.amount.toFixed(2)}
+                    <span className="text-right tabular-nums">
+                      <span className="text-muted-foreground">
+                        {charge.quantity} × {charge.unitPrice.toFixed(2)} ={" "}
+                      </span>
+                      <span className="font-medium">{charge.amount.toFixed(2)}</span>
                     </span>
                     {canVoid && (
                       <Button
                         type="button"
                         size="sm"
                         variant="ghost"
+                        className="text-destructive hover:text-destructive"
                         disabled={voiding}
                         onClick={() =>
                           startVoidTransition(async () => {
-                            await voidChargeAction(charge.id, "Voided at POS")
-                            router.refresh()
+                            setVoidError(null)
+                            const result = await voidChargeAction(charge.id, "Voided at POS")
+                            if (result.error) setVoidError(result.error)
+                            else router.refresh()
                           })
                         }
                       >
@@ -161,29 +194,33 @@ export function PendingCharges({
                   </Select>
                 </div>
               )}
-              <div className="grid gap-1.5">
-                <Label htmlFor="discountAmount" className="text-xs">
-                  Discount
-                </Label>
-                <Input
-                  id="discountAmount"
-                  name="discountAmount"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  defaultValue="0"
-                  onChange={(e) => setDiscount(Number(e.target.value) || 0)}
-                />
-              </div>
-              <div className="grid gap-1.5">
+              {canDiscount && (
+                <div className="grid gap-1.5">
+                  <Label htmlFor="discountAmount" className="text-xs">
+                    Discount
+                  </Label>
+                  <Input
+                    id="discountAmount"
+                    name="discountAmount"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    defaultValue="0"
+                    onChange={(e) => setDiscount(Number(e.target.value) || 0)}
+                  />
+                </div>
+              )}
+              <div className="grid gap-1.5 text-right">
                 <Label className="text-xs">Selected total</Label>
-                <p className="pt-2 font-medium">{Math.max(0, selectedTotal - discount).toFixed(2)}</p>
+                <p className="pt-1 text-xl font-semibold tabular-nums tracking-tight">
+                  {Math.max(0, selectedTotal - discount).toFixed(2)}
+                </p>
               </div>
             </div>
 
             <div>
               <Button type="submit" disabled={pending || selected.size === 0}>
-                {pending ? "Generating..." : `Generate invoice (${selected.size})`}
+                {pending ? "Creating invoice..." : `Create Invoice (${selected.size})`}
               </Button>
             </div>
           </form>

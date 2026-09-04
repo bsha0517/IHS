@@ -42,14 +42,18 @@ export function RolePermissionEditor({
               <div key={category} className="grid gap-1.5">
                 <p className="text-xs font-medium uppercase text-muted-foreground">{category}</p>
                 {permissions.map((permission) => (
-                  <label key={permission.id} className="flex items-center gap-2 text-sm">
+                  <label key={permission.id} className="flex items-start gap-2 text-sm">
                     <Checkbox
                       name="permissionIds"
                       value={permission.id}
                       defaultChecked={role.permissionIds.has(permission.id)}
                       disabled={role.isSystemRole}
+                      className="mt-0.5"
                     />
-                    {permission.code}
+                    <span>
+                      {permission.description}
+                      <span className="ml-1.5 font-mono text-xs text-muted-foreground">{permission.code}</span>
+                    </span>
                   </label>
                 ))}
               </div>

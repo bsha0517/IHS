@@ -6,6 +6,7 @@ import { listAccounts } from "@/lib/domains/accounting/chart-of-accounts"
 import { listAccessibleBranches } from "@/lib/domains/billing/cashier"
 import { formatDate } from "@/lib/utils/dates"
 import { Card, CardContent } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { ExpenseDialog } from "@/app/(dashboard)/expenses/expense-dialog"
@@ -28,15 +29,11 @@ export default async function ExpensesPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Expenses</h1>
-          <p className="text-sm text-muted-foreground">
-            {expenses.length} expense(s) — {total.toFixed(2)} total
-          </p>
-        </div>
-        {canCreate && <ExpenseDialog branches={branchOptions} expenseAccounts={expenseAccounts} />}
-      </div>
+      <PageHeader
+        title="Expenses"
+        description={`${expenses.length} expense(s) — ${total.toFixed(2)} total`}
+        primaryAction={canCreate && <ExpenseDialog branches={branchOptions} expenseAccounts={expenseAccounts} />}
+      />
 
       <Card>
         <CardContent className="pt-6">

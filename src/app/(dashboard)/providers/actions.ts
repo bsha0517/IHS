@@ -4,7 +4,6 @@ import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
 import {
   createProvider,
-  updateProvider,
   createProviderSchedule,
   deleteProviderSchedule,
   createProviderLeaveBlock,
@@ -46,35 +45,6 @@ export async function createProviderAction(_prev: ActionState, formData: FormDat
     return { error: e instanceof Error ? e.message : "Failed to create provider." }
   }
   revalidatePath("/providers")
-  return { success: true }
-}
-
-export async function updateProviderAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
-  const providerId = String(formData.get("providerId") ?? "")
-  const parsed = providerSchema.safeParse({
-    providerType: formData.get("providerType"),
-    firstName: formData.get("firstName"),
-    lastName: formData.get("lastName"),
-    specialty: formData.get("specialty"),
-    qualification: formData.get("qualification"),
-    licenseNumber: formData.get("licenseNumber"),
-    licenseAuthority: formData.get("licenseAuthority"),
-    licenseExpiryDate: formData.get("licenseExpiryDate"),
-    consultationFee: formData.get("consultationFee"),
-    defaultAppointmentDurationMinutes: formData.get("defaultAppointmentDurationMinutes"),
-    branchIds: formData.getAll("branchIds"),
-    departmentIds: formData.getAll("departmentIds"),
-    userId: formData.get("userId"),
-  })
-  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
-
-  try {
-    await updateProvider(session, providerId, parsed.data)
-  } catch (e) {
-    return { error: e instanceof Error ? e.message : "Failed to update provider." }
-  }
-  revalidatePath(`/providers/${providerId}`)
   return { success: true }
 }
 

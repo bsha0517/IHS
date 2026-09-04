@@ -47,16 +47,26 @@ export async function createPurchaseRequestAction(_prev: ActionState, formData: 
   return { success: true }
 }
 
-export async function approvePurchaseRequestAction(id: string) {
+export async function approvePurchaseRequestAction(id: string): Promise<ActionState> {
   const session = await requireSession()
-  await approvePurchaseRequest(session, id)
+  try {
+    await approvePurchaseRequest(session, id)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to approve purchase request." }
+  }
   revalidatePath("/purchasing")
+  return { success: true }
 }
 
-export async function rejectPurchaseRequestAction(id: string, reason: string) {
+export async function rejectPurchaseRequestAction(id: string, reason: string): Promise<ActionState> {
   const session = await requireSession()
-  await rejectPurchaseRequest(session, id, reason)
+  try {
+    await rejectPurchaseRequest(session, id, reason)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to reject purchase request." }
+  }
   revalidatePath("/purchasing")
+  return { success: true }
 }
 
 export async function createPurchaseOrderAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
@@ -86,11 +96,16 @@ export async function createPurchaseOrderAction(_prev: ActionState, formData: Fo
   redirect(`/purchasing/orders/${po.id}`)
 }
 
-export async function cancelPurchaseOrderAction(id: string, reason: string) {
+export async function cancelPurchaseOrderAction(id: string, reason: string): Promise<ActionState> {
   const session = await requireSession()
-  await cancelPurchaseOrder(session, id, reason)
+  try {
+    await cancelPurchaseOrder(session, id, reason)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to cancel purchase order." }
+  }
   revalidatePath(`/purchasing/orders/${id}`)
   revalidatePath("/purchasing")
+  return { success: true }
 }
 
 export async function createGoodsReceiptAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
@@ -139,8 +154,14 @@ export async function createSupplierInvoiceAction(_prev: ActionState, formData: 
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
+  // P3.8 §41: the dialog generates this once per open and resubmits it
+  // unchanged on any retry — see supplier-invoice-dialog.tsx — so a
+  // double-click or network retry replays the original invoice instead of
+  // creating a second AP liability.
+  const idempotencyKey = String(formData.get("idempotencyKey") ?? "") || undefined
+
   try {
-    await createSupplierInvoice(session, parsed.data)
+    await createSupplierInvoice(session, { ...parsed.data, idempotencyKey })
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to record supplier invoice." }
   }

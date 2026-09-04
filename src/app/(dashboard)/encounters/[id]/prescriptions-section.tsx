@@ -6,10 +6,11 @@ import { Plus, Trash2, Printer } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { EmptyState } from "@/components/ui/empty-state"
 import { useActionDialog } from "@/hooks/use-action-dialog"
 import { createPrescriptionAction, cancelPrescriptionAction, type ActionState } from "@/app/(dashboard)/encounters/actions"
 import { useRouter } from "next/navigation"
@@ -18,7 +19,26 @@ import type { Prescription, PrescriptionItem } from "@/generated/prisma/client"
 
 const initialState: ActionState = {}
 
-type PrescriptionWithItems = Prescription & { items: PrescriptionItem[] }
+// Same operational vocabulary as the Pharmacy Queue/detail pages — real
+// model states (active/completed/cancelled), never an invented label.
+const STATUS_LABEL: Record<string, string> = { active: "active", completed: "dispensed", cancelled: "cancelled" }
+
+type ItemWithDispensing = PrescriptionItem & { dispensingRecords: { status: string; quantityDispensed: number }[] }
+type PrescriptionWithItems = Prescription & { items: ItemWithDispensing[] }
+
+/** P3.6 §28: the same "still open" derivation `listPharmacyQueue`/`dispenseRecord`'s completion sync both use — one definition of fulfillment, not a fourth competing one. */
+function summarizeFulfillment(items: ItemWithDispensing[]) {
+  let anyDispensed = false
+  let anyOutstanding = false
+  for (const item of items) {
+    const dispensed = item.dispensingRecords.filter((d) => d.status !== "cancelled").reduce((sum, d) => sum + d.quantityDispensed, 0)
+    if (dispensed > 0) anyDispensed = true
+    if (item.quantity == null || dispensed < item.quantity) anyOutstanding = true
+  }
+  if (!anyDispensed) return "Not yet dispensed"
+  if (anyOutstanding) return "Partially dispensed"
+  return "Fully dispensed"
+}
 
 type DraftItem = {
   medicationName: string
@@ -55,6 +75,7 @@ export function PrescriptionsSection({
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
+  const [cancelError, setCancelError] = useState<string | null>(null)
 
   return (
     <Card>
@@ -63,13 +84,21 @@ export function PrescriptionsSection({
         {canEdit && <NewPrescriptionDialog encounterId={encounterId} />}
       </CardHeader>
       <CardContent className="grid gap-3">
-        {prescriptions.length === 0 && <p className="text-sm text-muted-foreground">No prescriptions issued.</p>}
+        {prescriptions.length === 0 && <EmptyState title="No prescriptions issued" />}
         {prescriptions.map((rx) => (
           <div key={rx.id} className="rounded-md border border-border p-3 text-sm">
             <div className="mb-2 flex items-center justify-between">
               <p className="font-medium">{rx.prescriptionNumber}</p>
               <div className="flex items-center gap-2">
-                <Badge variant={rx.status === "active" ? "default" : "secondary"}>{rx.status}</Badge>
+                <StatusBadge status={rx.status} label={STATUS_LABEL[rx.status]} />
+                {/* P3.6 §28: real, persisted dispensing status from the
+                    Encounter — no fabricated client state, and never a
+                    dead link (the Pharmacy detail page always exists once
+                    a Prescription does, and now tolerates a read-only
+                    Doctor session — see getPrescriptionForDispensing). */}
+                <Button size="sm" variant="ghost" asChild>
+                  <Link href={`/pharmacy/${rx.id}`}>{summarizeFulfillment(rx.items)}</Link>
+                </Button>
                 <Button size="icon-sm" variant="ghost" asChild aria-label="Print">
                   <Link href={`/prescriptions/${rx.id}/print`} target="_blank">
                     <Printer className="size-3.5" />
@@ -82,8 +111,10 @@ export function PrescriptionsSection({
                     disabled={pending}
                     onClick={() =>
                       startTransition(async () => {
-                        await cancelPrescriptionAction(encounterId, rx.id)
-                        router.refresh()
+                        setCancelError(null)
+                        const result = await cancelPrescriptionAction(encounterId, rx.id)
+                        if (result?.error) setCancelError(result.error)
+                        else router.refresh()
                       })
                     }
                   >
@@ -92,6 +123,11 @@ export function PrescriptionsSection({
                 )}
               </div>
             </div>
+            {cancelError && (
+              <Alert variant="destructive" className="mb-2">
+                <AlertDescription>{cancelError}</AlertDescription>
+              </Alert>
+            )}
             <ul className="grid gap-1">
               {rx.items.map((item) => (
                 <li key={item.id}>

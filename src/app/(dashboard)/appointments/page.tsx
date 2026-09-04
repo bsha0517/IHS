@@ -4,14 +4,18 @@ import { ChevronLeft, ChevronRight } from "lucide-react"
 import { getCurrentSession } from "@/lib/auth/session"
 import { can } from "@/lib/platform/permissions-core"
 import { listAppointments } from "@/lib/domains/appointments/service"
-import { listBranches } from "@/lib/domains/identity/org-structure"
+import { listAccessibleBranches } from "@/lib/domains/billing/cashier"
 import { listProviders } from "@/lib/domains/providers/service"
 import { listServices } from "@/lib/domains/services/service"
 import { Card, CardContent } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
 import { Button } from "@/components/ui/button"
+import { WorkspaceHeader } from "@/components/ui/page-header"
+import { EmptyState } from "@/components/ui/empty-state"
 import { formatTime, toDateParam } from "@/lib/utils/dates"
+import { APPOINTMENT_STATUS_LABEL } from "@/lib/utils/appointment-status"
 import { NewAppointmentDialog } from "@/app/(dashboard)/appointments/new-appointment-dialog"
 import { AppointmentStatusActions } from "@/app/(dashboard)/appointments/status-actions"
 
@@ -23,19 +27,6 @@ function parseDateParam(value: string | undefined): Date {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
   return today
-}
-
-const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
-  scheduled: "outline",
-  confirmed: "outline",
-  arrived: "secondary",
-  checked_in: "secondary",
-  waiting: "secondary",
-  in_consultation: "default",
-  completed: "default",
-  cancelled: "destructive",
-  rescheduled: "destructive",
-  no_show: "destructive",
 }
 
 export default async function AppointmentsPage({
@@ -52,11 +43,30 @@ export default async function AppointmentsPage({
   const prevDayStr = toDateParam(new Date(day.getTime() - 24 * 60 * 60 * 1000))
   const nextDayStr = toDateParam(nextDay)
 
+  // P3.3 §4: same fix as reception/page.tsx — this page only needs the
+  // branches this session can operate at (for the New Appointment dialog's
+  // branch select), not the org-wide `branch.view` permission `listBranches`
+  // requires and Receptionist lacks. See that page's comment for the full
+  // reasoning.
+  //
+  // Targeted backlog closure, item 3: `listServices` was previously called
+  // unconditionally, requiring `service.view` — a permission Doctor (and
+  // any other appointment.view-only role) doesn't hold, crashing this whole
+  // page with a `ForbiddenError` for that role (BACKLOG.md, confirmed still
+  // reproducible by inspection before this fix). The service catalog is
+  // only ever actually used by `NewAppointmentDialog` below, which is
+  // itself only rendered for `appointment.create` holders — Doctor holds
+  // neither `appointment.create` nor `service.view` in the seeded role, so
+  // it never needed this fetch. Gating it on the same permission the
+  // dialog's own render check already uses (rather than granting
+  // `service.view` to Doctor, which the current product design gives no
+  // reason to do) fixes the crash without widening any permission.
+  const canCreateAppointment = can(session, "appointment.create")
   const [appointments, branches, providers, services] = await Promise.all([
     listAppointments(session, { from: day, to: nextDay, providerId: providerId || undefined }),
-    listBranches(session),
+    listAccessibleBranches(session),
     listProviders(session),
-    listServices(session),
+    canCreateAppointment ? listServices(session) : Promise.resolve([]),
   ])
 
   const canCheckin = can(session, "appointment.checkin")
@@ -76,37 +86,35 @@ export default async function AppointmentsPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Appointments</h1>
-          <p className="text-sm text-muted-foreground">
-            {day.toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="icon-sm" asChild>
-            <Link href={`/appointments?date=${prevDayStr}${providerId ? `&providerId=${providerId}` : ""}`}>
-              <ChevronLeft className="size-4" />
-            </Link>
-          </Button>
-          <Button variant="outline" size="sm" asChild>
-            <Link href={`/appointments${providerId ? `?providerId=${providerId}` : ""}`}>Today</Link>
-          </Button>
-          <Button variant="outline" size="icon-sm" asChild>
-            <Link href={`/appointments?date=${nextDayStr}${providerId ? `&providerId=${providerId}` : ""}`}>
-              <ChevronRight className="size-4" />
-            </Link>
-          </Button>
-          {can(session, "appointment.create") && (
-            <NewAppointmentDialog
-              branches={branches}
-              providers={providerOptions}
-              services={serviceOptions}
-              defaultBranchId={session.activeBranchId}
-            />
-          )}
-        </div>
-      </div>
+      <WorkspaceHeader
+        title="Appointments"
+        meta={day.toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+        actions={
+          <>
+            <Button variant="outline" size="icon-sm" asChild>
+              <Link href={`/appointments?date=${prevDayStr}${providerId ? `&providerId=${providerId}` : ""}`}>
+                <ChevronLeft className="size-4" />
+              </Link>
+            </Button>
+            <Button variant="outline" size="sm" asChild>
+              <Link href={`/appointments${providerId ? `?providerId=${providerId}` : ""}`}>Today</Link>
+            </Button>
+            <Button variant="outline" size="icon-sm" asChild>
+              <Link href={`/appointments?date=${nextDayStr}${providerId ? `&providerId=${providerId}` : ""}`}>
+                <ChevronRight className="size-4" />
+              </Link>
+            </Button>
+            {canCreateAppointment && (
+              <NewAppointmentDialog
+                branches={branches}
+                providers={providerOptions}
+                services={serviceOptions}
+                defaultBranchId={session.activeBranchId}
+              />
+            )}
+          </>
+        }
+      />
 
       <div className="flex flex-wrap gap-2">
         <Link href={`/appointments?date=${toDateParam(day)}`}>
@@ -140,8 +148,8 @@ export default async function AppointmentsPage({
             <TableBody>
               {appointments.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-muted-foreground">
-                    No appointments for this day.
+                  <TableCell colSpan={7} className="p-0">
+                    <EmptyState title="No appointments for this day" className="border-none" />
                   </TableCell>
                 </TableRow>
               )}
@@ -161,15 +169,16 @@ export default async function AppointmentsPage({
                   </TableCell>
                   <TableCell>{a.service?.name ?? "—"}</TableCell>
                   <TableCell>
-                    <Badge variant={STATUS_VARIANT[a.status] ?? "outline"}>
-                      {a.status.replace("_", " ")}
-                      {a.queueEntry ? ` · ${a.queueEntry.tokenNumber}` : ""}
-                    </Badge>
+                    <StatusBadge
+                      status={a.status}
+                      label={`${APPOINTMENT_STATUS_LABEL[a.status]}${a.queueEntry ? ` · ${a.queueEntry.tokenNumber}` : ""}`}
+                    />
                   </TableCell>
                   <TableCell>
                     <AppointmentStatusActions
                       appointmentId={a.id}
                       status={a.status}
+                      startTime={a.startTime}
                       canCheckin={canCheckin}
                       canCancel={canCancel}
                       canReschedule={canReschedule}

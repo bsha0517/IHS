@@ -6,8 +6,9 @@ import { z } from "zod"
 import { portalLogin } from "@/lib/auth/portal-service"
 
 const portalLoginSchema = z.object({
-  email: z.email("Enter a valid email address"),
-  password: z.string().min(1, "Password is required"),
+  // P4.3 §33: same resource-abuse bound as staff login (src/app/login/actions.ts).
+  email: z.email("Enter a valid email address").max(254),
+  password: z.string().min(1, "Password is required").max(256),
 })
 
 export type PortalLoginFormState = { error?: string }

@@ -6,6 +6,7 @@ import { listProviders } from "@/lib/domains/providers/service"
 import { listBranches, listDepartments } from "@/lib/domains/identity/org-structure"
 import { listUsers } from "@/lib/domains/identity/users"
 import { Card, CardContent } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { NewProviderDialog } from "@/app/(dashboard)/providers/new-provider-dialog"
@@ -23,13 +24,11 @@ export default async function ProvidersPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Providers</h1>
-          <p className="text-sm text-muted-foreground">{providers.length} provider(s)</p>
-        </div>
-        {can(session, "provider.manage") && <NewProviderDialog branches={branches} departments={departments} users={users} />}
-      </div>
+      <PageHeader
+        title="Providers"
+        description={`${providers.length} provider(s)`}
+        primaryAction={can(session, "provider.manage") && <NewProviderDialog branches={branches} departments={departments} users={users} />}
+      />
 
       <Card>
         <CardContent>

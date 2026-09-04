@@ -1,5 +1,6 @@
 "use client"
 
+import { useState } from "react"
 import { Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -22,9 +23,19 @@ export function SupplierInvoiceDialog({
   purchaseOrderId?: string
 }) {
   const { open, setOpen, state, pending, submit } = useActionDialog(createSupplierInvoiceAction, initialState)
+  // P3.8 §41: one key per dialog-open, resubmitted unchanged by every retry
+  // of that same attempt — the same idempotency-key pattern ReceiveDialog
+  // already established (receive-dialog.tsx). Regenerated on open, not in
+  // an effect.
+  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID())
+
+  function handleOpenChange(next: boolean) {
+    if (next) setIdempotencyKey(crypto.randomUUID())
+    setOpen(next)
+  }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button size="sm" variant="outline">
           <Plus /> Record supplier invoice
@@ -36,6 +47,7 @@ export function SupplierInvoiceDialog({
         </DialogHeader>
         <form action={submit} className="grid gap-4">
           {purchaseOrderId && <input type="hidden" name="purchaseOrderId" value={purchaseOrderId} />}
+          <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
           {state.error && (
             <Alert variant="destructive">
               <AlertDescription>{state.error}</AlertDescription>

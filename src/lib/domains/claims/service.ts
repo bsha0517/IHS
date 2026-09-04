@@ -1,6 +1,7 @@
 import "server-only"
 import { Decimal } from "@prisma/client/runtime/client"
 import { db } from "@/lib/db"
+import { Prisma } from "@/generated/prisma/client"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { nextNumber } from "@/lib/platform/sequences"
@@ -9,6 +10,7 @@ import "@/lib/platform/event-handlers"
 import { ManualSubmissionAdapter } from "@/lib/domains/claims/adapters/manual-adapter"
 import type { ClaimSubmissionAdapter } from "@/lib/domains/claims/adapters/types"
 import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
+import { resolvePage, paginationSkipTake, totalPages } from "@/lib/platform/pagination"
 import { applyPaymentAtomically } from "@/lib/domains/billing/invoices"
 import type { SessionContext } from "@/lib/auth/session"
 import type { CreateClaimInput, AdjudicateClaimInput, RecordRemittanceInput } from "@/lib/domains/claims/schemas"
@@ -306,18 +308,28 @@ export async function resubmitClaimAsIs(session: SessionContext, claimId: string
   })
 }
 
-export async function listClaims(session: SessionContext, filters: { status?: string } = {}) {
+const CLAIM_LIST_PAGE_SIZE = 50
+
+/** P2 §8: was fully unbounded (no `take` at all). Real server-side pagination now. */
+export async function listClaims(session: SessionContext, filters: { status?: string; page?: number } = {}) {
   assertCan(session, "claim.create")
   const scope = getAuthorizedBranchScope(session)
-  return db.claim.findMany({
-    where: {
-      organizationId: session.user.organizationId,
-      status: filters.status ? (filters.status as never) : undefined,
-      branchId: narrowBranchFilter(scope),
-    },
-    include: { patient: true, payor: true, invoice: true },
-    orderBy: { createdAt: "desc" },
-  })
+  const page = resolvePage(filters.page)
+  const where: Prisma.ClaimWhereInput = {
+    organizationId: session.user.organizationId,
+    status: filters.status ? (filters.status as never) : undefined,
+    branchId: narrowBranchFilter(scope),
+  }
+  const [claims, total] = await Promise.all([
+    db.claim.findMany({
+      where,
+      include: { patient: true, payor: true, invoice: true },
+      orderBy: { createdAt: "desc" },
+      ...paginationSkipTake(page, CLAIM_LIST_PAGE_SIZE),
+    }),
+    db.claim.count({ where }),
+  ])
+  return { claims, total, page, pageSize: CLAIM_LIST_PAGE_SIZE, totalPages: totalPages(total, CLAIM_LIST_PAGE_SIZE) }
 }
 
 export async function getClaim(session: SessionContext, id: string) {

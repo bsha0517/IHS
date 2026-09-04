@@ -2,26 +2,59 @@ import Link from "next/link"
 import { redirect } from "next/navigation"
 import { getCurrentSession } from "@/lib/auth/session"
 import { can } from "@/lib/platform/permissions-core"
-import { listOutstandingInvoices } from "@/lib/domains/billing/invoices"
+import { listOutstandingInvoices, getReceivablesAging } from "@/lib/domains/billing/invoices"
 import { formatDate } from "@/lib/utils/dates"
 import { Card, CardContent } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import { PaginationControls } from "@/components/domain/pagination-controls"
 
-export default async function ReceivablesPage() {
+export default async function ReceivablesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>
+}) {
   const session = await getCurrentSession()
   if (!session || !can(session, "accounting.view")) redirect("/dashboard")
 
-  const invoices = await listOutstandingInvoices(session)
-  const totalOutstanding = invoices.reduce((sum, inv) => sum + (Number(inv.totalAmount) - Number(inv.paidAmount)), 0)
+  const sp = await searchParams
+  const [{ invoices, total, totalOutstanding, page, totalPages }, aging] = await Promise.all([
+    listOutstandingInvoices(session, { page: sp.page ? Number(sp.page) : undefined }),
+    getReceivablesAging(session),
+  ])
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Receivables</h1>
-        <p className="text-sm text-muted-foreground">
-          {invoices.length} outstanding invoice(s) — {totalOutstanding.toFixed(2)} owed
-        </p>
+      <PageHeader title="Receivables" description={`${total} outstanding invoice(s) — ${totalOutstanding.toFixed(2)} owed`} />
+
+      {/* P3.9 §26: basic aging buckets — a small extension of the same outstanding-invoice
+          population/total this page already shows, not a separate aging engine. */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-xs text-muted-foreground">Current (0-30d)</p>
+            <p className="text-lg font-semibold">{aging.current.toFixed(2)}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-xs text-muted-foreground">31-60 days</p>
+            <p className="text-lg font-semibold">{aging.days31to60.toFixed(2)}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-xs text-muted-foreground">61-90 days</p>
+            <p className="text-lg font-semibold">{aging.days61to90.toFixed(2)}</p>
+          </CardContent>
+        </Card>
+        <Card className={aging.over90 > 0 ? "border-destructive/50" : undefined}>
+          <CardContent className="pt-6">
+            <p className="text-xs text-muted-foreground">Over 90 days</p>
+            <p className={`text-lg font-semibold ${aging.over90 > 0 ? "text-destructive" : ""}`}>{aging.over90.toFixed(2)}</p>
+          </CardContent>
+        </Card>
       </div>
 
       <Card>
@@ -72,6 +105,7 @@ export default async function ReceivablesPage() {
               })}
             </TableBody>
           </Table>
+          <PaginationControls page={page} totalPages={totalPages} total={total} basePath="/receivables" searchParams={sp} />
         </CardContent>
       </Card>
     </div>

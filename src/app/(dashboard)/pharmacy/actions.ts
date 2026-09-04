@@ -71,6 +71,8 @@ export async function createDispensingRecordAction(_prev: ActionState, formData:
     prescriptionItemId: formData.get("prescriptionItemId"),
     medicationId: formData.get("medicationId"),
     quantityDispensed: formData.get("quantityDispensed"),
+    // Targeted backlog closure, item 8.
+    substitutionConfirmed: formData.get("substitutionConfirmed") === "on",
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
@@ -83,20 +85,39 @@ export async function createDispensingRecordAction(_prev: ActionState, formData:
   return { success: true }
 }
 
-export async function verifyDispensingRecordAction(id: string, prescriptionId: string) {
+export async function verifyDispensingRecordAction(id: string, prescriptionId: string): Promise<ActionState> {
   const session = await requireSession()
-  await verifyDispensingRecord(session, id)
+  try {
+    await verifyDispensingRecord(session, id)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to verify dispensing record." }
+  }
   revalidatePath(`/pharmacy/${prescriptionId}`)
+  return { success: true }
 }
 
-export async function dispenseRecordAction(id: string, prescriptionId: string) {
+export async function dispenseRecordAction(id: string, prescriptionId: string): Promise<ActionState> {
   const session = await requireSession()
-  await dispenseRecord(session, id)
+  try {
+    await dispenseRecord(session, id)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to dispense." }
+  }
   revalidatePath(`/pharmacy/${prescriptionId}`)
   revalidatePath("/pharmacy")
+  return { success: true }
 }
 
-export async function returnDispensingRecordAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+export type ReturnActionState = ActionState & { financialReversal?: "reversed" | "manual_review_required" | "not_applicable" }
+
+/**
+ * P3.9 §39: `financialReversal` is relayed back to the dialog so it can
+ * state plainly what actually happened financially — never let a
+ * successful stock return silently imply money was refunded or credited.
+ * See returnDispensingRecord's own doc comment (dispensing.ts) for the
+ * three possible outcomes and why.
+ */
+export async function returnDispensingRecordAction(_prev: ReturnActionState, formData: FormData): Promise<ReturnActionState> {
   const session = await requireSession()
   const id = String(formData.get("dispensingRecordId") ?? "")
   const prescriptionId = String(formData.get("prescriptionId") ?? "")
@@ -105,13 +126,15 @@ export async function returnDispensingRecordAction(_prev: ActionState, formData:
     reason: formData.get("reason"),
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
+  let financialReversal: ReturnActionState["financialReversal"]
   try {
-    await returnDispensingRecord(session, id, parsed.data)
+    const result = await returnDispensingRecord(session, id, parsed.data)
+    financialReversal = result.financialReversal
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to record return." }
   }
   revalidatePath(`/pharmacy/${prescriptionId}`)
-  return { success: true }
+  return { success: true, financialReversal }
 }
 
 export async function setPharmacyEnabledAction(enabled: boolean) {

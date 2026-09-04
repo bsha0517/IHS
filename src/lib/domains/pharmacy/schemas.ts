@@ -27,6 +27,10 @@ export const createDispensingRecordSchema = z.object({
   prescriptionItemId: z.uuid(),
   medicationId: z.uuid(),
   quantityDispensed: z.coerce.number().int().positive().max(999999),
+  // Targeted backlog closure, item 8: only meaningful (and only required)
+  // when the selected medication doesn't obviously match what was
+  // prescribed — see createDispensingRecord's own doc comment.
+  substitutionConfirmed: z.boolean().optional(),
 })
 export type CreateDispensingRecordInput = z.infer<typeof createDispensingRecordSchema>
 

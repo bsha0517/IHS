@@ -5,6 +5,7 @@ import { getCurrentSession } from "@/lib/auth/session"
 import { can } from "@/lib/platform/permissions-core"
 import { listEpisodes } from "@/lib/domains/clinical/episodes"
 import { Card, CardContent } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -46,10 +47,7 @@ export default async function EpisodesPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Episodes</h1>
-        <p className="text-sm text-muted-foreground">{total} episode(s) of care</p>
-      </div>
+      <PageHeader title="Episodes" description={`${total} episode(s) of care`} />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <form className="flex max-w-md items-center gap-2">

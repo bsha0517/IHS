@@ -1,15 +1,17 @@
 import Link from "next/link"
+import { CreditCard } from "lucide-react"
 import { TabsContent } from "@/components/ui/tabs"
 import { Card, CardContent } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { formatDate, formatDateTime } from "@/lib/utils/dates"
 import { can } from "@/lib/platform/permissions-core"
 import { listPatientPackages } from "@/lib/domains/packages/service"
 import { listPackages } from "@/lib/domains/packages/service"
 import { listPatientInvoices } from "@/lib/domains/billing/invoices"
 import { listPatientPayments } from "@/lib/domains/billing/payments"
-import { getPatientStatement } from "@/lib/domains/billing/statement"
+import type { getPatientStatement } from "@/lib/domains/billing/statement"
 import type { SessionContext } from "@/lib/auth/session"
 import { SellPackageDialog } from "@/app/(dashboard)/patients/[id]/sell-package-dialog"
 import { UseSessionDialog } from "@/app/(dashboard)/patients/[id]/use-session-dialog"
@@ -21,25 +23,49 @@ const INVOICE_STATUS_VARIANT: Record<string, "default" | "secondary" | "destruct
   void: "destructive",
 }
 
+/**
+ * P3.2 §7/§21: `listPatientPackages` needs `service.view`, `listPatientInvoices`
+ * needs `invoice.view`, `listPatientPayments` needs `payment.view`, and the
+ * parent-fetched `statement` (see patients/[id]/page.tsx) needs both
+ * `invoice.view` and `payment.view` — all were previously called
+ * unconditionally from inside this component. Per the seeded role
+ * permission sets, Doctor, Nurse, Laboratory Technician, Pharmacist, and
+ * Radiology Technician hold none of these despite holding `patient.view`,
+ * so every one of them hit a thrown `ForbiddenError` here with no catch
+ * anywhere in the tree — the whole Patient 360 page failed for the majority
+ * of clinical roles, not just the Billing tabs. Gated the same way
+ * InsuranceTabs already guards `coverage.manage`.
+ */
 export async function BillingTabs({
   session,
   patientId,
   branchId,
+  statement,
+  canViewStatement,
 }: {
   session: SessionContext
   patientId: string
   branchId: string
+  // P3.2 §6/§9/§28: fetched once by the parent page (patients/[id]/page.tsx)
+  // so the same statement also powers the Overview tab's financial
+  // snapshot — passed down instead of fetched a second time here.
+  statement: Awaited<ReturnType<typeof getPatientStatement>> | null
+  canViewStatement: boolean
 }) {
-  const [patientPackages, invoices, payments, catalogPackages, statement] = await Promise.all([
-    listPatientPackages(session, patientId),
-    listPatientInvoices(session, patientId),
-    listPatientPayments(session, patientId),
-    can(session, "package.sell") ? listPackages(session) : Promise.resolve([]),
-    getPatientStatement(session, patientId),
-  ])
-
+  const canViewPackages = can(session, "service.view")
+  const canViewInvoices = can(session, "invoice.view")
+  const canViewPayments = can(session, "payment.view")
   const canSell = can(session, "package.sell")
   const canConsume = can(session, "package.consume")
+  const canCollectPayment = can(session, "invoice.create")
+
+  const [patientPackages, invoices, payments, catalogPackages] = await Promise.all([
+    canViewPackages ? listPatientPackages(session, patientId) : Promise.resolve([]),
+    canViewInvoices ? listPatientInvoices(session, patientId) : Promise.resolve([]),
+    canViewPayments ? listPatientPayments(session, patientId) : Promise.resolve([]),
+    canSell ? listPackages(session) : Promise.resolve([]),
+  ])
+
   const packageOptions = catalogPackages
     .filter((p) => p.isActive)
     .map((p) => ({ id: p.id, name: p.name, price: Number(p.price) }))
@@ -49,12 +75,13 @@ export async function BillingTabs({
       <TabsContent value="packages">
         <Card>
           <CardContent className="grid gap-4 pt-6">
+            {!canViewPackages && <p className="text-sm text-muted-foreground">You don&apos;t have permission to view packages.</p>}
             {canSell && (
               <div className="flex justify-end">
                 <SellPackageDialog patientId={patientId} branchId={branchId} packages={packageOptions} />
               </div>
             )}
-            {patientPackages.length === 0 && <p className="text-sm text-muted-foreground">No packages purchased.</p>}
+            {canViewPackages && patientPackages.length === 0 && <p className="text-sm text-muted-foreground">No packages purchased.</p>}
             {patientPackages.map((pp) => (
               <div key={pp.id} className="rounded-md border border-border p-3 text-sm">
                 <div className="mb-2 flex items-center justify-between">
@@ -93,6 +120,8 @@ export async function BillingTabs({
       <TabsContent value="invoices">
         <Card>
           <CardContent className="pt-6">
+            {!canViewInvoices && <p className="text-sm text-muted-foreground">You don&apos;t have permission to view invoices.</p>}
+            {canViewInvoices && (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -128,6 +157,7 @@ export async function BillingTabs({
                 ))}
               </TableBody>
             </Table>
+            )}
           </CardContent>
         </Card>
       </TabsContent>
@@ -135,6 +165,8 @@ export async function BillingTabs({
       <TabsContent value="payments">
         <Card>
           <CardContent className="pt-6">
+            {!canViewPayments && <p className="text-sm text-muted-foreground">You don&apos;t have permission to view payments.</p>}
+            {canViewPayments && (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -170,6 +202,7 @@ export async function BillingTabs({
                 ))}
               </TableBody>
             </Table>
+            )}
           </CardContent>
         </Card>
       </TabsContent>
@@ -177,14 +210,31 @@ export async function BillingTabs({
       <TabsContent value="statement">
         <Card>
           <CardContent className="grid gap-4 pt-6">
+            {!canViewStatement && <p className="text-sm text-muted-foreground">You don&apos;t have permission to view the billing statement.</p>}
+            {canViewStatement && statement && (
+            <>
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border p-3">
               <div>
                 <p className="text-sm text-muted-foreground">Outstanding balance</p>
                 <p className="text-xl font-semibold">{statement.outstandingBalance.toFixed(2)}</p>
               </div>
-              {!statement.reconciled && (
-                <Badge variant="destructive">Running balance does not reconcile — contact support</Badge>
-              )}
+              <div className="flex items-center gap-2">
+                {!statement.reconciled && (
+                  <Badge variant="destructive">Running balance does not reconcile — contact support</Badge>
+                )}
+                {/* P3.2: closes a real workflow dead end — seeing "this patient
+                    owes money" here previously had no path to actually collect
+                    it without leaving the page and re-searching for the same
+                    patient at POS. `/pos` already supports pre-selecting a
+                    patient via ?patientId=; this was simply never linked to. */}
+                {canCollectPayment && statement.outstandingBalance > 0 && (
+                  <Button size="sm" asChild>
+                    <Link href={`/pos?patientId=${patientId}`}>
+                      <CreditCard /> Collect payment
+                    </Link>
+                  </Button>
+                )}
+              </div>
             </div>
             <Table>
               <TableHeader>
@@ -223,6 +273,8 @@ export async function BillingTabs({
                 ))}
               </TableBody>
             </Table>
+            </>
+            )}
           </CardContent>
         </Card>
       </TabsContent>

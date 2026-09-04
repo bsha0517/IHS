@@ -6,6 +6,7 @@ import { auditFromSession } from "@/lib/platform/audit"
 import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
 import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/outbox"
 import "@/lib/platform/event-handlers"
+import { resolvePage, paginationSkipTake, totalPages } from "@/lib/platform/pagination"
 import type { Prisma } from "@/generated/prisma/client"
 import type { SessionContext } from "@/lib/auth/session"
 import type { StockAdjustmentInput } from "@/lib/domains/inventory/schemas"
@@ -106,6 +107,28 @@ export async function listLowStock(session: SessionContext, branchId?: string) {
   return summary.filter((p) => p.isLowStock)
 }
 
+/**
+ * Bulk balance lookup for a set of already-fetched batches — one `groupBy`
+ * aggregate for every batch at once, the same "one batch query + one
+ * aggregate" discipline `listBatchSummaryByProduct` established, instead of
+ * a `getBalance` call per batch (P3.8 §13: previously
+ * `Promise.all(batches.map(...))`, an N+1 that scaled with how many batches
+ * were near expiry/expired org-wide, not a bounded page size).
+ */
+async function balanceByBatchId(
+  organizationId: string,
+  batchIds: string[],
+  branchId?: string | { in: string[] } | null
+): Promise<Map<string, Decimal>> {
+  if (batchIds.length === 0) return new Map()
+  const grouped = await db.stockLedgerEntry.groupBy({
+    by: ["batchId"],
+    where: { organizationId, branchId: branchId ?? undefined, batchId: { in: batchIds } },
+    _sum: { quantity: true },
+  })
+  return new Map(grouped.map((g) => [g.batchId as string, new Decimal(g._sum.quantity ?? 0)]))
+}
+
 export async function listNearExpiryBatches(session: SessionContext, branchId?: string, days = NEAR_EXPIRY_DAYS) {
   assertCan(session, "inventory.view")
   const scope = getAuthorizedBranchScope(session)
@@ -119,13 +142,10 @@ export async function listNearExpiryBatches(session: SessionContext, branchId?: 
     include: { product: true },
     orderBy: { expiryDate: "asc" },
   })
-  const withBalances = await Promise.all(
-    batches.map(async (batch) => ({
-      batch,
-      balance: await getBalance(db, { organizationId: session.user.organizationId, branchId: scopedBranchId, productId: batch.productId, batchId: batch.id }),
-    }))
-  )
-  return withBalances.filter((b) => b.balance.greaterThan(0))
+  const balances = await balanceByBatchId(session.user.organizationId, batches.map((b) => b.id), scopedBranchId)
+  return batches
+    .map((batch) => ({ batch, balance: balances.get(batch.id) ?? new Decimal(0) }))
+    .filter((b) => b.balance.greaterThan(0))
 }
 
 export async function listExpiredBatches(session: SessionContext, branchId?: string) {
@@ -137,85 +157,257 @@ export async function listExpiredBatches(session: SessionContext, branchId?: str
     include: { product: true },
     orderBy: { expiryDate: "asc" },
   })
-  const withBalances = await Promise.all(
-    batches.map(async (batch) => ({
-      batch,
-      balance: await getBalance(db, { organizationId: session.user.organizationId, branchId: scopedBranchId, productId: batch.productId, batchId: batch.id }),
-    }))
-  )
-  return withBalances.filter((b) => b.balance.greaterThan(0))
+  const balances = await balanceByBatchId(session.user.organizationId, batches.map((b) => b.id), scopedBranchId)
+  return batches
+    .map((batch) => ({ batch, balance: balances.get(batch.id) ?? new Decimal(0) }))
+    .filter((b) => b.balance.greaterThan(0))
 }
 
+const LEDGER_PAGE_SIZE = 50
+
+/**
+ * P2 §8: was `take: 200` with no page param — the original audit's own
+ * "stock ledger hard cap" finding. Real server-side pagination now, not a
+ * bigger cap.
+ *
+ * P3.8 §14-15: added transactionType/batchId/date-range filters (branch and
+ * product already existed) — all narrow the same WHERE clause, no separate
+ * analytics query engine. `performedBy` has no FK relation on
+ * StockLedgerEntry (a bare string, unlike e.g. ImagingOrder's
+ * performedByUser), so the actor name is resolved with one bulk
+ * `user.findMany` for the distinct ids on THIS page only (bounded by
+ * pageSize, not a per-row lookup) rather than a schema change.
+ */
 export async function listLedgerEntries(
   session: SessionContext,
-  filters: { productId?: string; branchId?: string } = {}
+  filters: {
+    productId?: string
+    branchId?: string
+    batchId?: string
+    transactionType?: string
+    dateFrom?: Date
+    dateTo?: Date
+    page?: number
+  } = {}
 ) {
   assertCan(session, "inventory.view")
   const scope = getAuthorizedBranchScope(session)
-  return db.stockLedgerEntry.findMany({
-    where: { organizationId: session.user.organizationId, productId: filters.productId, branchId: narrowBranchFilter(scope, filters.branchId) },
-    include: { product: true, batch: true, branch: true },
-    orderBy: { createdAt: "desc" },
-    take: 200,
+  const page = resolvePage(filters.page)
+  const where: Prisma.StockLedgerEntryWhereInput = {
+    organizationId: session.user.organizationId,
+    productId: filters.productId,
+    branchId: narrowBranchFilter(scope, filters.branchId),
+    batchId: filters.batchId,
+    transactionType: filters.transactionType as never,
+    createdAt:
+      filters.dateFrom || filters.dateTo
+        ? { gte: filters.dateFrom, lte: filters.dateTo }
+        : undefined,
+  }
+  const [entries, total] = await Promise.all([
+    db.stockLedgerEntry.findMany({
+      where,
+      include: { product: true, batch: true, branch: true },
+      orderBy: { createdAt: "desc" },
+      ...paginationSkipTake(page, LEDGER_PAGE_SIZE),
+    }),
+    db.stockLedgerEntry.count({ where }),
+  ])
+  const actorIds = [...new Set(entries.map((e) => e.performedBy).filter((id): id is string => !!id))]
+  const actors =
+    actorIds.length > 0 ? await db.user.findMany({ where: { id: { in: actorIds } }, select: { id: true, firstName: true, lastName: true } }) : []
+  const actorById = new Map(actors.map((a) => [a.id, `${a.firstName} ${a.lastName}`]))
+  const entriesWithActor = entries.map((e) => ({ ...e, actorName: e.performedBy ? (actorById.get(e.performedBy) ?? "Unknown") : null }))
+  return { entries: entriesWithActor, total, page, pageSize: LEDGER_PAGE_SIZE, totalPages: totalPages(total, LEDGER_PAGE_SIZE) }
+}
+
+/**
+ * P2 §5: every batch (any status, including expired — unlike
+ * listAvailableBatchesInternal's FEFO pool, see recordAdjustment's own doc
+ * comment for why) for every product in `productIds`, with its current
+ * balance at `branchId`. Backs the Adjustment dialog's batch selector.
+ * Batched across the whole inventory page — 2 queries total regardless of
+ * how many products are on it, not one query per product row, the same
+ * discipline P2 Batch 3 established for the commission/tax N+1s.
+ */
+export async function listBatchSummaryByProduct(
+  session: SessionContext,
+  productIds: string[],
+  branchId: string
+): Promise<Map<string, { id: string; batchNumber: string; expiryDate: Date | null; balance: number }[]>> {
+  assertCan(session, "inventory.view")
+  const scope = getAuthorizedBranchScope(session)
+  if (!scope.isOrgWide && !scope.branchIds.includes(branchId)) {
+    throw new ForbiddenError("branch.access")
+  }
+  if (productIds.length === 0) return new Map()
+
+  const batches = await db.productBatch.findMany({
+    where: { organizationId: session.user.organizationId, productId: { in: productIds } },
+    orderBy: [{ expiryDate: { sort: "asc", nulls: "last" } }, { createdAt: "asc" }],
   })
+  const grouped = await db.stockLedgerEntry.groupBy({
+    by: ["batchId"],
+    where: { organizationId: session.user.organizationId, branchId, batchId: { in: batches.map((b) => b.id) } },
+    _sum: { quantity: true },
+  })
+  const balanceByBatch = new Map(grouped.map((g) => [g.batchId as string, Number(g._sum.quantity ?? 0)]))
+
+  const result = new Map<string, { id: string; batchNumber: string; expiryDate: Date | null; balance: number }[]>()
+  for (const batch of batches) {
+    const list = result.get(batch.productId) ?? []
+    list.push({ id: batch.id, batchNumber: batch.batchNumber, expiryDate: batch.expiryDate, balance: balanceByBatch.get(batch.id) ?? 0 })
+    result.set(batch.productId, list)
+  }
+  return result
 }
 
 /**
  * Manual correction (spec.md §43: adjustment/damage/expiry/return) — the
  * only user-facing way to move stock outside a receipt/transfer/consumption.
  *
- * P1 §13: `damage`/`expiry` (always real loss) and `adjustment` (a count
+ * P2 §5: previously batch-optional in both directions — the UI never asked
+ * for one, so a manual adjustment routinely posted a batch-less ledger
+ * entry even though every OTHER path stock can move through (receiveStock,
+ * consumeStock, transfers) always ties the movement to a real
+ * `ProductBatch`. That's the batch-blindness SYSTEM_AUDIT #23 named: a
+ * batch-less reduction has no way to know WHICH physical lot actually lost
+ * units, and a batch-less addition creates stock the FEFO pool can never
+ * sort correctly (no batch to attach an expiry to). Closed in both
+ * directions, enforced twice — once by `stockAdjustmentSchema`'s own
+ * refinements (a fast, friendly rejection before this function ever runs),
+ * and again here (never trust a client-supplied `batchId` at face value):
+ *
+ *   - "out": always removes from one specific, already-existing batch,
+ *     re-verified inside the transaction to actually belong to this
+ *     product/org and to actually hold enough balance at this branch —
+ *     the same "don't trust a pre-transaction read alone" discipline
+ *     `applyPaymentAtomically`'s own doc comment describes, just for a
+ *     batch balance instead of an invoice total.
+ *   - "in": either `batchId` (add to an existing batch, re-verified the
+ *     same way) or the `newBatch*` fields (create a batch inline, in the
+ *     same transaction as the ledger entry). A `newBatchNumber` matching
+ *     one already on file for this product is treated as selecting that
+ *     batch — `ProductBatch.@@unique([productId, batchNumber])` makes this
+ *     an upsert-by-number, not a duplicate-key error, since "add more of
+ *     this exact lot" and "pick it from the dropdown" are the same intent.
+ *
+ * Either way the ledger entry this creates always carries a real batchId —
+ * batch-level stock (SUM of that batch's own entries) and the product's
+ * overall stock ledger can never diverge, because after this change they
+ * were never two different things to begin with. FEFO consumption
+ * (allocateFefo/consumeStock/listAvailableBatchesInternal) is untouched —
+ * this function has never fed that path and still doesn't.
+ *
+ * `damage`/`expiry` (always real loss) and `adjustment` (a count
  * correction — `direction: "out"` means the physical count found less than
  * the ledger recorded, `direction: "in"` means it found more) have real
  * financial impact and fire an `InventoryAdjusted` event valuing the move
- * at the specific batch's actual cost when `batchId` is given, falling
- * back to the product's own `purchaseCost` when it isn't (a count
- * correction typically isn't tied to one physical lot). `return`-type
- * adjustments are deliberately NOT posted — a manual "return to stock" has
- * no single original transaction this function can identify to reverse,
- * and guessing at one risks a wrong entry; this stays an inventory-only
- * movement until a real workflow names what it should reverse (see
- * INVENTORY.md).
+ * at the specific batch's actual cost — always available now that a batch
+ * is mandatory, closing the old "falls back to the product's own
+ * purchaseCost when batchId isn't given" branch this function used to need.
+ * `return`-type adjustments are deliberately NOT posted — a manual "return
+ * to stock" has no single original transaction this function can identify
+ * to reverse, and guessing at one risks a wrong entry; this stays an
+ * inventory-only movement until a real workflow names what it should
+ * reverse (see INVENTORY.md).
  */
 export async function recordAdjustment(session: SessionContext, input: StockAdjustmentInput) {
   assertCan(session, "inventory.adjust", { branchId: input.branchId })
 
+  const product = await db.product.findFirstOrThrow({
+    where: { id: input.productId, organizationId: session.user.organizationId },
+  })
   const signedQuantity = input.direction === "in" ? new Decimal(input.quantity) : new Decimal(input.quantity).negated()
-
-  if (input.direction === "out") {
-    const available = await getBalance(db, {
-      organizationId: session.user.organizationId,
-      branchId: input.branchId,
-      productId: input.productId,
-      batchId: input.batchId,
-    })
-    if (available.lessThan(input.quantity)) {
-      throw new Error(`Only ${available.toString()} units available — cannot remove ${input.quantity}.`)
-    }
-  }
-
-  const [product, batch] = await Promise.all([
-    db.product.findUniqueOrThrow({ where: { id: input.productId } }),
-    input.batchId ? db.productBatch.findUnique({ where: { id: input.batchId } }) : Promise.resolve(null),
-  ])
-  const unitCost = batch ? new Decimal(batch.purchaseCost) : new Decimal(product.purchaseCost)
-  const amount = unitCost.mul(input.quantity)
   const isFinanciallyRelevant = input.transactionType !== "return"
 
   const entry = await db.$transaction(async (tx) => {
+    let batchId: string
+    let unitCost: Decimal
+
+    if (input.direction === "out") {
+      // P3.8 §19/§48: same race class `consumeStock` locks against — without
+      // this, two concurrent "out" adjustments against the same batch both
+      // read the same pre-adjustment balance, both pass the check below, and
+      // both commit, driving the batch negative. Locked by product (not just
+      // this one batch) for the same reason consumeStock's own doc comment
+      // gives: `product_batch` has no branch column, so this also correctly
+      // serializes concurrent out-adjustments of the same product across
+      // different branches, which is broader than strictly necessary but
+      // never narrower.
+      await tx.$queryRaw`SELECT "id" FROM "product_batch" WHERE "product_id" = ${input.productId} FOR UPDATE`
+
+      const batch = await tx.productBatch.findFirst({
+        where: { id: input.batchId as string, productId: input.productId, organizationId: session.user.organizationId },
+      })
+      if (!batch) throw new Error("Selected batch was not found for this product.")
+      const available = await getBalance(tx, {
+        organizationId: session.user.organizationId,
+        branchId: input.branchId,
+        productId: input.productId,
+        batchId: batch.id,
+      })
+      if (available.lessThan(input.quantity)) {
+        throw new Error(`Only ${available.toString()} units available in batch ${batch.batchNumber} — cannot remove ${input.quantity}.`)
+      }
+      batchId = batch.id
+      unitCost = new Decimal(batch.purchaseCost)
+    } else if (input.batchId) {
+      const batch = await tx.productBatch.findFirst({
+        where: { id: input.batchId, productId: input.productId, organizationId: session.user.organizationId },
+      })
+      if (!batch) throw new Error("Selected batch was not found for this product.")
+      batchId = batch.id
+      unitCost = new Decimal(batch.purchaseCost)
+    } else {
+      const batchNumber = input.newBatchNumber as string
+      const existing = await tx.productBatch.findUnique({
+        where: { productId_batchNumber: { productId: input.productId, batchNumber } },
+      })
+      const batch =
+        existing ??
+        (await tx.productBatch.create({
+          data: {
+            organizationId: session.user.organizationId,
+            productId: input.productId,
+            batchNumber,
+            manufacturingDate: input.newBatchManufacturingDate ?? null,
+            expiryDate: input.newBatchExpiryDate ?? null,
+            purchaseCost: new Decimal(input.newBatchPurchaseCost ?? product.purchaseCost),
+            // ProductBatch.receivedQuantity is Int (a historical "how much
+            // arrived in this lot" fact, spec.md §42) — StockAdjustmentInput's
+            // quantity allows the same fractional precision the ledger itself
+            // carries (Decimal(14,3)), so this rounds rather than risk a
+            // Prisma runtime error inserting a fractional value into an Int
+            // column. receiveStock's own identical assignment has carried
+            // the same implicit whole-number assumption since Phase 5.
+            receivedQuantity: Math.round(input.quantity),
+          },
+        }))
+      batchId = batch.id
+      unitCost = new Decimal(batch.purchaseCost)
+    }
+
     const created = await tx.stockLedgerEntry.create({
       data: {
         organizationId: session.user.organizationId,
         branchId: input.branchId,
         productId: input.productId,
-        batchId: input.batchId ?? null,
+        batchId,
         transactionType: input.transactionType,
         quantity: signedQuantity,
+        // P2 §5: see stockAdjustmentSchema's own comment on `reference` —
+        // the existing referenceType/referenceId polymorphic pointer, used
+        // here for its own documented "manual adjustment with no other
+        // record" case rather than a new column.
+        referenceType: input.reference ? "manual_adjustment" : null,
+        referenceId: input.reference ?? null,
         reason: input.reason,
         performedBy: session.user.id,
       },
     })
 
+    const amount = unitCost.mul(input.quantity)
     if (isFinanciallyRelevant && amount.greaterThan(0)) {
       await writeOutboxEvent(tx, {
         organizationId: session.user.organizationId,
@@ -231,10 +423,16 @@ export async function recordAdjustment(session: SessionContext, input: StockAdju
     }
 
     return created
-  })
+  }, { timeout: 20_000, maxWait: 10_000 })
 
   await auditFromSession(session, "create", "stock_ledger_entry", entry.id, {
-    new: { transactionType: input.transactionType, quantity: Number(signedQuantity), reason: input.reason },
+    new: {
+      transactionType: input.transactionType,
+      quantity: Number(signedQuantity),
+      reason: input.reason,
+      batchId: entry.batchId,
+      reference: input.reference ?? null,
+    },
   })
   await dispatchPendingOutboxEvents(session.user.organizationId)
   return entry

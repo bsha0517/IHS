@@ -33,11 +33,14 @@ export const organizationSchema = z.object({
 export type OrganizationInput = z.infer<typeof organizationSchema>
 
 export const createUserSchema = z.object({
-  email: z.email(),
+  email: z.email().max(254),
   username: z.string().max(100).optional().nullable(),
   firstName: z.string().min(1).max(100),
   lastName: z.string().min(1).max(100),
-  password: z.string().min(10, "Password must be at least 10 characters"),
+  // P4.3 §33: the max here is purely a resource-abuse bound, not a policy
+  // change — 10 remains the minimum (§7's "reasonable minimum length,"
+  // already in place before this batch and left as-is).
+  password: z.string().min(10, "Password must be at least 10 characters").max(256),
   roleIds: z.array(z.uuid()).default([]),
   branchIds: z.array(z.uuid()).default([]),
 })

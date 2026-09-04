@@ -1,29 +1,40 @@
 import "server-only"
 import { Decimal } from "@prisma/client/runtime/client"
 import { db } from "@/lib/db"
+import { Prisma } from "@/generated/prisma/client"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { nextNumber } from "@/lib/platform/sequences"
 import { postAssetAcquired } from "@/lib/domains/accounting/posting-service"
 import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
+import { resolvePage, paginationSkipTake, totalPages } from "@/lib/platform/pagination"
 import type { SessionContext } from "@/lib/auth/session"
 import type { AssetInput, MaintenanceRecordInput, CalibrationRecordInput } from "@/lib/domains/assets/schemas"
 
 const ASSET_INCLUDE = { branch: true, department: true, room: true, assignedEmployee: true, supplier: true } as const
+const ASSET_LIST_PAGE_SIZE = 50
 
-export async function listAssets(session: SessionContext, filters: { branchId?: string; status?: string; category?: string } = {}) {
+/** P2 §8: was fully unbounded (no `take` at all). Real server-side pagination now. */
+export async function listAssets(session: SessionContext, filters: { branchId?: string; status?: string; category?: string; page?: number } = {}) {
   assertCan(session, "inventory.view")
   const scope = getAuthorizedBranchScope(session)
-  return db.asset.findMany({
-    where: {
-      organizationId: session.user.organizationId,
-      branchId: narrowBranchFilter(scope, filters.branchId),
-      status: filters.status as never,
-      category: filters.category,
-    },
-    include: ASSET_INCLUDE,
-    orderBy: { assetNumber: "asc" },
-  })
+  const page = resolvePage(filters.page)
+  const where: Prisma.AssetWhereInput = {
+    organizationId: session.user.organizationId,
+    branchId: narrowBranchFilter(scope, filters.branchId),
+    status: filters.status as never,
+    category: filters.category,
+  }
+  const [assets, total] = await Promise.all([
+    db.asset.findMany({
+      where,
+      include: ASSET_INCLUDE,
+      orderBy: { assetNumber: "asc" },
+      ...paginationSkipTake(page, ASSET_LIST_PAGE_SIZE),
+    }),
+    db.asset.count({ where }),
+  ])
+  return { assets, total, page, pageSize: ASSET_LIST_PAGE_SIZE, totalPages: totalPages(total, ASSET_LIST_PAGE_SIZE) }
 }
 
 export async function getAsset(session: SessionContext, id: string) {

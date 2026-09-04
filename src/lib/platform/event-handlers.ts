@@ -19,6 +19,7 @@ import {
 } from "@/lib/domains/accounting/posting-service"
 import { accrueInvoiceBasisCommissions, accruePaymentBasisCommissions, reverseCommissionsForRefund } from "@/lib/domains/payroll/commissions"
 import { sendMessage } from "@/lib/domains/communications/service"
+import { createNotificationOnce, createNotificationsOnce } from "@/lib/domains/notifications/create"
 import { formatDate, formatTime } from "@/lib/utils/dates"
 
 /**
@@ -160,7 +161,7 @@ registerOutboxHandler("PaymentReceived", async (payload) => {
   const invoiceId = payload.invoiceId as string
   const tenders = payload.tenders as { method: string; amount: number }[]
   const paymentIds = payload.paymentIds as string[]
-  await postPaymentReceived(invoiceId, tenders)
+  await postPaymentReceived(invoiceId, tenders, paymentIds)
   await db.$transaction((tx) => accruePaymentBasisCommissions(tx, invoiceId, paymentIds), COMMISSION_TRANSACTION_OPTIONS)
 })
 
@@ -244,7 +245,27 @@ registerOutboxHandler("EmployeeLeaveApproved", async (payload, organizationId) =
   const employeeId = payload.employeeId as string
   const leaveRequestId = payload.leaveRequestId as string
   const employee = await db.employee.findUnique({ where: { id: employeeId }, include: { providerProfile: true } })
-  if (!employee?.providerProfile) return // not a clinical provider — nothing to block on the schedule
+  if (!employee) return
+
+  // P3.11 §30/§31: "leave decision -> employee-linked User." Deliberately
+  // BEFORE the `providerProfile` check below — most employees aren't
+  // clinical Providers, and the original handler's early return would have
+  // silently skipped this for all of them. No PHI/reason text in the body
+  // (P3.11 §17's minimization spirit extends to personal HR detail too —
+  // a leave reason can itself be sensitive).
+  if (employee.userId) {
+    await createNotificationOnce(db, {
+      organizationId,
+      recipientUserId: employee.userId,
+      type: "leave_decision",
+      title: "Leave request approved",
+      body: `Your leave request for ${formatDate(new Date(payload.startDate as string))} – ${formatDate(new Date(payload.endDate as string))} was approved.`,
+      referenceType: "leave_request",
+      referenceId: leaveRequestId,
+    })
+  }
+
+  if (!employee.providerProfile) return // not a clinical provider — nothing to block on the schedule
 
   const reason = `Approved leave (request ${leaveRequestId})`
   const existing = await db.providerLeaveBlock.findFirst({ where: { providerId: employee.providerProfile.id, reason } })
@@ -289,8 +310,9 @@ registerOutboxHandler("EmployeeLeaveApproved", async (payload, organizationId) =
     .slice(0, 5)
     .map((a) => `${a.patient.firstName} ${a.patient.lastName} at ${a.startTime.toISOString()}`)
     .join("; ")
-  await db.notification.createMany({
-    data: admins.map((admin) => ({
+  await createNotificationsOnce(
+    db,
+    admins.map((admin) => ({
       organizationId,
       recipientUserId: admin.id,
       type: "leave_appointment_conflict",
@@ -298,8 +320,8 @@ registerOutboxHandler("EmployeeLeaveApproved", async (payload, organizationId) =
       body: `Dr. ${employee.firstName} ${employee.lastName}'s newly approved leave (${startAt.toDateString()}–${endAt.toDateString()}) overlaps: ${summary}${conflicting.length > 5 ? ` and ${conflicting.length - 5} more` : ""}. These were NOT automatically cancelled or rescheduled.`,
       referenceType: "employee",
       referenceId: employeeId,
-    })),
-  })
+    }))
+  )
 })
 
 /**
@@ -318,16 +340,19 @@ registerOutboxHandler("LabResultFinalized", async (payload) => {
   })
   if (!order?.orderingProvider.userId) return // ordering provider has no login — nobody to notify
 
-  await db.notification.create({
-    data: {
-      organizationId: order.organizationId,
-      recipientUserId: order.orderingProvider.userId,
-      type: "lab_result_ready",
-      title: "Lab results ready",
-      body: `${order.orderNumber} for ${order.patient.firstName} ${order.patient.lastName} (${order.patient.mrn}) is verified.`,
-      referenceType: "clinical_order",
-      referenceId: order.id,
-    },
+  // P3.11 §41: idempotent against outbox redelivery.
+  // P3.11 §12: referenceType is "lab_order" (not the pre-P3.11 "clinical_order")
+  // so the destination resolver (notifications/service.ts) can route it
+  // correctly to /laboratory/orders/[id] without an extra lookup — imaging
+  // uses the same ClinicalOrder id shape but needs a different destination.
+  await createNotificationOnce(db, {
+    organizationId: order.organizationId,
+    recipientUserId: order.orderingProvider.userId,
+    type: "lab_result_ready",
+    title: "Lab results ready",
+    body: `${order.orderNumber} for ${order.patient.firstName} ${order.patient.lastName} (${order.patient.mrn}) is verified.`,
+    referenceType: "lab_order",
+    referenceId: order.id,
   })
 })
 
@@ -366,18 +391,27 @@ registerOutboxHandler("CriticalLabResultVerified", async (payload, organizationI
   }
   if (recipientIds.size === 0) return
 
-  const value = line.numericValue != null ? String(line.numericValue) : (line.textValue ?? "")
-  await db.notification.createMany({
-    data: [...recipientIds].map((recipientUserId) => ({
+  // P3.11 §17: previously interpolated the actual numeric/text value and
+  // abnormal flag directly into the notification body — a real PHI leak
+  // into a generic, less-access-controlled record than the lab order
+  // screen itself. The value/flag stay behind that permission-gated
+  // destination; this only says a critical result needs review, matching
+  // the spec's own "Lab result ready for MRN ####" example.
+  // §12: referenceType "lab_order" pointing at the PARENT ClinicalOrder id
+  // (order.id, not line.id) — the pre-P3.11 "lab_order_test"/line.id
+  // combination had no route at all (no per-LabOrderTest page exists).
+  await createNotificationsOnce(
+    db,
+    [...recipientIds].map((recipientUserId) => ({
       organizationId,
       recipientUserId,
       type: "critical_lab_result",
       title: `CRITICAL: ${line.labTest.name}`,
-      body: `${order.patient.firstName} ${order.patient.lastName} (${order.patient.mrn}) — ${line.labTest.name} = ${value}${line.unit ? ` ${line.unit}` : ""} (${abnormalFlag.replace("_", " ")}).`,
-      referenceType: "lab_order_test",
-      referenceId: line.id,
-    })),
-  })
+      body: `${order.patient.firstName} ${order.patient.lastName} (${order.patient.mrn}) has a critical ${line.labTest.name} result (${abnormalFlag.replace("_", " ")}) requiring immediate review.`,
+      referenceType: "lab_order",
+      referenceId: order.id,
+    }))
+  )
 })
 
 /**
@@ -396,16 +430,14 @@ registerOutboxHandler("ImagingResultFinalized", async (payload) => {
   })
   if (!order?.orderingProvider.userId) return // ordering provider has no login — nobody to notify
 
-  await db.notification.create({
-    data: {
-      organizationId: order.organizationId,
-      recipientUserId: order.orderingProvider.userId,
-      type: "imaging_result_ready",
-      title: "Imaging results ready",
-      body: `${order.orderNumber} for ${order.patient.firstName} ${order.patient.lastName} (${order.patient.mrn}) is verified.`,
-      referenceType: "clinical_order",
-      referenceId: order.id,
-    },
+  await createNotificationOnce(db, {
+    organizationId: order.organizationId,
+    recipientUserId: order.orderingProvider.userId,
+    type: "imaging_result_ready",
+    title: "Imaging results ready",
+    body: `${order.orderNumber} for ${order.patient.firstName} ${order.patient.lastName} (${order.patient.mrn}) is verified.`,
+    referenceType: "imaging_order",
+    referenceId: order.id,
   })
 })
 
@@ -419,15 +451,13 @@ registerOutboxHandler("AppointmentCheckedIn", async (payload) => {
   const patient = await db.patient.findUnique({ where: { id: payload.patientId as string } })
   if (!patient) return
 
-  await db.notification.create({
-    data: {
-      organizationId: provider.organizationId,
-      recipientUserId: provider.userId,
-      type: "patient_waiting",
-      title: "Patient waiting",
-      body: `${patient.firstName} ${patient.lastName} (${patient.mrn}) is waiting.`,
-      referenceType: "appointment",
-      referenceId: payload.appointmentId as string,
-    },
+  await createNotificationOnce(db, {
+    organizationId: provider.organizationId,
+    recipientUserId: provider.userId,
+    type: "patient_waiting",
+    title: "Patient waiting",
+    body: `${patient.firstName} ${patient.lastName} (${patient.mrn}) is waiting.`,
+    referenceType: "appointment",
+    referenceId: payload.appointmentId as string,
   })
 })

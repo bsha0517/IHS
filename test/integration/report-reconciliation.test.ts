@@ -123,6 +123,10 @@ describe("P1 §35: report consistency across Inventory Valuation, COGS, AR, AP, 
   }, TIMEOUT)
 
   afterAll(async () => {
+    // P3.13: a "payment" journal's referenceId is the Payment's own id, not
+    // the invoice's (posting-service.ts's postPaymentReceived, fixed this
+    // batch) — resolve the real payment ids first so this cleanup still finds them.
+    const paymentIds = (await db.payment.findMany({ where: { allocations: { some: { invoiceId: { in: invoiceIds } } } }, select: { id: true } })).map((p) => p.id)
     const journals = await db.journal.findMany({
       where: {
         organizationId,
@@ -131,7 +135,7 @@ describe("P1 §35: report consistency across Inventory Valuation, COGS, AR, AP, 
           { referenceType: "supplier_invoice", referenceId: { in: supplierInvoiceIds } },
           { referenceType: { in: ["charge_cogs", "charge_cogs_void"] }, referenceId: { in: chargeIds } },
           { referenceType: "invoice", referenceId: { in: invoiceIds } },
-          { referenceType: "payment", referenceId: { in: invoiceIds } },
+          { referenceType: "payment", referenceId: { in: paymentIds } },
           { referenceType: "refund" },
           { referenceType: "supplier_payment" },
         ],
@@ -266,7 +270,16 @@ describe("P1 §35: report consistency across Inventory Valuation, COGS, AR, AP, 
     const revenueAfterInvoice = (await incomeStatement(session())).totalRevenue
     expect(arGlAfterInvoice - arGlBeforeInvoice).toBe(500)
     expect(arSubledgerAfterInvoice - arSubledgerBeforeInvoice).toBe(500)
-    expect(revenueAfterInvoice - revenueBeforeInvoice).toBe(500)
+    // Targeted backlog closure, item 10A (BACKLOG.md's documented flaky
+    // test): `totalRevenue` is a Postgres `_sum` aggregate converted to a
+    // JS `Number` once, then subtracted here — classic floating-point
+    // cancellation between two large, nearly-equal doubles (observed once
+    // as 499.9999999999991, not a real ledger imbalance; every underlying
+    // DB value is still exact Decimal/NUMERIC). `toBeCloseTo(500, 6)` keeps
+    // 6 decimal places of precision — far tighter than currency's real
+    // 2-decimal display precision — so this still fails on any actual
+    // financial discrepancy, just not on ~1e-13 float noise.
+    expect(revenueAfterInvoice - revenueBeforeInvoice).toBeCloseTo(500, 6)
 
     // ---- Step 5: pay 300 (Dr Cash / Cr AR 300) ----
     await recordPayment(session(), { invoiceId: invoice.id, cashierSessionId, tenders: [{ method: "cash", amount: 300 }] })
@@ -308,7 +321,7 @@ describe("P1 §35: report consistency across Inventory Valuation, COGS, AR, AP, 
     // paper over or an invariant to blindly assert equal.
     expect(arGlAfterRefund).toBe(arGlAfterPayment) // GL AR: refund doesn't touch it — correct
     expect(arSubledgerAfterRefund - arSubledgerAfterPayment).toBe(100) // sub-ledger "outstanding": rises back up
-    expect(revenueAfterInvoice - revenueAfterRefund).toBe(100) // P&L revenue: the refund's own real effect (Dr Revenue 100)
+    expect(revenueAfterInvoice - revenueAfterRefund).toBeCloseTo(100, 6) // P&L revenue: the refund's own real effect (Dr Revenue 100) — see item 10A's comment above on toBeCloseTo
 
     // ---- Step 7: pay the supplier invoice in full (Dr AP / Cr Cash 500) ----
     await recordSupplierPayment(session(), { supplierInvoiceId: supplierInvoice.id, method: "bank", amount: 500 })

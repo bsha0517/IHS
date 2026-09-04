@@ -57,6 +57,11 @@ export default async function ProviderDetailPage({ params }: { params: Promise<{
                 {canManage && <LinkEmployeeDialog providerId={provider.id} currentEmployeeId={provider.employeeId} employees={employees} />}
               </div>
             </div>
+            {/* P3.12 §15: this is what actually drives the Doctor dashboard
+                and result notifications (getProviderForUser) — set only at
+                creation (new-provider-dialog.tsx), shown here so Admin can
+                at least see whether it's wired without guessing. */}
+            <Row label="Linked login" value={provider.user ? `${provider.user.email} (${provider.user.status})` : "Not linked"} />
           </CardContent>
         </Card>
 

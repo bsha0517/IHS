@@ -17,7 +17,7 @@ import {
 import { useActionDialog } from "@/hooks/use-action-dialog"
 import { createRoleAction, type ActionState } from "@/app/(dashboard)/admin/roles/actions"
 
-type Permission = { id: string; code: string; category: string }
+type Permission = { id: string; code: string; category: string; description: string }
 
 const initialState: ActionState = {}
 
@@ -50,9 +50,12 @@ export function NewRoleDialog({ permissionsByCategory }: { permissionsByCategory
               <div key={category} className="grid gap-1.5">
                 <p className="text-xs font-medium uppercase text-muted-foreground">{category}</p>
                 {permissions.map((permission) => (
-                  <label key={permission.id} className="flex items-center gap-2 text-sm">
-                    <Checkbox name="permissionIds" value={permission.id} />
-                    {permission.code}
+                  <label key={permission.id} className="flex items-start gap-2 text-sm">
+                    <Checkbox name="permissionIds" value={permission.id} className="mt-0.5" />
+                    <span>
+                      {permission.description}
+                      <span className="ml-1.5 font-mono text-xs text-muted-foreground">{permission.code}</span>
+                    </span>
                   </label>
                 ))}
               </div>

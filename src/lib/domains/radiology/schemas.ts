@@ -28,3 +28,13 @@ export const writeReportSchema = z.object({
   impression: z.preprocess(emptyToNull, z.string().max(2000).nullable().optional()),
 })
 export type WriteReportInput = z.infer<typeof writeReportSchema>
+
+// Targeted backlog closure, item 7: a correction to an already-verified
+// report. `reason` is required (unlike Lab's own optional amendment
+// `notes`) — the task's own explicit requirement for radiology specifically.
+export const amendReportSchema = z.object({
+  reportText: z.string().min(1).max(5000),
+  impression: z.preprocess(emptyToNull, z.string().max(2000).nullable().optional()),
+  reason: z.string().min(1).max(500),
+})
+export type AmendReportInput = z.infer<typeof amendReportSchema>

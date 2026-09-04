@@ -3,6 +3,7 @@ import { db } from "@/lib/db"
 import { can, assertCan } from "@/lib/platform/permissions-core"
 import { listLowStock, listNearExpiryBatches } from "@/lib/domains/inventory/stock"
 import { listMaintenanceDue } from "@/lib/domains/assets/assets"
+import { getProviderForUser } from "@/lib/domains/providers/service"
 import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 
@@ -75,9 +76,19 @@ export async function getManagementDashboard(session: SessionContext, filters: {
     db.charge.groupBy({ by: ["serviceId"], where: { organizationId, ...branchWhere, status: { not: "void" }, createdAt: { gte: monthStart, lte: monthEnd }, serviceId: { not: null } }, _sum: { amount: true }, orderBy: { _sum: { amount: "desc" } }, take: 5 }),
     db.charge.groupBy({ by: ["providerId"], where: { organizationId, ...branchWhere, status: { not: "void" }, createdAt: { gte: monthStart, lte: monthEnd }, providerId: { not: null } }, _sum: { amount: true }, orderBy: { _sum: { amount: "desc" } }, take: 5 }),
     db.invoice.groupBy({ by: ["branchId"], where: { organizationId, ...branchWhere, status: { not: "void" }, issuedAt: { gte: monthStart, lte: monthEnd } }, _sum: { totalAmount: true } }),
-    listLowStock(session, filters.branchId),
-    listNearExpiryBatches(session, filters.branchId),
-    listMaintenanceDue(session),
+    // P3.9: this whole dashboard is gated on `reports.export` alone, which
+    // Accountant holds without `inventory.view` (seed.ts) — these three
+    // calls were unconditional despite each internally requiring
+    // `inventory.view`, crashing the ENTIRE dashboard (not just these
+    // tiles) for Accountant on every login. Found live during this batch's
+    // own browser walkthrough — the same "unconditional fetch gated behind
+    // a permission the qualifying role doesn't hold" class of bug P3.2/
+    // P3.5/P3.6/P3.7 each found and fixed in their own domains. Degrades
+    // to empty (0-count tiles) for a role that can't see inventory, rather
+    // than crashing the whole page.
+    can(session, "inventory.view") ? listLowStock(session, filters.branchId) : Promise.resolve([]),
+    can(session, "inventory.view") ? listNearExpiryBatches(session, filters.branchId) : Promise.resolve([]),
+    can(session, "inventory.view") ? listMaintenanceDue(session) : Promise.resolve([]),
     db.attendanceRecord.count({ where: { organizationId, ...branchWhere, date: { gte: todayStart, lt: todayEnd }, status: "present" } }),
     db.employee.count({ where: { organizationId, ...branchWhere, status: "active" } }),
   ])
@@ -139,7 +150,7 @@ export async function getReceptionDashboard(session: SessionContext, filters: { 
 }
 
 export async function getDoctorDashboard(session: SessionContext) {
-  const provider = await db.provider.findUnique({ where: { userId: session.user.id } })
+  const provider = await getProviderForUser(session.user.id)
   if (!provider) return null
 
   const { start: todayStart, end: todayEnd } = todayRange()
@@ -176,7 +187,7 @@ export async function getFinanceDashboard(session: SessionContext, filters: { br
     db.invoice.aggregate({ where: { organizationId, ...branchWhere, status: { not: "void" }, issuedAt: { gte: monthStart, lte: monthEnd } }, _sum: { totalAmount: true } }),
     db.payment.aggregate({ where: { organizationId, ...branchWhere, status: "completed", receivedAt: { gte: monthStart, lte: monthEnd } }, _sum: { amount: true } }),
     db.invoice.aggregate({ where: { organizationId, ...branchWhere, status: { in: ["issued", "partially_paid"] } }, _sum: { totalAmount: true, paidAmount: true } }),
-    db.supplierInvoice.aggregate({ where: { organizationId, ...branchWhere, status: { in: ["pending", "partially_paid"] } }, _sum: { amount: true, paidAmount: true } }),
+    db.supplierInvoice.aggregate({ where: { organizationId, ...branchWhere, status: { in: ["pending", "partially_paid"] } }, _sum: { amount: true, taxAmount: true, paidAmount: true } }),
     db.expense.aggregate({ where: { organizationId, ...branchWhere, expenseDate: { gte: monthStart, lte: monthEnd } }, _sum: { amount: true } }),
     db.chartOfAccount.findMany({ where: { organizationId, code: { in: ["1000", "1010"] } } }),
   ])
@@ -190,7 +201,9 @@ export async function getFinanceDashboard(session: SessionContext, filters: { br
     revenue: Number(revenue._sum.totalAmount ?? 0),
     collections: Number(collections._sum.amount ?? 0),
     receivables: Number(receivables._sum.totalAmount ?? 0) - Number(receivables._sum.paidAmount ?? 0),
-    payables: Number(payables._sum.amount ?? 0) - Number(payables._sum.paidAmount ?? 0),
+    // P3.9 §27: was `amount - paidAmount`, omitting tax — same fix as
+    // listOutstandingSupplierInvoices (procurement/supplier-invoices.ts).
+    payables: Number(payables._sum.amount ?? 0) + Number(payables._sum.taxAmount ?? 0) - Number(payables._sum.paidAmount ?? 0),
     expenses: Number(expenses._sum.amount ?? 0),
     cashPosition: Number(cashPosition._sum.debit ?? 0) - Number(cashPosition._sum.credit ?? 0),
   }

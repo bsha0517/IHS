@@ -17,7 +17,16 @@ const globalForPrisma = globalThis as unknown as {
 // Supabase pooler's connection cap. Capped low here; the real fix for serverless
 // is pointing DATABASE_URL at Supabase's transaction-mode pooler (port 6543),
 // which returns a connection after each query instead of holding one per client.
-const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL, max: 3 })
+//
+// P4.5 §31: configurable via DB_POOL_MAX specifically so the pool-size
+// experiment (measuring throughput/latency/connection-count at 3 vs. 5 vs.
+// 10 under real load) could compare real values against `his_load_test`
+// without hand-editing this file between runs — the default stays 3
+// (production-unchanged) unless a deployment explicitly overrides it. See
+// docs/PERFORMANCE_CAPACITY.md's "Connection Pool" section for the
+// evidence and the resulting recommendation.
+const poolMax = Number(process.env.DB_POOL_MAX) || 3
+const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL, max: poolMax })
 
 export const db = globalForPrisma.prisma ?? new PrismaClient({ adapter })
 

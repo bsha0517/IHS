@@ -1,4 +1,5 @@
 import "server-only"
+import { Prisma } from "@/generated/prisma/client"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
@@ -21,17 +22,39 @@ const ENCOUNTER_WORKSPACE_INCLUDE = {
     },
   },
   episode: true,
-  appointment: true,
+  // P3.4 §9/§16: `service` added so the workspace can show what the
+  // appointment was booked for — genuine "why is the patient here" context
+  // (§4) that was already one relation away but never surfaced. `notes`
+  // (the appointment's own free-text field — this schema has no separate
+  // `reason` column) is a plain scalar, already included via `appointment:
+  // true`; kept architecturally distinct from ClinicalNote.chiefComplaint
+  // per §16 — nothing here ever copies one into the other.
+  appointment: { include: { service: true } },
   provider: true,
   department: true,
-  vitalSigns: { orderBy: { recordedAt: "desc" as const } },
+  // P3.4 §3/§13: `recordedByUser` closes the P3.3 vitals-attribution
+  // backlog item — a small, targeted select (name only), not the full User
+  // row.
+  vitalSigns: {
+    include: { recordedByUser: { select: { firstName: true, lastName: true } } },
+    orderBy: { recordedAt: "desc" as const },
+  },
   notes: { where: { isCurrent: true }, orderBy: { createdAt: "asc" as const } },
   diagnoses: { include: { code: true }, orderBy: { diagnosedAt: "desc" as const } },
   orders: {
     include: { labDetail: true, imagingDetail: true, procedureDetail: true, referralDetail: { include: { referredToProvider: true } } },
     orderBy: { orderedAt: "desc" as const },
   },
-  prescriptions: { include: { items: true }, orderBy: { issuedAt: "desc" as const } },
+  // P3.6 §28: `dispensingRecords` added — previously only the doctor's
+  // original prescribed items were visible from the Encounter, with no way
+  // to tell whether Pharmacy had fulfilled anything. A minimal select
+  // (status + quantity only), the same "enough to derive a summary, not the
+  // operational workstation" restraint as Patient 360's own Prescriptions
+  // tab (clinical/prescriptions.ts's `listPatientPrescriptions`).
+  prescriptions: {
+    include: { items: { include: { dispensingRecords: { select: { status: true, quantityDispensed: true } } } } },
+    orderBy: { issuedAt: "desc" as const },
+  },
   followUps: { orderBy: { createdAt: "desc" as const } },
 } as const
 
@@ -47,7 +70,20 @@ export async function startEncounter(session: SessionContext, input: EncounterIn
   assertCan(session, "encounter.create", { branchId: input.branchId })
 
   if (input.appointmentId) {
-    const appointment = await db.appointment.findFirstOrThrow({ where: { id: input.appointmentId } })
+    // P3.3 §7/§34: previously looked up by id alone — no organizationId
+    // filter and no branch check — even though `assertCan` above only
+    // verified the session is authorized for `input.branchId`, a
+    // client-supplied value entirely separate from `input.appointmentId`.
+    // Nothing tied the two together, so a crafted request could name a
+    // branch the session legitimately operates at while pointing
+    // `appointmentId` at a completely different org's or branch's
+    // appointment. Scoped and branch-checked the same way every other
+    // encounter-domain write in this file now is.
+    const appointment = await db.appointment.findFirst({
+      where: { id: input.appointmentId, organizationId: session.user.organizationId },
+    })
+    if (!appointment) throw new Error("Appointment not found.")
+    assertBranchAccess(getAuthorizedBranchScope(session), appointment.branchId)
     if (appointment.status === "waiting") {
       await callPatient(session, input.appointmentId)
     } else if (!["in_consultation", "checked_in"].includes(appointment.status)) {
@@ -55,28 +91,45 @@ export async function startEncounter(session: SessionContext, input: EncounterIn
     }
   }
 
-  const encounter = await db.$transaction(async (tx) => {
-    const encounterNumber = await nextNumber({
-      organizationId: session.user.organizationId,
-      sequenceType: "ENC",
-      prefix: "ENC",
-    })
-    return tx.encounter.create({
-      data: {
+  let encounter
+  try {
+    encounter = await db.$transaction(async (tx) => {
+      const encounterNumber = await nextNumber({
         organizationId: session.user.organizationId,
-        branchId: input.branchId,
-        departmentId: input.departmentId ?? null,
-        patientId: input.patientId,
-        episodeId: input.episodeId ?? null,
-        appointmentId: input.appointmentId ?? null,
-        providerId: input.providerId,
-        encounterNumber,
-        encounterType: input.encounterType,
-        status: "active",
-        createdBy: session.user.id,
-      },
+        sequenceType: "ENC",
+        prefix: "ENC",
+      })
+      return tx.encounter.create({
+        data: {
+          organizationId: session.user.organizationId,
+          branchId: input.branchId,
+          departmentId: input.departmentId ?? null,
+          patientId: input.patientId,
+          episodeId: input.episodeId ?? null,
+          appointmentId: input.appointmentId ?? null,
+          providerId: input.providerId,
+          encounterNumber,
+          encounterType: input.encounterType,
+          status: "active",
+          createdBy: session.user.id,
+        },
+      })
     })
-  })
+  } catch (e) {
+    // P3.3 §7/§33: Encounter.appointmentId already carries a real DB-level
+    // @unique constraint — the actual guard against two encounters for one
+    // appointment (e.g. a double-clicked "Start encounter"). Without this
+    // catch, a race hit that constraint and surfaced Prisma's raw
+    // constraint-violation message straight to the doctor instead of an
+    // actionable one.
+    const isDuplicateEncounterRace = e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002"
+    if (input.appointmentId && isDuplicateEncounterRace) {
+      const existing = await db.encounter.findFirst({ where: { appointmentId: input.appointmentId } })
+      if (existing) return existing
+      throw new Error("This appointment already has an encounter.")
+    }
+    throw e
+  }
 
   await auditFromSession(session, "create", "encounter", encounter.id, {
     new: { encounterNumber: encounter.encounterNumber, encounterType: encounter.encounterType },
@@ -176,6 +229,11 @@ export async function completeEncounter(session: SessionContext, encounterId: st
     where: { id: encounterId, organizationId: session.user.organizationId },
     include: { appointment: { include: { service: true } } },
   })
+  // P3.3 §34: same branch-write gap fixed across every encounter-scoped
+  // write this batch touched — see startEncounter/getEncounter's own
+  // branch check just above, which this mirrors for the completion/
+  // finalization/cancellation actions below.
+  assertBranchAccess(getAuthorizedBranchScope(session), encounter.branchId)
   if (encounter.status !== "active") {
     throw new Error(`Cannot complete an encounter with status "${encounter.status}".`)
   }
@@ -222,6 +280,7 @@ export async function finalizeEncounter(session: SessionContext, encounterId: st
   const encounter = await db.encounter.findFirstOrThrow({
     where: { id: encounterId, organizationId: session.user.organizationId },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), encounter.branchId)
   if (encounter.status !== "completed") {
     throw new Error("An encounter must be completed before it can be finalized.")
   }
@@ -258,6 +317,7 @@ export async function cancelEncounter(session: SessionContext, encounterId: stri
   const encounter = await db.encounter.findFirstOrThrow({
     where: { id: encounterId, organizationId: session.user.organizationId },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), encounter.branchId)
   if (!["draft", "active"].includes(encounter.status)) {
     throw new Error(`Cannot cancel an encounter with status "${encounter.status}" — use "entered in error" instead.`)
   }
@@ -289,6 +349,7 @@ export async function markEncounterEnteredInError(session: SessionContext, encou
   const encounter = await db.encounter.findFirstOrThrow({
     where: { id: encounterId, organizationId: session.user.organizationId },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), encounter.branchId)
   if (encounter.status === "entered_in_error" || encounter.status === "cancelled") {
     throw new Error(`This encounter is already "${encounter.status}".`)
   }

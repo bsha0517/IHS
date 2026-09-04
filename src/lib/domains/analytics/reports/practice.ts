@@ -2,6 +2,7 @@ import "server-only"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
+import { assertExportRowLimit } from "@/lib/platform/reports"
 import type { SessionContext } from "@/lib/auth/session"
 import type { ReportFilters } from "@/lib/domains/analytics/schemas"
 
@@ -96,6 +97,25 @@ export async function getPracticeReport(session: SessionContext, filters: Report
   }
   const roomUtilization = [...roomTotals.entries()].map(([roomId, v]) => ({ roomId, ...v, bookedMinutes: Math.round(v.bookedMinutes) }))
 
+  // P4.7 §10 — Appointment Report: the same `appointments` rows already
+  // fetched above for status/wait-time/utilization math, reshaped into the
+  // row-level listing §10 asks for. Capped for on-screen display; the
+  // export path (exportAppointmentRows below) re-runs the identical `where`
+  // unbounded (up to the shared export row limit) rather than reusing this
+  // capped preview, so a large date range's export isn't silently limited
+  // to whatever the screen preview shows.
+  const appointmentRows = appointments.slice(0, 200).map((a) => ({
+    id: a.id,
+    patientId: a.patientId,
+    providerName: `${a.provider.firstName} ${a.provider.lastName}`,
+    serviceName: a.service?.name ?? "—",
+    branchId: a.branchId,
+    startTime: a.startTime,
+    endTime: a.endTime,
+    status: a.status,
+    bookingSource: a.bookingSource,
+  }))
+
   return {
     totalAppointments,
     statusBreakdown: statusCounts.map((s) => ({ status: s.status, count: s._count._all })),
@@ -105,5 +125,35 @@ export async function getPracticeReport(session: SessionContext, filters: Report
     providerUtilization,
     roomUtilization,
     patientVisits: patientVisitCount.length,
+    appointmentRows,
+    appointmentRowsTruncated: appointments.length > appointmentRows.length,
   }
+}
+
+/** Export-side counterpart to `appointmentRows` above — the full matching set (bounded by the shared export row limit), same filters as the screen report. */
+export async function exportAppointmentRows(session: SessionContext, filters: ReportFilters) {
+  assertCan(session, "appointment.view")
+  const organizationId = session.user.organizationId
+  const scope = getAuthorizedBranchScope(session)
+  const scopedBranchId = narrowBranchFilter(scope, filters.branchId)
+  const where = {
+    organizationId,
+    startTime: { gte: filters.from, lte: filters.to },
+    ...(scopedBranchId !== undefined ? { branchId: scopedBranchId } : {}),
+    ...(filters.providerId ? { providerId: filters.providerId } : {}),
+  }
+  const total = await db.appointment.count({ where })
+  assertExportRowLimit(total)
+  const rows = await db.appointment.findMany({ where, include: { provider: true, service: true, patient: true, branch: true }, orderBy: { startTime: "asc" } })
+  return rows.map((a) => ({
+    id: a.id,
+    patientName: `${a.patient.firstName} ${a.patient.lastName}`,
+    patientMrn: a.patient.mrn,
+    providerName: `${a.provider.firstName} ${a.provider.lastName}`,
+    serviceName: a.service?.name ?? "",
+    branchName: a.branch.name,
+    startTime: a.startTime,
+    status: a.status,
+    bookingSource: a.bookingSource,
+  }))
 }

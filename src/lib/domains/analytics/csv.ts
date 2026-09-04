@@ -1,15 +1,10 @@
 import "server-only"
 
-/** RFC 4180-ish CSV serialization — quotes any field containing a comma, quote, or newline. */
-function csvField(value: unknown): string {
-  if (value === null || value === undefined) return ""
-  const text = value instanceof Date ? value.toISOString() : String(value)
-  if (/[",\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`
-  return text
-}
-
-export function toCsv(headers: string[], rows: unknown[][]): string {
-  const lines = [headers.map(csvField).join(",")]
-  for (const row of rows) lines.push(row.map(csvField).join(","))
-  return lines.join("\r\n")
-}
+// P4.7 §33: was this file's own weaker writer (quoting only, no
+// formula-injection escaping — the exact gap BACKLOG.md flagged during
+// P4.6). Re-exported unchanged from the one shared writer now used by every
+// CSV this app generates; behavior (headers/rows joined with CRLF, no
+// trailing terminator, Date -> ISO 8601) is identical to before except every
+// cell is now also formula-injection-safe — csv.test.ts's existing
+// assertions all still hold.
+export { toCsv } from "@/lib/platform/csv"

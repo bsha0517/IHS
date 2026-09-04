@@ -112,7 +112,11 @@ describe("P1 §20-§22: lab order state integrity, critical results, amendment",
   }, TIMEOUT)
 
   afterAll(async () => {
-    await db.notification.deleteMany({ where: { organizationId, referenceType: { in: ["lab_order_test", "clinical_order"] } } }).catch(() => {})
+    // P3.11: notification referenceType changed from "lab_order_test"/
+    // "clinical_order" to "lab_order" (pointing at the parent ClinicalOrder
+    // id, not the unroutable LabOrderTest id) — see notifications/service.ts's
+    // destination resolver and event-handlers.ts's own doc comments for why.
+    await db.notification.deleteMany({ where: { organizationId, referenceType: { in: ["lab_order_test", "clinical_order", "lab_order"] } } }).catch(() => {})
     await db.labOrderTest.deleteMany({ where: { clinicalOrderId: { in: clinicalOrderIds } } })
     await db.specimen.deleteMany({ where: { clinicalOrderId: { in: clinicalOrderIds } } })
     await db.clinicalOrder.deleteMany({ where: { id: { in: clinicalOrderIds } } })
@@ -296,10 +300,30 @@ describe("P1 §20-§22: lab order state integrity, critical results, amendment",
 
       await verifyResult(session(), line.id)
 
-      const notification = await db.notification.findFirstOrThrow({ where: { referenceType: "lab_order_test", referenceId: line.id } })
+      // P3.11: referenceType is "lab_order" pointing at the PARENT
+      // ClinicalOrder id (order.id) — the pre-P3.11 "lab_order_test"/line.id
+      // combination had no real destination page to route to at all.
+      //
+      // This single-line order both contains a critical result AND
+      // completes the whole order the instant it's verified, so
+      // verifyResult (results.ts) deliberately fires BOTH
+      // `CriticalLabResultVerified` and `LabResultFinalized` — each writes
+      // its own Notification row to this same recipientUserId/
+      // referenceType/referenceId, differing only by `type`
+      // ("critical_lab_result" vs "lab_result_ready"). Without this `type`
+      // filter, `findFirstOrThrow` matches two rows and nondeterministically
+      // returns whichever one Postgres happens to return first (no
+      // `orderBy`) — a real, previously-observed intermittent flake, not a
+      // production bug. Narrowed to match the convention the
+      // non-critical-result test below already uses.
+      const notification = await db.notification.findFirstOrThrow({ where: { referenceType: "lab_order", referenceId: order.id, type: "critical_lab_result" } })
       expect(notification.recipientUserId).toBe(alertUser.id)
       expect(notification.type).toBe("critical_lab_result")
       expect(notification.title).toMatch(/CRITICAL/)
+      // P3.11 §17: the raw numeric value must never appear in the
+      // notification body — it stays behind the permission-gated lab order
+      // screen the notification links to.
+      expect(notification.body).not.toMatch(/450/)
       // providerWithLogin/alertUser are cleaned up in afterAll, once every
       // ClinicalOrder referencing them (via clinicalOrderIds) is gone —
       // deleting them here, mid-test, would race the parent afterAll's own
@@ -308,12 +332,12 @@ describe("P1 §20-§22: lab order state integrity, critical results, amendment",
 
     it("a normal (non-critical) verified result never creates a critical notification", async () => {
       const labTest = await createLabTest({ low: 70, high: 100, criticalLow: 40, criticalHigh: 400 })
-      const { line } = await createOrderWithLine(labTest)
+      const { line, order } = await createOrderWithLine(labTest)
       await db.labOrderTest.update({ where: { id: line.id }, data: { status: "collected" } })
       await enterNumericResult(session(), line.id, { numericValue: 85, notes: null }) // well within range
       await verifyResult(session(), line.id)
 
-      const notification = await db.notification.findFirst({ where: { referenceType: "lab_order_test", referenceId: line.id } })
+      const notification = await db.notification.findFirst({ where: { referenceType: "lab_order", referenceId: order.id, type: "critical_lab_result" } })
       expect(notification).toBeNull()
     }, TIMEOUT)
   })

@@ -2,9 +2,10 @@ import "server-only"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
+import { writeClinicalAccessLog } from "@/lib/platform/access-log"
 import { nextNumber } from "@/lib/platform/sequences"
 import { assertValidTransition } from "@/lib/platform/state-machine"
-import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
+import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { $Enums } from "@/generated/prisma/client"
 import type { ClinicalOrderInput } from "@/lib/domains/clinical/schemas"
@@ -39,9 +40,16 @@ export const CLINICAL_ORDER_TRANSITIONS: Readonly<Record<$Enums.ClinicalOrderSta
 export async function createOrder(session: SessionContext, encounterId: string, input: ClinicalOrderInput) {
   assertCan(session, permissionFor(input.orderType))
 
-  const encounter = await db.encounter.findFirstOrThrow({
+  // P3.3 §33: see clinical/vitals.ts's comment — `findFirstOrThrow` leaked
+  // a raw Prisma message for a stale/invalid encounterId.
+  const encounter = await db.encounter.findFirst({
     where: { id: encounterId, organizationId: session.user.organizationId },
   })
+  if (!encounter) throw new Error("This encounter no longer exists or is not accessible.")
+  // P3.3 §34: same branch-write gap fixed across every encounter-scoped
+  // write this batch touched — see clinical/vitals.ts's comment for the
+  // full reasoning.
+  assertBranchAccess(getAuthorizedBranchScope(session), encounter.branchId)
 
   if (input.orderType === "lab" && !input.testName) {
     throw new Error("A test name is required for a laboratory order.")
@@ -146,10 +154,16 @@ export async function updateOrderStatus(
   orderId: string,
   status: "acknowledged" | "in_progress" | "completed"
 ) {
-  const order = await db.clinicalOrder.findFirstOrThrow({
+  // Targeted backlog closure, item 6 — see diagnoses.ts's identical comment.
+  const order = await db.clinicalOrder.findFirst({
     where: { id: orderId, organizationId: session.user.organizationId },
   })
+  if (!order) throw new Error("This order no longer exists or is not accessible.")
   assertCan(session, permissionFor(order.orderType))
+  // P3.3 §34: ClinicalOrder already carries its own branchId directly (no
+  // join needed) — same branch-write gap fixed across every encounter-scoped
+  // write this batch touched, see clinical/vitals.ts's comment.
+  assertBranchAccess(getAuthorizedBranchScope(session), order.branchId)
   assertValidTransition(CLINICAL_ORDER_TRANSITIONS, order.status, status, "a clinical order")
 
   // P1 §33 (procedure completion): a plain `update({ where: { id } })` had no
@@ -172,10 +186,13 @@ export async function updateOrderStatus(
 
 /** P1 §24: Clinical Order cancellation — always captures a reason (user/timestamp come from the audit log). */
 export async function cancelOrder(session: SessionContext, orderId: string, reason: string) {
-  const order = await db.clinicalOrder.findFirstOrThrow({
+  // Targeted backlog closure, item 6 — see diagnoses.ts's identical comment.
+  const order = await db.clinicalOrder.findFirst({
     where: { id: orderId, organizationId: session.user.organizationId },
   })
+  if (!order) throw new Error("This order no longer exists or is not accessible.")
   assertCan(session, permissionFor(order.orderType))
+  assertBranchAccess(getAuthorizedBranchScope(session), order.branchId)
   assertValidTransition(CLINICAL_ORDER_TRANSITIONS, order.status, "cancelled", "a clinical order")
 
   const updated = await db.clinicalOrder.update({ where: { id: orderId }, data: { status: "cancelled", cancelReason: reason } })
@@ -183,10 +200,11 @@ export async function cancelOrder(session: SessionContext, orderId: string, reas
   return updated
 }
 
+/** P2 §7: a patient's full CPOE order history — lab/imaging/procedure/referral detail included, real chart content. */
 export async function listPatientOrders(session: SessionContext, patientId: string) {
   assertCan(session, "encounter.view")
   const scope = getAuthorizedBranchScope(session)
-  return db.clinicalOrder.findMany({
+  const orders = await db.clinicalOrder.findMany({
     where: { organizationId: session.user.organizationId, patientId, branchId: narrowBranchFilter(scope) },
     include: {
       labDetail: true,
@@ -197,6 +215,8 @@ export async function listPatientOrders(session: SessionContext, patientId: stri
     },
     orderBy: { orderedAt: "desc" },
   })
+  await writeClinicalAccessLog({ session, patientId, resourceType: "clinical_orders", action: "view" })
+  return orders
 }
 
 /**

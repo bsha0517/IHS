@@ -1,6 +1,8 @@
 import "server-only"
 import { db } from "@/lib/db"
+import { log } from "@/lib/platform/logger"
 import { Prisma, type OutboxStatus } from "@/generated/prisma/client"
+import { createNotificationsOnce } from "@/lib/domains/notifications/create"
 
 /**
  * Transactional outbox (BLUEPRINT.md §27 / ARCHITECTURE.md §9). Call inside the same
@@ -111,16 +113,32 @@ async function dispatchBatch(due: DueOutboxEvent[]): Promise<void> {
       await db.outboxEvent.update({ where: { id: event.id }, data: { status: "completed", completedAt: new Date() } })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      console.error(`[outbox] handler failed for ${event.eventType} (${event.id}), attempt ${event.attempts + 1}:`, error)
 
       const attemptsSoFar = event.attempts + 1
       if (attemptsSoFar >= MAX_ATTEMPTS) {
+        // P2 §16: "dead-letter events" — named explicitly in P2.md §16's own
+        // "use it for" list. level: "error" since this is now a permanent
+        // failure needing manual review (notifyDeadLetter below also
+        // surfaces it in-app, but a log line survives even if that
+        // notification write itself fails, and reaches log aggregation
+        // before anyone opens the app).
+        log({
+          level: "error", event: "outbox.dead_letter", domain: "outbox", operation: "dispatchBatch", errorCategory: "OUTBOX",
+          organizationId: event.organizationId, entityId: event.id, reference: event.eventType, error,
+        })
         await db.outboxEvent.update({
           where: { id: event.id },
           data: { status: "dead_letter", lastError: message },
         })
         await notifyDeadLetter(event.organizationId, event.eventType, event.id, message)
       } else {
+        // P2 §16: "failed outbox processing" — level: "warn" since a retry
+        // is already scheduled and this is expected to self-heal; the
+        // dead-letter branch above is the one that needs a human.
+        log({
+          level: "warn", event: "outbox.handler_failed", domain: "outbox", operation: "dispatchBatch", errorCategory: "OUTBOX",
+          organizationId: event.organizationId, entityId: event.id, reference: event.eventType, error,
+        })
         await db.outboxEvent.update({
           where: { id: event.id },
           data: {
@@ -195,6 +213,13 @@ async function recoverStaleProcessingEvents(): Promise<number> {
     if (claim.count === 0) continue
     recovered++
 
+    // P2 §16: a stuck event is, definitionally, a crashed process — worth a
+    // log line regardless of whether it still has retries left, distinct
+    // from dispatchBatch's own handler-threw-an-error case above.
+    log({
+      level: exhausted ? "error" : "warn", event: "outbox.recovered_stale", domain: "outbox", operation: "recoverStaleProcessingEvents", errorCategory: "OUTBOX",
+      organizationId: event.organizationId, entityId: event.id, reference: event.eventType,
+    })
     if (exhausted) {
       await notifyDeadLetter(event.organizationId, event.eventType, event.id, message)
     }
@@ -257,8 +282,16 @@ async function notifyDeadLetter(organizationId: string, eventType: string, event
   })
   if (admins.length === 0) return
 
-  await db.notification.createMany({
-    data: admins.map((admin) => ({
+  // P3.11 §41: idempotent — a stuck-processing event that already exhausted
+  // its retries and a genuine dead-letter transition are both funneled
+  // through this same function; the natural claim guards in dispatchBatch/
+  // recoverStaleProcessingEvents already prevent this from running twice for
+  // the SAME event (see their own doc comments), but this is the same
+  // check-before-insert discipline every other notification producer now
+  // uses, for defense in depth and consistency.
+  await createNotificationsOnce(
+    db,
+    admins.map((admin) => ({
       organizationId,
       recipientUserId: admin.id,
       type: "system_event_dead_letter",
@@ -266,8 +299,8 @@ async function notifyDeadLetter(organizationId: string, eventType: string, event
       body: `An automatic ${eventType} action failed after ${MAX_ATTEMPTS} attempts and needs manual review. Last error: ${error.slice(0, 300)}`,
       referenceType: "outbox_event",
       referenceId: eventId,
-    })),
-  })
+    }))
+  )
 }
 
 /** Admin-only manual retry (system_events.retry) — resets attempts and re-queues immediately. */

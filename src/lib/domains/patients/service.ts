@@ -170,6 +170,11 @@ export async function listPatients(session: SessionContext, params: { search?: s
                 { lastName: { contains: search, mode: "insensitive" as const } },
                 { mrn: { contains: search, mode: "insensitive" as const } },
                 { mobile: { contains: search } },
+                // P3.1 §10: reception search should also find a patient by
+                // national ID — the field already exists and is already
+                // used for duplicate detection (findPotentialDuplicates
+                // above); it just wasn't wired into ordinary search.
+                { nationalId: { contains: search, mode: "insensitive" as const } },
               ],
             },
           ]

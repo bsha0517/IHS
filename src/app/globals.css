@@ -46,6 +46,37 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+
+  /* P4.7A §7/§8/§35 — the semantic status system. Every module that shows a
+     draft/scheduled/completed/paid/cancelled/etc. status reads from these
+     SAME five tones (never a module-local hex value) — see
+     src/components/ui/status-badge.tsx, the one place status strings map
+     to a tone. A `-foreground` pairs with its own surface for AA-safe text
+     contrast; `-surface`/`-border` are the soft badge treatment used
+     everywhere status is shown as a pill, never a saturated fill. */
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-surface: var(--success-surface);
+  --color-success-border: var(--success-border);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-surface: var(--warning-surface);
+  --color-warning-border: var(--warning-border);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-info-surface: var(--info-surface);
+  --color-info-border: var(--info-border);
+  --color-destructive-surface: var(--destructive-surface);
+  --color-destructive-border: var(--destructive-border);
+  --color-neutral-surface: var(--neutral-surface);
+  --color-neutral-border: var(--neutral-border);
+
+  /* §7 — elevated surface (a card/panel sitting visibly above the page
+     background, e.g. a sticky summary bar or a popover-like inline panel)
+     distinct from `--card` (an ordinary card at the same visual layer as
+     the page). */
+  --color-elevated: var(--elevated);
+  --color-elevated-foreground: var(--elevated-foreground);
 }
 
 :root {
@@ -55,7 +86,11 @@
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
+  /* P4.7A §8 — the one brand accent: a calm, clinical blue, used
+     deliberately sparingly (active nav, primary actions, selected states,
+     focus ring) — not painted across the interface. Everything else stays
+     neutral gray, per the phase's own "predominantly neutral" direction. */
+  --primary: #1d4ed8;
   --primary-foreground: oklch(0.985 0 0);
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
@@ -64,23 +99,48 @@
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
+  --destructive-surface: #fef2f2;
+  --destructive-border: #fecaca;
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --ring: #1d4ed8;
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
+  --radius: 0.5rem;
+  --sidebar: oklch(0.99 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-accent: #eff6ff;
+  --sidebar-accent-foreground: var(--primary);
   --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar-ring: var(--primary);
+
+  /* Semantic status tones (§7/§35) — a soft surface + border + saturated
+     text, the one consistent "badge" treatment every status pill in the
+     app uses. Never a solid saturated fill (too loud for a screen a
+     receptionist stares at all day) and never used as the only signal —
+     StatusBadge always renders the status word too. */
+  --success: #15803d;
+  --success-foreground: #ffffff;
+  --success-surface: #f0fdf4;
+  --success-border: #bbf7d0;
+  --warning: #b45309;
+  --warning-foreground: #ffffff;
+  --warning-surface: #fffbeb;
+  --warning-border: #fde68a;
+  --info: #0e7490;
+  --info-foreground: #ffffff;
+  --info-surface: #ecfeff;
+  --info-border: #a5f3fc;
+  --neutral-surface: #f4f4f5;
+  --neutral-border: #e4e4e7;
+
+  --elevated: #ffffff;
+  --elevated-foreground: oklch(0.145 0 0);
 }
 
 .dark {
@@ -90,8 +150,8 @@
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
+  --primary: #3b82f6;
+  --primary-foreground: oklch(0.145 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
@@ -99,9 +159,11 @@
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
+  --destructive-surface: oklch(0.269 0.06 25);
+  --destructive-border: oklch(0.4 0.12 25);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  --ring: #3b82f6;
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -109,12 +171,30 @@
   --chart-5: oklch(0.269 0 0);
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: oklch(0.145 0 0);
   --sidebar-accent: oklch(0.269 0 0);
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --sidebar-ring: var(--primary);
+
+  --success: oklch(0.75 0.17 145);
+  --success-foreground: oklch(0.145 0 0);
+  --success-surface: oklch(0.269 0.05 145);
+  --success-border: oklch(0.4 0.1 145);
+  --warning: oklch(0.78 0.15 75);
+  --warning-foreground: oklch(0.145 0 0);
+  --warning-surface: oklch(0.269 0.05 75);
+  --warning-border: oklch(0.4 0.1 75);
+  --info: oklch(0.75 0.12 220);
+  --info-foreground: oklch(0.145 0 0);
+  --info-surface: oklch(0.269 0.04 220);
+  --info-border: oklch(0.4 0.08 220);
+  --neutral-surface: oklch(0.269 0 0);
+  --neutral-border: oklch(0.35 0 0);
+
+  --elevated: oklch(0.24 0 0);
+  --elevated-foreground: oklch(0.985 0 0);
 }
 
 @layer base {

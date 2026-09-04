@@ -5,7 +5,9 @@ import { getCurrentSession } from "@/lib/auth/session"
 import {
   updateOrganization,
   createBranch,
+  updateBranch,
   createDepartment,
+  updateDepartment,
   createRoom,
 } from "@/lib/domains/identity/org-structure"
 import { organizationSchema, branchSchema, departmentSchema, roomSchema } from "@/lib/domains/identity/schemas"
@@ -93,6 +95,26 @@ export async function createRoomAction(_prev: ActionState, formData: FormData): 
   }
   revalidatePath("/admin/settings")
   return { success: true }
+}
+
+/**
+ * P3.12 §9: a branch with historical appointments/invoices/stock/journals/
+ * employees/payroll/clinical records must never be destructively deleted —
+ * `Branch.status` (active/inactive) already existed in the schema with no
+ * UI to change it. No delete button is being added; this is the only
+ * lifecycle control a branch gets.
+ */
+export async function toggleBranchStatusAction(branchId: string, status: "active" | "inactive") {
+  const session = await requireSession()
+  await updateBranch(session, branchId, { status })
+  revalidatePath("/admin/settings")
+}
+
+/** P3.12 §38: resolves the P3.10 backlog item — minimal Department management (status only; create already existed above). */
+export async function toggleDepartmentStatusAction(departmentId: string, status: "active" | "inactive") {
+  const session = await requireSession()
+  await updateDepartment(session, departmentId, { status })
+  revalidatePath("/admin/settings")
 }
 
 export async function setPortalClinicalReleaseAction(enabled: boolean) {

@@ -14,11 +14,16 @@ async function requireSession() {
   return session
 }
 
-export async function voidInvoiceAction(invoiceId: string, reason: string) {
+export async function voidInvoiceAction(invoiceId: string, reason: string): Promise<ActionState> {
   const session = await requireSession()
-  await voidInvoice(session, invoiceId, reason)
+  try {
+    await voidInvoice(session, invoiceId, reason)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to void invoice." }
+  }
   revalidatePath(`/invoices/${invoiceId}`)
   revalidatePath("/invoices")
+  return { success: true }
 }
 
 export async function requestRefundAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
@@ -42,20 +47,35 @@ export async function requestRefundAction(_prev: ActionState, formData: FormData
   return { success: true }
 }
 
-export async function authorizeRefundAction(invoiceId: string, refundId: string) {
+export async function authorizeRefundAction(invoiceId: string, refundId: string): Promise<ActionState> {
   const session = await requireSession()
-  await authorizeRefund(session, refundId)
+  try {
+    await authorizeRefund(session, refundId)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to authorize refund." }
+  }
   revalidatePath(`/invoices/${invoiceId}`)
+  return { success: true }
 }
 
-export async function rejectRefundAction(invoiceId: string, refundId: string, reason: string) {
+export async function rejectRefundAction(invoiceId: string, refundId: string, reason: string): Promise<ActionState> {
   const session = await requireSession()
-  await rejectRefund(session, refundId, reason)
+  try {
+    await rejectRefund(session, refundId, reason)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to reject refund." }
+  }
   revalidatePath(`/invoices/${invoiceId}`)
+  return { success: true }
 }
 
-export async function completeRefundAction(invoiceId: string, refundId: string, cashierSessionId?: string) {
+export async function completeRefundAction(invoiceId: string, refundId: string, cashierSessionId?: string): Promise<ActionState> {
   const session = await requireSession()
-  await completeRefund(session, refundId, cashierSessionId)
+  try {
+    await completeRefund(session, refundId, cashierSessionId)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to complete refund." }
+  }
   revalidatePath(`/invoices/${invoiceId}`)
+  return { success: true }
 }

@@ -1,0 +1,88 @@
+name: Database Backup
+
+# P4.4 §48: the production backup scheduling this codebase's own tooling
+# (scripts/db/backup.ts, P4.2) never had a scheduler wired up for — this
+# workflow is that scheduler. Runs the SAME script, against the SAME
+# `pg_dump` mechanism already drilled and proven in P4.2/P4.3, on a daily
+# cadence (matching docs/BACKUP_DISASTER_RECOVERY.md's documented Retention
+# Policy).
+#
+# REQUIRES DEPLOYMENT CONFIGURATION BEFORE THIS ACTUALLY RUNS — see
+# P4_4_OBSERVABILITY_PRODUCTION_OPERATIONS_REPORT.md's Backup Scheduling
+# Status section for exactly what's implemented (this file, and the
+# heartbeat-recording code it exercises) versus what a real deployment must
+# still configure (the `PRODUCTION_DIRECT_DATABASE_URL` repository secret
+# below — this workflow does nothing useful, and correctly fails closed,
+# without it):
+#
+#   1. Add a repository secret named PRODUCTION_DIRECT_DATABASE_URL — the
+#      production database's OWNER/DIRECT connection string (never the
+#      pooled DATABASE_URL, never the restricted runtime role — see
+#      scripts/db/lib.ts's assertNotPooledConnection, which this workflow's
+#      own backup run already enforces and will refuse to run against a
+#      pooled connection string even if one is pasted in by mistake).
+#   2. Confirm this workflow is enabled for the repository (scheduled
+#      workflows can be disabled by GitHub after 60 days of repository
+#      inactivity — re-enable it under Actions if that ever happens).
+#
+# DESTINATION (§49): this workflow uploads the resulting `.dump` file as a
+# GitHub Actions artifact — a real, durable destination, genuinely
+# independent of the Supabase project being backed up (§8's "independent
+# backup principle"), but NOT equivalent to a dedicated object-storage
+# bucket: artifacts are capped at the retention-days below and tied to this
+# repository. This is the practical V1 choice; migrating to S3/R2/Azure
+# Blob (documented as the graduation path in
+# docs/BACKUP_DISASTER_RECOVERY.md) remains a future upgrade, not required
+# to close P4.4.
+
+on:
+  schedule:
+    # Daily at 02:00 UTC — off-peak for a GCC/Pakistan-region clinic
+    # deployment (P4.1's own targeted region), matching the documented
+    # daily-backup retention tier.
+    - cron: "0 2 * * *"
+  # Allows a manual on-demand run from the Actions tab — useful for the
+  # pre-deployment backup step in docs/BACKUP_DISASTER_RECOVERY.md's
+  # "Pre-Deployment Backup Procedure."
+  workflow_dispatch: {}
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    # A hung pg_dump (e.g. a network partition mid-transfer) must not run
+    # forever and silently never report failure.
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client tools (pg_dump)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+
+      - name: Install dependencies (deterministic — committed lockfile only)
+        run: npm ci
+
+      - name: Run the backup (writes the operational heartbeat into production itself)
+        env:
+          BACKUP_SOURCE_DIRECT_URL: ${{ secrets.PRODUCTION_DIRECT_DATABASE_URL }}
+          BACKUP_SOURCE_LABEL: production
+        run: |
+          if [ -z "$BACKUP_SOURCE_DIRECT_URL" ]; then
+            echo "::error::PRODUCTION_DIRECT_DATABASE_URL is not configured as a repository secret — see this file's own header comment. Failing closed rather than silently skipping."
+            exit 1
+          fi
+          npm run db:backup
+
+      - name: Upload the backup artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backup-${{ github.run_id }}
+          path: backups/*.dump
+          retention-days: 14
+          if-no-files-found: error

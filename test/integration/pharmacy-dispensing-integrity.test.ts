@@ -17,6 +17,7 @@ describe("P1 §14: pharmacy dispensing chain integrity", () => {
   let organizationId: string
   let branchId: string
   let providerId: string
+  let userId: string
   let cogsAccountId: string
   let inventoryAccountId: string
   const productIds: string[] = []
@@ -29,7 +30,7 @@ describe("P1 §14: pharmacy dispensing chain integrity", () => {
   function session(): SessionContext {
     return {
       sessionId: "test-pharmacy-dispensing",
-      user: { id: "00000000-0000-0000-0000-0000000000f4", organizationId, email: "pharmacy-dispensing-test@test.local", firstName: "Pharm", lastName: "Test" },
+      user: { id: userId, organizationId, email: "pharmacy-dispensing-test@test.local", firstName: "Pharm", lastName: "Test" },
       activeBranchId: branchId,
       branchIds: [branchId],
       permissions: new Set(["prescription.dispense", "prescription.verify", "prescription.create", "patient.view", "charge.create", "invoice.view"]),
@@ -118,6 +119,16 @@ describe("P1 §14: pharmacy dispensing chain integrity", () => {
     branchId = branch.id
     const provider = await db.provider.findFirstOrThrow({ where: { organizationId } })
     providerId = provider.id
+    // P2 §14: previously a hardcoded, never-created id
+    // ("00000000-0000-0000-0000-0000000000f4") — worked only because
+    // nothing enforced it referenced a real row. dispenseRecord() writes
+    // this straight into PatientMedicationHistory.notedBy, which now has a
+    // real FK to `user` (§14, Category A) — found and fixed as a direct
+    // consequence of that migration, not a pre-existing bug this batch went
+    // looking for. A real seeded user, matching every other test file's own
+    // convention, needs no its own cleanup.
+    const user = await db.user.findFirstOrThrow({ where: { organizationId } })
+    userId = user.id
 
     const [cogs, inventory] = await Promise.all([
       db.chartOfAccount.findFirstOrThrow({ where: { organizationId, code: "5100" } }),

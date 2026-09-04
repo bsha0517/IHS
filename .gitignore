@@ -42,3 +42,23 @@ yarn-error.log*
 next-env.d.ts
 
 /src/generated/prisma
+
+# P4.2: local/CI backup artifacts (pg_dump output + metadata sidecars) and
+# the drill's own scratch report — never committed, contain patient/
+# financial data. See docs/BACKUP_DISASTER_RECOVERY.md.
+/backups/
+*.dump
+*.dump.meta.json
+
+# P4.5: load-test session tokens and raw per-run result dumps — never
+# committed (tokens are meaningless outside a local his_load_test, but kept
+# out of git on principle; raw k6-style output can be large). Concise
+# benchmark summaries live in the committed report/docs instead. See
+# load-tests/README.md.
+/load-tests/results/
+
+# P4.7A — Playwright's own local trace/screenshot/HTML-report output
+# (test-results/ only ever populates on a failure; playwright-report/ is its
+# HTML summary) — regenerated per run, never meaningful to commit.
+/test-results/
+/playwright-report/

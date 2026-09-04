@@ -9,24 +9,42 @@ import { formatDateTime } from "@/lib/utils/dates"
 import { Card, CardContent } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
+import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { PageHeader } from "@/components/ui/page-header"
+import { EmptyState } from "@/components/ui/empty-state"
 import { MedicationDialog } from "@/app/(dashboard)/pharmacy/medication-dialog"
 
-export default async function PharmacyPage() {
+const QUEUE_STATUS_FILTERS = [
+  { value: "", label: "All active" },
+  { value: "pending", label: "Not yet started" },
+  { value: "partial", label: "Partially dispensed" },
+  { value: "dispensed", label: "Dispensed" },
+  { value: "cancelled", label: "Cancelled" },
+] as const
+
+const STATUS_LABEL: Record<string, string> = { active: "active", completed: "dispensed", cancelled: "cancelled" }
+
+export default async function PharmacyPage({ searchParams }: { searchParams: Promise<{ status?: string }> }) {
   const session = await getCurrentSession()
   if (!session || !can(session, "prescription.dispense")) redirect("/dashboard")
 
+  const { status } = await searchParams
   const canManageCatalog = can(session, "product.manage")
   const [enabled, queue, medications] = await Promise.all([
     isPharmacyEnabled(session.user.organizationId),
-    listPharmacyQueue(session),
+    // P3.6 §33: real status filter — was always hardcoded to "active,
+    // still open" prescriptions with no way to see dispensed/cancelled
+    // history from this page.
+    listPharmacyQueue(session, { status: status as "pending" | "partial" | "dispensed" | "cancelled" | undefined }),
     listMedications(session),
   ])
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Pharmacy</h1>
+      <PageHeader title="Pharmacy" />
 
       {!enabled && (
         <Alert variant="destructive">
@@ -43,6 +61,13 @@ export default async function PharmacyPage() {
         </TabsList>
 
         <TabsContent value="queue" className="grid gap-4">
+          <div className="flex flex-wrap gap-2">
+            {QUEUE_STATUS_FILTERS.map((f) => (
+              <Button key={f.value} size="sm" variant={(status ?? "") === f.value ? "default" : "outline"} asChild>
+                <Link href={f.value ? `/pharmacy?status=${f.value}` : "/pharmacy"}>{f.label}</Link>
+              </Button>
+            ))}
+          </div>
           <Card>
             <CardContent className="pt-6">
               <Table>
@@ -50,7 +75,9 @@ export default async function PharmacyPage() {
                   <TableRow>
                     <TableHead>Prescription #</TableHead>
                     <TableHead>Patient</TableHead>
-                    <TableHead>Provider</TableHead>
+                    <TableHead>MRN</TableHead>
+                    <TableHead>Prescriber</TableHead>
+                    <TableHead>Branch</TableHead>
                     <TableHead>Items</TableHead>
                     <TableHead>Issued</TableHead>
                     <TableHead>Status</TableHead>
@@ -59,8 +86,12 @@ export default async function PharmacyPage() {
                 <TableBody>
                   {queue.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center text-muted-foreground">
-                        No prescriptions awaiting dispensing.
+                      <TableCell colSpan={8} className="p-0">
+                        <EmptyState
+                          title="No prescriptions"
+                          description={status ? "No prescriptions match this filter." : "No prescriptions awaiting dispensing."}
+                          className="border-none"
+                        />
                       </TableCell>
                     </TableRow>
                   )}
@@ -74,16 +105,18 @@ export default async function PharmacyPage() {
                       <TableCell>
                         {rx.patient.firstName} {rx.patient.lastName}
                       </TableCell>
+                      <TableCell>{rx.patient.mrn}</TableCell>
                       <TableCell>
                         {rx.provider.firstName} {rx.provider.lastName}
                       </TableCell>
+                      <TableCell>{rx.encounter.branch.name}</TableCell>
                       <TableCell>
                         {rx.items.length} line{rx.items.length === 1 ? "" : "s"} ·{" "}
                         {rx.items.filter((i) => i.remainingQuantity == null || i.remainingQuantity > 0).length} pending
                       </TableCell>
                       <TableCell>{formatDateTime(rx.issuedAt)}</TableCell>
                       <TableCell>
-                        <Badge variant="outline">{rx.status}</Badge>
+                        <StatusBadge status={rx.status} label={STATUS_LABEL[rx.status]} />
                       </TableCell>
                     </TableRow>
                   ))}
@@ -115,8 +148,8 @@ export default async function PharmacyPage() {
                 <TableBody>
                   {medications.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={7} className="text-center text-muted-foreground">
-                        No medications in the catalog yet.
+                      <TableCell colSpan={7} className="p-0">
+                        <EmptyState title="No medications" description="No medications in the catalog yet." className="border-none" />
                       </TableCell>
                     </TableRow>
                   )}

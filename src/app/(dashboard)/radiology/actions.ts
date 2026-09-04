@@ -2,10 +2,10 @@
 
 import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
-import { createImagingService, updateImagingService, deactivateImagingService } from "@/lib/domains/radiology/catalog"
+import { createImagingService, updateImagingService } from "@/lib/domains/radiology/catalog"
 import { assignImagingService, scheduleImaging, markPerformed } from "@/lib/domains/radiology/orders"
-import { writeReport, verifyImagingResult } from "@/lib/domains/radiology/results"
-import { imagingServiceSchema, assignImagingServiceSchema, scheduleImagingSchema, writeReportSchema } from "@/lib/domains/radiology/schemas"
+import { writeReport, verifyImagingResult, amendImagingReport } from "@/lib/domains/radiology/results"
+import { imagingServiceSchema, assignImagingServiceSchema, scheduleImagingSchema, writeReportSchema, amendReportSchema } from "@/lib/domains/radiology/schemas"
 
 export type ActionState = { error?: string; success?: boolean }
 
@@ -51,12 +51,6 @@ export async function updateImagingServiceAction(_prev: ActionState, formData: F
   }
   revalidatePath("/radiology")
   return { success: true }
-}
-
-export async function deactivateImagingServiceAction(id: string) {
-  const session = await requireSession()
-  await deactivateImagingService(session, id)
-  revalidatePath("/radiology")
 }
 
 export async function assignImagingServiceAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
@@ -120,4 +114,24 @@ export async function verifyImagingResultAction(imagingOrderId: string, clinical
   const session = await requireSession()
   await verifyImagingResult(session, imagingOrderId)
   revalidatePath(`/radiology/orders/${clinicalOrderId}`)
+}
+
+// Targeted backlog closure, item 7.
+export async function amendReportAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const session = await requireSession()
+  const imagingOrderId = String(formData.get("imagingOrderId") ?? "")
+  const clinicalOrderId = String(formData.get("clinicalOrderId") ?? "")
+  const parsed = amendReportSchema.safeParse({
+    reportText: formData.get("reportText"),
+    impression: formData.get("impression"),
+    reason: formData.get("reason"),
+  })
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
+  try {
+    await amendImagingReport(session, imagingOrderId, parsed.data)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to save amendment." }
+  }
+  revalidatePath(`/radiology/orders/${clinicalOrderId}`)
+  return { success: true }
 }

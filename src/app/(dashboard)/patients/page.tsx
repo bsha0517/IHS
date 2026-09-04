@@ -6,9 +6,11 @@ import { can } from "@/lib/platform/permissions-core"
 import { listPatients } from "@/lib/domains/patients/service"
 import { Card, CardContent } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { PageHeader } from "@/components/ui/page-header"
+import { EmptyState } from "@/components/ui/empty-state"
 import { calculateAge } from "@/lib/utils/dates"
 
 export default async function PatientsPage({
@@ -25,19 +27,19 @@ export default async function PatientsPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Patients</h1>
-          <p className="text-sm text-muted-foreground">{total} registered patient(s)</p>
-        </div>
-        {can(session, "patient.create") && (
-          <Button asChild size="sm">
-            <Link href="/patients/new">
-              <Plus /> Register Patient
-            </Link>
-          </Button>
-        )}
-      </div>
+      <PageHeader
+        title="Patients"
+        description={`${total} registered patient(s)`}
+        primaryAction={
+          can(session, "patient.create") && (
+            <Button asChild size="sm">
+              <Link href="/patients/new">
+                <Plus /> Register Patient
+              </Link>
+            </Button>
+          )
+        }
+      />
 
       <form className="flex max-w-md items-center gap-2">
         <div className="relative flex-1">
@@ -64,13 +66,22 @@ export default async function PatientsPage({
             <TableBody>
               {patients.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground">
-                    No patients found.
+                  <TableCell colSpan={5} className="p-0">
+                    <EmptyState title="No patients found" description={q ? `No matches for "${q}".` : "Register a patient to get started."} className="border-none" />
                   </TableCell>
                 </TableRow>
               )}
               {patients.map((patient) => (
-                <TableRow key={patient.id} className="cursor-pointer">
+                // P3.2: this row previously carried `cursor-pointer` styling
+                // implying the whole row was clickable, but only the MRN/
+                // Name cells actually were — a real, if small, click-target
+                // mismatch (§21/§1's "reducing unnecessary clicks" cuts both
+                // ways: a misleading affordance costs a click too). Removed
+                // rather than making the whole row navigate, since no other
+                // list page in this app makes a full row clickable either —
+                // introducing that pattern here alone would be its own new
+                // inconsistency.
+                <TableRow key={patient.id}>
                   <TableCell>
                     <Link href={`/patients/${patient.id}`} className="font-medium hover:underline">
                       {patient.mrn}
@@ -87,7 +98,7 @@ export default async function PatientsPage({
                   </TableCell>
                   <TableCell>{patient.mobile}</TableCell>
                   <TableCell>
-                    <Badge variant={patient.status === "active" ? "default" : "secondary"}>{patient.status}</Badge>
+                    <StatusBadge status={patient.status} />
                   </TableCell>
                 </TableRow>
               ))}

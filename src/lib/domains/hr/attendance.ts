@@ -1,8 +1,9 @@
 import "server-only"
 import { db } from "@/lib/db"
+import { Prisma } from "@/generated/prisma/client"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
-import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
+import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
 import type { SessionContext } from "@/lib/auth/session"
 import type { ShiftInput, CheckInInput, AttendanceAdjustInput } from "@/lib/domains/hr/schemas"
 
@@ -29,9 +30,23 @@ function shiftMinutesFromMidnight(hhmm: string): number {
  * One row per employee per date (@@unique) — the first check-in of the day
  * creates it, a same-day repeat is rejected rather than silently creating a
  * second row that would violate the constraint anyway.
+ *
+ * P3.10 §16/§50: `input.branchId` used to be trusted as-is for both the
+ * `attendance.record` branch check AND the record's own `branchId` column —
+ * a client-supplied value that happened to match the roster's own display,
+ * but nothing ever verified it actually matched THIS employee's real
+ * branch. A crafted call could record attendance for an employee at a
+ * branch they don't belong to (wrong branch's roster, wrong branch-scoped
+ * reporting). The employee's own `branchId` is now the sole source of
+ * truth for both checks; `input.branchId` is no longer trusted.
+ *
+ * P3.10 §52: also now rejects a terminated employee with a clear message
+ * instead of silently recording attendance for someone no longer employed.
  */
 export async function checkIn(session: SessionContext, input: CheckInInput) {
-  assertCan(session, "attendance.record", { branchId: input.branchId })
+  const employee = await db.employee.findFirstOrThrow({ where: { id: input.employeeId, organizationId: session.user.organizationId } })
+  assertCan(session, "attendance.record", { branchId: employee.branchId })
+  if (employee.status === "terminated") throw new Error("This employee is terminated and cannot be checked in.")
 
   const today = new Date()
   today.setUTCHours(0, 0, 0, 0)
@@ -39,22 +54,35 @@ export async function checkIn(session: SessionContext, input: CheckInInput) {
   const existing = await db.attendanceRecord.findUnique({ where: { employeeId_date: { employeeId: input.employeeId, date: today } } })
   if (existing?.checkInAt) throw new Error("This employee has already checked in today.")
 
-  const record = existing
-    ? await db.attendanceRecord.update({
-        where: { id: existing.id },
-        data: { checkInAt: new Date(), shiftId: input.shiftId ?? existing.shiftId, recordedBy: session.user.id },
-      })
-    : await db.attendanceRecord.create({
-        data: {
-          organizationId: session.user.organizationId,
-          branchId: input.branchId,
-          employeeId: input.employeeId,
-          shiftId: input.shiftId ?? null,
-          date: today,
-          checkInAt: new Date(),
-          recordedBy: session.user.id,
-        },
-      })
+  let record
+  try {
+    record = existing
+      ? await db.attendanceRecord.update({
+          where: { id: existing.id },
+          data: { checkInAt: new Date(), shiftId: input.shiftId ?? existing.shiftId, recordedBy: session.user.id },
+        })
+      : await db.attendanceRecord.create({
+          data: {
+            organizationId: session.user.organizationId,
+            branchId: employee.branchId,
+            employeeId: input.employeeId,
+            shiftId: input.shiftId ?? null,
+            date: today,
+            checkInAt: new Date(),
+            recordedBy: session.user.id,
+          },
+        })
+  } catch (e) {
+    // P3.10 §16/§17: two simultaneous check-ins for the same employee/date
+    // both reading `existing === null` would otherwise surface Postgres's
+    // raw unique-constraint text (employee_id, date) straight to the user —
+    // the DB constraint is still the real guard (same discipline as
+    // encounters.ts's own appointmentId race), this only translates it.
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      throw new Error("This employee has already checked in today.")
+    }
+    throw e
+  }
 
   await auditFromSession(session, "create", "attendance_record", record.id, { new: { employeeId: input.employeeId, checkInAt: record.checkInAt } })
   return record
@@ -72,6 +100,7 @@ export async function checkOut(session: SessionContext, attendanceRecordId: stri
     where: { id: attendanceRecordId, organizationId: session.user.organizationId },
     include: { shift: true },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), record.branchId)
   if (!record.checkInAt) throw new Error("This employee has not checked in yet.")
   if (record.checkOutAt) throw new Error("This employee has already checked out today.")
 
@@ -104,6 +133,7 @@ export async function adjustAttendance(session: SessionContext, attendanceRecord
   assertCan(session, "employee.manage")
 
   const existing = await db.attendanceRecord.findFirstOrThrow({ where: { id: attendanceRecordId, organizationId: session.user.organizationId } })
+  assertBranchAccess(getAuthorizedBranchScope(session), existing.branchId)
   const updated = await db.attendanceRecord.update({
     where: { id: attendanceRecordId },
     data: {

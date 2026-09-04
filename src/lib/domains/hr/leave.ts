@@ -5,6 +5,8 @@ import { auditFromSession } from "@/lib/platform/audit"
 import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/outbox"
 import "@/lib/platform/event-handlers"
 import { getAuthorizedBranchScope, assertBranchAccess } from "@/lib/platform/branch-scope"
+import { createNotificationOnce, createNotificationsOnce, notifyBestEffort, resolveBranchPermissionRecipientIds } from "@/lib/domains/notifications/service"
+import { formatDate } from "@/lib/utils/dates"
 import type { SessionContext } from "@/lib/auth/session"
 import type { LeaveRequestInput, LeaveBalanceInput } from "@/lib/domains/hr/schemas"
 
@@ -12,10 +14,29 @@ function daysBetween(start: Date, end: Date): number {
   return Math.round((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)) + 1
 }
 
-/** Employee -> Request -> Manager Approval -> HR (spec.md §51). */
+/**
+ * Employee -> Request -> Manager Approval -> HR (spec.md §51).
+ *
+ * P3.11 §30/§31: notifies every `leave.approve` holder scoped to the
+ * employee's own branch — a genuine "approval requiring attention" signal
+ * (§19), not a duplicate of the /leave queue itself (the notification
+ * points there, doesn't replace it). Branch-aware recipient resolution
+ * (§16) — a Clinic Manager scoped to a different branch is never notified.
+ * Best-effort: a notification failure never blocks the leave request
+ * itself from being recorded.
+ *
+ * The employee-branch fetch/check here is also a genuinely new fix, found
+ * while wiring this: `requestLeave` previously never verified
+ * `input.employeeId` belonged to a branch the requesting session could
+ * access at all — the same class of gap P3.10 closed everywhere else in
+ * this file.
+ */
 export async function requestLeave(session: SessionContext, input: LeaveRequestInput) {
   assertCan(session, "leave.request")
   if (input.endDate < input.startDate) throw new Error("End date cannot be before the start date.")
+
+  const employee = await db.employee.findFirstOrThrow({ where: { id: input.employeeId, organizationId: session.user.organizationId } })
+  assertBranchAccess(getAuthorizedBranchScope(session), employee.branchId)
 
   const days = daysBetween(input.startDate, input.endDate)
   const created = await db.leaveRequest.create({
@@ -32,6 +53,26 @@ export async function requestLeave(session: SessionContext, input: LeaveRequestI
   await auditFromSession(session, "create", "leave_request", created.id, {
     new: { employeeId: input.employeeId, leaveType: input.leaveType, days },
   })
+
+  await notifyBestEffort(
+    async () => {
+      const recipientIds = await resolveBranchPermissionRecipientIds(session.user.organizationId, "leave.approve", employee.branchId)
+      await createNotificationsOnce(
+        db,
+        recipientIds.map((recipientUserId) => ({
+          organizationId: session.user.organizationId,
+          recipientUserId,
+          type: "leave_request_submitted",
+          title: "Leave request awaiting approval",
+          body: `${employee.firstName} ${employee.lastName} requested ${input.leaveType} leave (${days} day(s), ${formatDate(input.startDate)} – ${formatDate(input.endDate)}).`,
+          referenceType: "leave_request",
+          referenceId: created.id,
+        }))
+      )
+    },
+    { event: "notifications.leave_request_submitted_failed", organizationId: session.user.organizationId }
+  )
+
   return created
 }
 
@@ -71,9 +112,17 @@ export async function requestLeave(session: SessionContext, input: LeaveRequestI
 export async function approveLeave(session: SessionContext, leaveRequestId: string, options: { allowOverride?: boolean } = {}) {
   assertCan(session, "leave.approve")
 
+  // P3.10 §22/§50: this never checked the REQUESTING EMPLOYEE'S branch at
+  // all — a branch-scoped `leave.approve` holder (e.g. a single-branch
+  // Clinic Manager) could previously approve or reject a leave request for
+  // an employee in a branch they have no access to, since the check below
+  // was entirely absent. `employee` is now fetched alongside the request
+  // specifically to authorize against its real branch.
   const request = await db.leaveRequest.findFirstOrThrow({
     where: { id: leaveRequestId, organizationId: session.user.organizationId },
+    include: { employee: true },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), request.employee.branchId)
   if (request.status !== "requested") throw new Error(`This leave request is already "${request.status}".`)
 
   const updated = await db.$transaction(async (tx) => {
@@ -141,7 +190,11 @@ export async function approveLeave(session: SessionContext, leaveRequestId: stri
 export async function rejectLeave(session: SessionContext, leaveRequestId: string, reason: string) {
   assertCan(session, "leave.approve")
 
-  const request = await db.leaveRequest.findFirstOrThrow({ where: { id: leaveRequestId, organizationId: session.user.organizationId } })
+  const request = await db.leaveRequest.findFirstOrThrow({
+    where: { id: leaveRequestId, organizationId: session.user.organizationId },
+    include: { employee: true },
+  })
+  assertBranchAccess(getAuthorizedBranchScope(session), request.employee.branchId)
   if (request.status !== "requested") throw new Error(`This leave request is already "${request.status}".`)
 
   const updated = await db.leaveRequest.update({
@@ -149,6 +202,30 @@ export async function rejectLeave(session: SessionContext, leaveRequestId: strin
     data: { status: "rejected", decidedBy: session.user.id, decidedAt: new Date(), rejectionReason: reason },
   })
   await auditFromSession(session, "update", "leave_request", leaveRequestId, { old: { status: request.status }, new: { status: "rejected", reason } })
+
+  // P3.11 §30/§31: "leave decision -> employee-linked User." Approval's own
+  // equivalent notification lives in the EmployeeLeaveApproved outbox
+  // handler (event-handlers.ts) since that event already fires for other
+  // reasons; rejection has no other side effect needing outbox durability,
+  // so this is created directly here — best-effort, never blocks the
+  // rejection itself. No reason text in the body (kept minimal, same
+  // reasoning as the approval notification).
+  if (request.employee.userId) {
+    await notifyBestEffort(
+      () =>
+        createNotificationOnce(db, {
+          organizationId: session.user.organizationId,
+          recipientUserId: request.employee.userId!,
+          type: "leave_decision",
+          title: "Leave request rejected",
+          body: `Your leave request for ${formatDate(request.startDate)} – ${formatDate(request.endDate)} was rejected.`,
+          referenceType: "leave_request",
+          referenceId: leaveRequestId,
+        }),
+      { event: "notifications.leave_decision_failed", organizationId: session.user.organizationId }
+    )
+  }
+
   return updated
 }
 
@@ -162,7 +239,9 @@ export async function listLeaveRequests(session: SessionContext, filters: { empl
       status: filters.status as never,
       ...(scope.isOrgWide ? {} : { employee: { branchId: { in: scope.branchIds } } }),
     },
-    include: { employee: true },
+    // P3.10 §21: `decidedByUser` added so the operational list can show who
+    // actually approved/rejected a request, not just its current status.
+    include: { employee: true, decidedByUser: { select: { firstName: true, lastName: true } } },
     orderBy: { requestedAt: "desc" },
     take: 200,
   })
@@ -170,6 +249,8 @@ export async function listLeaveRequests(session: SessionContext, filters: { empl
 
 export async function setLeaveBalance(session: SessionContext, input: LeaveBalanceInput) {
   assertCan(session, "employee.manage")
+  const employee = await db.employee.findFirstOrThrow({ where: { id: input.employeeId, organizationId: session.user.organizationId } })
+  assertBranchAccess(getAuthorizedBranchScope(session), employee.branchId)
 
   const existing = await db.leaveBalance.findUnique({
     where: { employeeId_leaveType_year: { employeeId: input.employeeId, leaveType: input.leaveType, year: input.year } },

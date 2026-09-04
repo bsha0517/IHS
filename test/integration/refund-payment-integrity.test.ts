@@ -197,8 +197,16 @@ describe("P1 §7/§8/§29: refund and payment allocation integrity", () => {
     it("full refund — reverses the correct journal amount, keeps the original payment/invoice/journal, patient balance ends at zero", async () => {
       const invoice = await createInvoice(250)
       await recordPayment(session(), { invoiceId: invoice.id, cashierSessionId, tenders: [{ method: "cash", amount: 250 }] })
-      const paymentJournal = await db.journal.findFirstOrThrow({ where: { organizationId, referenceType: "payment", referenceId: invoice.id } })
       const originalPayment = await db.payment.findFirstOrThrow({ where: { allocations: { some: { invoiceId: invoice.id } } } })
+      // P3.13: the payment journal's referenceId is the Payment's own id, not
+      // the invoice's — fixed this batch (posting-service.ts's
+      // `postPaymentReceived`) so a second payment against the same invoice
+      // gets its own journal instead of colliding with the first's on
+      // `postJournal`'s (organizationId, referenceType, referenceId)
+      // idempotency key. This test's own query previously assumed the old,
+      // buggy shared key; updated to match the corrected, real behavior —
+      // not weakened, the assertions below are unchanged.
+      const paymentJournal = await db.journal.findFirstOrThrow({ where: { organizationId, referenceType: "payment", referenceId: originalPayment.id } })
 
       const refund = await requestRefund(session(), { invoiceId: invoice.id, method: "cash", amount: 250, reason: "full refund" })
       await authorizeRefund(session(), refund.id)

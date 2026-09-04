@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
-import { createCommissionRule, deactivateCommissionRule } from "@/lib/domains/payroll/commissions"
+import { createCommissionRule } from "@/lib/domains/payroll/commissions"
 import { commissionRuleSchema } from "@/lib/domains/payroll/schemas"
 
 export type ActionState = { error?: string; success?: boolean }
@@ -42,10 +42,4 @@ export async function createCommissionRuleAction(_prev: ActionState, formData: F
   }
   revalidatePath("/commissions")
   return { success: true }
-}
-
-export async function deactivateCommissionRuleAction(id: string) {
-  const session = await requireSession()
-  await deactivateCommissionRule(session, id)
-  revalidatePath("/commissions")
 }

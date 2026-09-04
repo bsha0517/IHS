@@ -5,6 +5,22 @@ import { auditFromSession } from "@/lib/platform/audit"
 import type { SessionContext } from "@/lib/auth/session"
 import type { ProviderInput, ProviderScheduleInput, ProviderLeaveBlockInput, LinkEmployeeInput } from "@/lib/domains/providers/schemas"
 
+/**
+ * P2 §17: self-identity resolution ("is the signed-in user also a linked
+ * Provider, and if so which one") — not gated on `provider.view` the way
+ * `listProviders`/`getProvider` below are, since those answer "can this
+ * session see OTHER providers' records," a genuinely different question
+ * from "does this session's own user happen to have one." Same unguarded
+ * self-lookup shape `getDoctorDashboard` (analytics/dashboards.ts) already
+ * uses. Extracted here so `queue/page.tsx` — this codebase's one and only
+ * `src/app` file that imported `db` directly (P2_FINDINGS.md §17) — no
+ * longer needs to; every other business query in `src/app` already routes
+ * through a domain function like this one.
+ */
+export async function getProviderForUser(userId: string) {
+  return db.provider.findUnique({ where: { userId } })
+}
+
 export async function listProviders(session: SessionContext) {
   assertCan(session, "provider.view")
   return db.provider.findMany({
@@ -25,6 +41,12 @@ export async function getProvider(session: SessionContext, providerId: string) {
       schedules: { orderBy: { dayOfWeek: "asc" } },
       leaveBlocks: { orderBy: { startAt: "desc" } },
       employee: true,
+      // P3.12 §15: this is the actual login `getProviderForUser` (analytics/
+      // dashboards.ts's Doctor dashboard, result-notification routing) keys
+      // off — set once at creation (new-provider-dialog.tsx) but never shown
+      // again anywhere. Narrow select, matching the same email/status shape
+      // already used for Employee's own "System login" row.
+      user: { select: { id: true, email: true, status: true } },
     },
   })
 }

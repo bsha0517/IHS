@@ -5,21 +5,25 @@ import { can } from "@/lib/platform/permissions-core"
 import { listPayments } from "@/lib/domains/billing/payments"
 import { formatDateTime } from "@/lib/utils/dates"
 import { Card, CardContent } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import { PaginationControls } from "@/components/domain/pagination-controls"
 
-export default async function PaymentsPage() {
+export default async function PaymentsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>
+}) {
   const session = await getCurrentSession()
   if (!session || !can(session, "payment.view")) redirect("/dashboard")
 
-  const payments = await listPayments(session)
+  const sp = await searchParams
+  const { payments, total, page, totalPages } = await listPayments(session, { page: sp.page ? Number(sp.page) : undefined })
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Payments</h1>
-        <p className="text-sm text-muted-foreground">{payments.length} payment(s)</p>
-      </div>
+      <PageHeader title="Payments" description={`${total} payment(s)`} />
 
       <Card>
         <CardContent>
@@ -68,6 +72,7 @@ export default async function PaymentsPage() {
               ))}
             </TableBody>
           </Table>
+          <PaginationControls page={page} totalPages={totalPages} total={total} basePath="/payments" searchParams={sp} />
         </CardContent>
       </Card>
     </div>

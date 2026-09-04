@@ -1,22 +1,45 @@
 import { redirect } from "next/navigation"
 import { getCurrentSession } from "@/lib/auth/session"
 import { getLabOrder } from "@/lib/domains/laboratory/orders"
-import { getOrganization } from "@/lib/domains/identity/org-structure"
+import { getOrganizationIdentity } from "@/lib/domains/identity/org-structure"
+import { writeClinicalAccessLog } from "@/lib/platform/access-log"
 import { calculateAge, formatDate, formatDateTime } from "@/lib/utils/dates"
-import { PrintButton } from "@/app/prescriptions/[id]/print/print-button"
+import { PrintButton } from "@/app/laboratory/orders/[id]/report/print-button"
 
+const FLAG_LABEL: Record<string, string> = {
+  low: "Low",
+  high: "High",
+  critical_low: "Critical Low",
+  critical_high: "Critical High",
+}
+
+// P3.5 §18/§19/§25: the order detail page's own "View report" link
+// (shown once `order.status === "completed"`) pointed at this exact path,
+// but the page never existed — a genuine, pre-existing dead link found
+// while tracing the doctor-result-return path this batch is centered on.
 // Deliberately outside the (dashboard) route group — no sidebar/topbar
-// chrome, same precedent as the Prescription/Invoice print views (spec.md
-// §82/§28's "Result Reporting"). Only shows verified ("Final Result") lines.
+// chrome, just the document itself — matching the exact convention
+// `prescriptions/[id]/print` already established. Read-only: this is a
+// result *view*, not another entry point into the operational workflow
+// (assign/enter/verify all still live only on the dashboard order page).
 export default async function LabReportPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await getCurrentSession()
   if (!session) redirect("/login")
 
   const { id } = await params
-  const [order, organization] = await Promise.all([getLabOrder(session, id), getOrganization(session)])
-  // P1 §21: isCurrent too — an amended result must never show alongside the
-  // superseded original it corrected (both still carry status "verified").
-  const verifiedTests = order.labOrderTests.filter((t) => t.status === "verified" && t.isCurrent)
+  // P3.6 §30: previously a static heading, to avoid `getOrganization`'s
+  // `settings.view` requirement blocking this page for Doctor — now uses
+  // the same minimal, permission-light read P3.6 built for prescription
+  // printing (see `getOrganizationIdentity`'s own comment).
+  const [order, organization] = await Promise.all([getLabOrder(session, id), getOrganizationIdentity(session)])
+  const verifiedTests = order.labOrderTests.filter((t) => t.status === "verified")
+
+  // A "result view" (SECURITY.md §5) — getLabOrder itself doesn't log
+  // (it's also the operational lab-ops page lab staff open routinely), but
+  // this specific destination exists only to show a patient's verified
+  // result to whoever the encounter/queue link sent here, so it logs
+  // metadata only, same as Patient 360's own Lab Results tab.
+  await writeClinicalAccessLog({ session, patientId: order.patientId, resourceType: "lab_results", action: "view" })
 
   return (
     <div className="mx-auto max-w-2xl p-8 print:p-0">
@@ -48,50 +71,36 @@ export default async function LabReportPage({ params }: { params: Promise<{ id: 
         </div>
       </div>
 
-      {order.specimens.map((s) => (
-        <p key={s.id} className="pt-2 text-xs text-muted-foreground">
-          Specimen {s.specimenNumber} ({s.specimenType}){s.collectedAt ? ` — collected ${formatDateTime(s.collectedAt)}` : ""}
-        </p>
-      ))}
-
-      <table className="mt-4 w-full text-sm">
-        <thead>
-          <tr className="border-b border-border text-left text-muted-foreground">
-            <th className="py-2">Test</th>
-            <th className="py-2">Result</th>
-            <th className="py-2">Unit</th>
-            <th className="py-2">Reference Range</th>
-            <th className="py-2">Flag</th>
-          </tr>
-        </thead>
-        <tbody>
-          {verifiedTests.length === 0 && (
-            <tr>
-              <td colSpan={5} className="py-4 text-center text-muted-foreground">
-                No verified results yet.
-              </td>
+      {verifiedTests.length === 0 ? (
+        <p className="mt-4 text-sm text-muted-foreground">No verified results are available for this order yet.</p>
+      ) : (
+        <table className="mt-4 w-full text-sm">
+          <thead>
+            <tr className="border-b border-border text-left text-muted-foreground">
+              <th className="py-2">Test</th>
+              <th className="py-2">Result</th>
+              <th className="py-2">Reference Range</th>
+              <th className="py-2">Flag</th>
+              <th className="py-2">Verified</th>
             </tr>
-          )}
-          {verifiedTests.map((t) => (
-            <tr key={t.id} className="border-b border-border/50 align-top">
-              <td className="py-2 font-medium">{t.labTest.name}</td>
-              <td className={`py-2 ${t.abnormalFlag && t.abnormalFlag !== "normal" ? "font-semibold" : ""}`}>
-                {t.numericValue != null ? String(t.numericValue) : t.textValue}
-              </td>
-              <td className="py-2">{t.unit ?? "—"}</td>
-              <td className="py-2">{t.referenceRangeLow != null && t.referenceRangeHigh != null ? `${t.referenceRangeLow}–${t.referenceRangeHigh}` : t.referenceRangeText ?? "—"}</td>
-              <td className="py-2 capitalize">{t.abnormalFlag && t.abnormalFlag !== "normal" ? t.abnormalFlag.replace("_", " ") : ""}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      <div className="mt-16 flex justify-end">
-        <div className="text-center text-sm">
-          <div className="mb-1 h-12 w-48 border-b border-border" />
-          <p>Verified by</p>
-        </div>
-      </div>
+          </thead>
+          <tbody>
+            {verifiedTests.map((t) => (
+              <tr key={t.id} className="border-b border-border/50 align-top">
+                <td className="py-2 font-medium">{t.labTest.name}</td>
+                <td className="py-2">{t.numericValue != null ? `${t.numericValue} ${t.unit ?? ""}` : (t.textValue ?? "—")}</td>
+                <td className="py-2">
+                  {t.referenceRangeLow != null && t.referenceRangeHigh != null
+                    ? `${t.referenceRangeLow}–${t.referenceRangeHigh}`
+                    : (t.referenceRangeText ?? "—")}
+                </td>
+                <td className="py-2">{t.abnormalFlag && t.abnormalFlag !== "normal" ? (FLAG_LABEL[t.abnormalFlag] ?? t.abnormalFlag) : "—"}</td>
+                <td className="py-2">{t.verifiedAt ? formatDateTime(t.verifiedAt) : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   )
 }

@@ -4,14 +4,17 @@ import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { consumeStock } from "@/lib/domains/inventory/stock"
-import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
+import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
 import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/outbox"
 import "@/lib/platform/event-handlers"
+import { claimIdempotencyKey, recordIdempotentResult, resolveDuplicateRequest, isIdempotencyKeyConflict } from "@/lib/platform/idempotency"
 import type { Prisma } from "@/generated/prisma/client"
 import type { SessionContext } from "@/lib/auth/session"
 import type { AdHocChargeInput } from "@/lib/domains/billing/schemas"
 
 type Db = Prisma.TransactionClient | typeof db
+
+const IDEMPOTENCY_SCOPE = "charge.create_adhoc"
 
 /**
  * The billing engine's only entry point for creating a Charge (spec.md §33 —
@@ -122,7 +125,21 @@ async function insertCharge(
   return charge
 }
 
-export async function createAdHocCharge(session: SessionContext, input: AdHocChargeInput) {
+/**
+ * P1/P3.7 §45: previously had no duplicate-submission guard at all — unlike
+ * `dispenseRecord`/`completeRefund`, there is no pre-existing row to
+ * atomically claim here (every call creates a brand-new Charge), so a
+ * realistic Cashier/POS double-submit (a double-click on "Add charge", or a
+ * network retry after the first request actually succeeded but the client
+ * never saw the response) would previously create two identical Charge rows
+ * — real duplicate patient billing, silently. Fixed with the same
+ * client-supplied `idempotencyKey` mechanism `recordPayment` already
+ * established (see `platform/idempotency.ts`): the POS "Add charge" dialog
+ * generates one key per dialog-open and resubmits it unchanged on any
+ * retry, so a genuine duplicate submission replays the original Charge
+ * instead of creating a second one.
+ */
+export async function createAdHocCharge(session: SessionContext, input: AdHocChargeInput & { idempotencyKey?: string }) {
   assertCan(session, "charge.create", { branchId: input.branchId })
 
   let unitPrice = input.unitPrice
@@ -142,23 +159,41 @@ export async function createAdHocCharge(session: SessionContext, input: AdHocCha
     if (!description) description = product.name
   }
 
-  const charge = await db.$transaction((tx) =>
-    insertCharge(tx, {
-      organizationId: session.user.organizationId,
-      branchId: input.branchId,
-      patientId: input.patientId,
-      encounterId: input.encounterId,
-      serviceId: input.serviceId,
-      productId: input.productId,
-      providerId: input.providerId,
-      sourceType: input.sourceType,
-      description,
-      quantity: input.quantity,
-      unitPrice,
-      createdBy: session.user.id,
-    }),
-    { timeout: 20_000, maxWait: 10_000 }
-  )
+  let charge
+  try {
+    charge = await db.$transaction(
+      async (tx) => {
+        if (input.idempotencyKey) {
+          await claimIdempotencyKey(tx, { organizationId: session.user.organizationId, scope: IDEMPOTENCY_SCOPE, key: input.idempotencyKey })
+        }
+        const created = await insertCharge(tx, {
+          organizationId: session.user.organizationId,
+          branchId: input.branchId,
+          patientId: input.patientId,
+          encounterId: input.encounterId,
+          serviceId: input.serviceId,
+          productId: input.productId,
+          providerId: input.providerId,
+          sourceType: input.sourceType,
+          description,
+          quantity: input.quantity,
+          unitPrice,
+          createdBy: session.user.id,
+        })
+        if (input.idempotencyKey) {
+          await recordIdempotentResult(tx, { organizationId: session.user.organizationId, scope: IDEMPOTENCY_SCOPE, key: input.idempotencyKey, resultId: created.id })
+        }
+        return created
+      },
+      { timeout: 20_000, maxWait: 10_000 }
+    )
+  } catch (error) {
+    if (input.idempotencyKey && isIdempotencyKeyConflict(error)) {
+      const resultId = await resolveDuplicateRequest({ organizationId: session.user.organizationId, scope: IDEMPOTENCY_SCOPE, key: input.idempotencyKey })
+      return db.charge.findUniqueOrThrow({ where: { id: resultId } }) // idempotent replay — the original request's own charge, not a new one
+    }
+    throw error
+  }
 
   await auditFromSession(session, "create", "charge", charge.id, {
     new: { sourceType: charge.sourceType, description: charge.description, amount: Number(charge.amount) },
@@ -176,6 +211,12 @@ export async function voidCharge(session: SessionContext, chargeId: string, reas
   const charge = await db.charge.findFirstOrThrow({
     where: { id: chargeId, organizationId: session.user.organizationId },
   })
+  // P3.7 §41: every Billing/POS write function checked organization
+  // membership but never branch — the same class of gap P3.3/P3.5/P3.6
+  // already closed in their own domains, confirmed here by direct code
+  // reading rather than assumed. A cashier authorized only for Branch B
+  // could otherwise void a Branch A charge.
+  assertBranchAccess(getAuthorizedBranchScope(session), charge.branchId)
   if (charge.status !== "pending") {
     throw new Error(`Only a pending charge can be voided (this one is "${charge.status}").`)
   }

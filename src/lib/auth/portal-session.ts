@@ -66,13 +66,16 @@ export async function getPortalSessionContext(rawToken: string | undefined): Pro
 
   const session = await db.patientPortalSession.findUnique({
     where: { tokenHash: hashToken(rawToken) },
-    include: { portalAccount: { include: { patient: true } } },
+    include: { portalAccount: { include: { patient: true, organization: true } } },
   })
 
   if (!session) return null
   if (session.revokedAt) return null
   if (session.expiresAt.getTime() < Date.now()) return null
   if (session.portalAccount.status !== "active") return null
+  // P4.3 §5/§16/§21: same fix as getSessionContext (session.ts) for the
+  // staff side — re-checked on every request from live DB state.
+  if (session.portalAccount.organization.status !== "active") return null
 
   return {
     sessionId: session.id,

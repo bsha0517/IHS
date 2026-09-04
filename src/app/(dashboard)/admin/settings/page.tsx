@@ -1,13 +1,18 @@
+import Link from "next/link"
 import { redirect } from "next/navigation"
+import { ShieldCheck, KeySquare, History, ScrollText, AlertTriangle } from "lucide-react"
 import { getCurrentSession } from "@/lib/auth/session"
 import { can } from "@/lib/platform/permissions-core"
 import { getOrganization, listBranches, listDepartments, listRooms } from "@/lib/domains/identity/org-structure"
 import { isPharmacyEnabled, isPortalClinicalReleaseEnabled } from "@/lib/platform/settings"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import { PageHeader } from "@/components/ui/page-header"
 import { OrgForm } from "@/app/(dashboard)/admin/settings/org-form"
 import { BranchDialog, DepartmentDialog, RoomDialog } from "@/app/(dashboard)/admin/settings/structure-dialogs"
+import { BranchStatusToggle, DepartmentStatusToggle } from "@/app/(dashboard)/admin/settings/status-toggle"
 import { PharmacyToggle } from "@/app/(dashboard)/admin/settings/pharmacy-toggle"
 import { PortalReleaseToggle } from "@/app/(dashboard)/admin/settings/portal-release-toggle"
 
@@ -26,15 +31,53 @@ export default async function SettingsPage() {
     isPortalClinicalReleaseEnabled(session.user.organizationId),
   ])
   const canEditSettings = can(session, "settings.edit")
+  // P3.12 §52: `settings.view` (required just to reach this page) and
+  // `branch.manage`/`department.manage`/`room.manage` are different
+  // permissions — Clinic Manager holds the former but not the latter three
+  // (seed.ts). Write controls below are only rendered for a session that
+  // actually holds the matching `.manage` permission, not merely because
+  // the server would reject the click anyway.
+  const canManageBranches = can(session, "branch.manage")
+  const canManageDepartments = can(session, "department.manage")
+  const canManageRooms = can(session, "room.manage")
 
   const branchById = new Map(branches.map((b) => [b.id, b]))
   const departmentById = new Map(departments.map((d) => [d.id, d]))
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-        <p className="text-sm text-muted-foreground">Organization, branches, departments, and rooms.</p>
+      <PageHeader title="Settings" description="Organization, branches, departments, and rooms." />
+
+      {/* P3.12 §37: a coherent list of every configuration area this
+          session actually has permission to manage — linking to each
+          area's own existing page rather than duplicating it here. Only
+          the areas the session can reach are shown. */}
+      <div className="flex flex-wrap gap-2">
+        {can(session, "users.manage") && (
+          <Button asChild size="sm" variant="outline">
+            <Link href="/admin/users"><ShieldCheck /> Users</Link>
+          </Button>
+        )}
+        {can(session, "users.manage") && (
+          <Button asChild size="sm" variant="outline">
+            <Link href="/admin/roles"><KeySquare /> Roles &amp; permissions</Link>
+          </Button>
+        )}
+        {can(session, "audit.review") && (
+          <Button asChild size="sm" variant="outline">
+            <Link href="/admin/audit"><History /> Audit log</Link>
+          </Button>
+        )}
+        {can(session, "audit.review") && (
+          <Button asChild size="sm" variant="outline">
+            <Link href="/admin/clinical-access-log"><ScrollText /> Clinical access log</Link>
+          </Button>
+        )}
+        {can(session, "system_events.view") && (
+          <Button asChild size="sm" variant="outline">
+            <Link href="/admin/system-events"><AlertTriangle /> System events</Link>
+          </Button>
+        )}
       </div>
 
       <Card>
@@ -43,7 +86,7 @@ export default async function SettingsPage() {
           <CardDescription>Legal identity, default currency, and timezone.</CardDescription>
         </CardHeader>
         <CardContent>
-          <OrgForm organization={organization} />
+          <OrgForm organization={organization} canEdit={canEditSettings} />
         </CardContent>
       </Card>
 
@@ -81,7 +124,7 @@ export default async function SettingsPage() {
             <CardTitle>Branches</CardTitle>
             <CardDescription>Physical locations under this organization.</CardDescription>
           </div>
-          <BranchDialog />
+          {canManageBranches && <BranchDialog />}
         </CardHeader>
         <CardContent>
           <Table>
@@ -91,12 +134,13 @@ export default async function SettingsPage() {
                 <TableHead>Code</TableHead>
                 <TableHead>Timezone</TableHead>
                 <TableHead>Status</TableHead>
+                {canManageBranches && <TableHead />}
               </TableRow>
             </TableHeader>
             <TableBody>
               {branches.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={4} className="text-center text-muted-foreground">
+                  <TableCell colSpan={canManageBranches ? 5 : 4} className="text-center text-muted-foreground">
                     No branches yet.
                   </TableCell>
                 </TableRow>
@@ -109,6 +153,11 @@ export default async function SettingsPage() {
                   <TableCell>
                     <Badge variant={branch.status === "active" ? "default" : "secondary"}>{branch.status}</Badge>
                   </TableCell>
+                  {canManageBranches && (
+                    <TableCell>
+                      <BranchStatusToggle branchId={branch.id} status={branch.status} />
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
@@ -122,7 +171,7 @@ export default async function SettingsPage() {
             <CardTitle>Departments</CardTitle>
             <CardDescription>Clinical/operational departments within each branch.</CardDescription>
           </div>
-          <DepartmentDialog branches={branches} />
+          {canManageDepartments && <DepartmentDialog branches={branches} />}
         </CardHeader>
         <CardContent>
           <Table>
@@ -132,12 +181,13 @@ export default async function SettingsPage() {
                 <TableHead>Code</TableHead>
                 <TableHead>Branch</TableHead>
                 <TableHead>Status</TableHead>
+                {canManageDepartments && <TableHead />}
               </TableRow>
             </TableHeader>
             <TableBody>
               {departments.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={4} className="text-center text-muted-foreground">
+                  <TableCell colSpan={canManageDepartments ? 5 : 4} className="text-center text-muted-foreground">
                     No departments yet.
                   </TableCell>
                 </TableRow>
@@ -152,6 +202,11 @@ export default async function SettingsPage() {
                       {department.status}
                     </Badge>
                   </TableCell>
+                  {canManageDepartments && (
+                    <TableCell>
+                      <DepartmentStatusToggle departmentId={department.id} status={department.status} />
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
@@ -165,7 +220,7 @@ export default async function SettingsPage() {
             <CardTitle>Rooms</CardTitle>
             <CardDescription>Bookable rooms within each department.</CardDescription>
           </div>
-          <RoomDialog departments={departments} />
+          {canManageRooms && <RoomDialog departments={departments} />}
         </CardHeader>
         <CardContent>
           <Table>

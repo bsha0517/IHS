@@ -1,49 +1,117 @@
 import { redirect } from "next/navigation"
 import { getCurrentSession } from "@/lib/auth/session"
 import { can } from "@/lib/platform/permissions-core"
-import { listStockSummary, listNearExpiryBatches, listExpiredBatches, listLedgerEntries } from "@/lib/domains/inventory/stock"
+import { listStockSummary, listNearExpiryBatches, listExpiredBatches, listLedgerEntries, listBatchSummaryByProduct } from "@/lib/domains/inventory/stock"
 import { listTransfers } from "@/lib/domains/inventory/transfers"
 import { listAccessibleBranches } from "@/lib/domains/billing/cashier"
-import { formatDate, formatDateTime } from "@/lib/utils/dates"
+import { formatDate, formatDateTime, parseLocalDateParam } from "@/lib/utils/dates"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { PageHeader } from "@/components/ui/page-header"
 import { ProductDialog } from "@/app/(dashboard)/inventory/product-dialog"
 import { AdjustmentDialog } from "@/app/(dashboard)/inventory/adjustment-dialog"
 import { TransferDialog } from "@/app/(dashboard)/inventory/transfer-dialog"
 import { TransferRowActions } from "@/app/(dashboard)/inventory/transfer-row-actions"
+import { BranchSelector } from "@/app/(dashboard)/inventory/branch-selector"
+import { LedgerFilters } from "@/app/(dashboard)/inventory/ledger-filters"
+import { PaginationControls } from "@/components/domain/pagination-controls"
 
-export default async function InventoryPage() {
+const TRANSACTION_TYPE_LABEL: Record<string, string> = {
+  purchase: "Purchase",
+  sale: "Sale",
+  dispensing: "Dispensing",
+  treatment_consumption: "Treatment consumption",
+  adjustment: "Adjustment",
+  transfer_in: "Transfer in",
+  transfer_out: "Transfer out",
+  damage: "Damage",
+  expiry: "Expiry",
+  return: "Return",
+}
+
+type InventorySearchParams = {
+  page?: string
+  transfersPage?: string
+  activeBranchId?: string
+  ledgerBranchId?: string
+  ledgerProductId?: string
+  ledgerType?: string
+  ledgerFrom?: string
+  ledgerTo?: string
+}
+
+export default async function InventoryPage({
+  searchParams,
+}: {
+  searchParams: Promise<InventorySearchParams>
+}) {
   const session = await getCurrentSession()
   if (!session || !can(session, "inventory.view")) redirect("/dashboard")
+  const sp = await searchParams
 
-  const [stock, nearExpiry, expired, transfers, branches] = await Promise.all([
+  const [stock, nearExpiry, expired, transfersResult, branches] = await Promise.all([
     listStockSummary(session),
     listNearExpiryBatches(session),
     listExpiredBatches(session),
-    listTransfers(session),
+    listTransfers(session, { page: sp.transfersPage ? Number(sp.transfersPage) : undefined }),
     listAccessibleBranches(session),
   ])
+  const { transfers, total: transferTotal, page: transferPage, totalPages: transferTotalPages } = transfersResult
 
   const canManageProduct = can(session, "product.manage")
   const canAdjust = can(session, "inventory.adjust")
   const canTransfer = can(session, "stock.transfer")
-  const defaultBranchId = branches[0]?.id ?? ""
+
+  // P3.8 §17: multi-branch users pick which branch adjustments target
+  // (server already authorizes any session-accessible branch — see
+  // recordAdjustment's `assertCan(...,{branchId})` — this was purely a UI
+  // gap); single-branch users see no selector at all, just their one branch.
+  // P3.12 §17: the ultimate fallback used to be `branches[0]` regardless of
+  // the session's own preferred branch — inconsistent with the topbar's
+  // global branch switcher (org-structure.ts's `setActiveBranch`) once
+  // that existed. `session.activeBranchId` is checked before falling all
+  // the way back to an arbitrary first branch.
+  const preferredBranchId =
+    session.activeBranchId && branches.some((b) => b.id === session.activeBranchId) ? session.activeBranchId : undefined
+  const activeBranchId =
+    (sp.activeBranchId && branches.some((b) => b.id === sp.activeBranchId) ? sp.activeBranchId : undefined) ??
+    preferredBranchId ??
+    branches[0]?.id ??
+    ""
+  const activeBranchName = branches.find((b) => b.id === activeBranchId)?.name
+
   const productOptions = stock.map((p) => ({ id: p.id, name: p.name, unit: p.unit }))
   const lowStockCount = stock.filter((p) => p.isLowStock).length
 
+  // P2 §5: one batched fetch for every product's batches (2 queries total),
+  // not one query per row's AdjustmentDialog — see listBatchSummaryByProduct's
+  // own doc comment. Re-fetched for whichever branch is currently active.
+  const batchesByProduct = canAdjust && activeBranchId
+    ? await listBatchSummaryByProduct(session, stock.map((p) => p.id), activeBranchId)
+    : new Map<string, { id: string; batchNumber: string; expiryDate: Date | null; balance: number }[]>()
+
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Inventory</h1>
-          <p className="text-sm text-muted-foreground">{stock.length} product(s)</p>
-        </div>
-        {canManageProduct && <ProductDialog />}
-      </div>
+      <PageHeader
+        title="Inventory"
+        description={`${stock.length} product(s)`}
+        secondaryActions={
+          canAdjust && branches.length > 1 ? (
+            <BranchSelector branches={branches} activeBranchId={activeBranchId} />
+          ) : (
+            activeBranchName && (
+              <Badge variant="outline" className="text-sm font-normal">
+                Branch: {activeBranchName}
+              </Badge>
+            )
+          )
+        }
+        primaryAction={canManageProduct && <ProductDialog />}
+      />
 
-      <Tabs defaultValue="stock">
+      <Tabs defaultValue={sp.page || sp.transfersPage ? (sp.transfersPage ? "transfers" : "ledger") : "stock"}>
         <TabsList>
           <TabsTrigger value="stock">Stock{lowStockCount > 0 && ` (${lowStockCount} low)`}</TabsTrigger>
           <TabsTrigger value="alerts">Alerts</TabsTrigger>
@@ -60,7 +128,7 @@ export default async function InventoryPage() {
                     <TableHead>SKU</TableHead>
                     <TableHead>Name</TableHead>
                     <TableHead>Category</TableHead>
-                    <TableHead>On hand</TableHead>
+                    <TableHead>On hand (all branches)</TableHead>
                     <TableHead>Reorder level</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead />
@@ -93,8 +161,19 @@ export default async function InventoryPage() {
                         )}
                       </TableCell>
                       <TableCell className="flex items-center gap-1">
-                        {canAdjust && defaultBranchId && (
-                          <AdjustmentDialog branchId={defaultBranchId} productId={p.id} productName={p.name} />
+                        {canAdjust && activeBranchId && (
+                          <AdjustmentDialog
+                            branchId={activeBranchId}
+                            productId={p.id}
+                            productName={p.name}
+                            batches={(batchesByProduct.get(p.id) ?? []).map((b) => ({
+                              id: b.id,
+                              batchNumber: b.batchNumber,
+                              balance: b.balance,
+                              expiryLabel: b.expiryDate ? formatDate(b.expiryDate) : "No expiry",
+                              isExpired: b.expiryDate ? b.expiryDate.getTime() < Date.now() : false,
+                            }))}
+                          />
                         )}
                         {canManageProduct && (
                           <ProductDialog
@@ -149,7 +228,7 @@ export default async function InventoryPage() {
               {expired.map(({ batch, balance }) => (
                 <div key={batch.id} className="flex items-center justify-between rounded-md border border-border p-2 text-sm">
                   <span>
-                    Batch {batch.batchNumber} · {balance.toString()} units
+                    Batch {batch.batchNumber} · {balance.toString()} units — write off via Adjust stock (Stock out) on the Stock tab
                   </span>
                   <Badge variant="destructive">Expired {formatDate(batch.expiryDate!)}</Badge>
                 </div>
@@ -158,8 +237,9 @@ export default async function InventoryPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="ledger">
-          <LedgerTable session={session} />
+        <TabsContent value="ledger" className="grid gap-4">
+          <LedgerFilters branches={branches} products={productOptions} sp={sp} />
+          <LedgerTable session={session} sp={sp} />
         </TabsContent>
 
         <TabsContent value="transfers" className="grid gap-4">
@@ -174,6 +254,7 @@ export default async function InventoryPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Product</TableHead>
+                    <TableHead>Batch</TableHead>
                     <TableHead>From</TableHead>
                     <TableHead>To</TableHead>
                     <TableHead>Quantity</TableHead>
@@ -185,7 +266,7 @@ export default async function InventoryPage() {
                 <TableBody>
                   {transfers.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={7} className="text-center text-muted-foreground">
+                      <TableCell colSpan={8} className="text-center text-muted-foreground">
                         No transfers yet.
                       </TableCell>
                     </TableRow>
@@ -193,6 +274,7 @@ export default async function InventoryPage() {
                   {transfers.map((t) => (
                     <TableRow key={t.id}>
                       <TableCell>{t.product.name}</TableCell>
+                      <TableCell>{t.batch?.batchNumber ?? "—"}</TableCell>
                       <TableCell>{t.fromBranch.name}</TableCell>
                       <TableCell>{t.toBranch.name}</TableCell>
                       <TableCell>{Number(t.quantity)}</TableCell>
@@ -211,6 +293,14 @@ export default async function InventoryPage() {
                   ))}
                 </TableBody>
               </Table>
+              <PaginationControls
+                page={transferPage}
+                totalPages={transferTotalPages}
+                total={transferTotal}
+                basePath="/inventory"
+                searchParams={{ ...sp, transfersPage: String(transferPage) }}
+                pageParam="transfersPage"
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -219,9 +309,27 @@ export default async function InventoryPage() {
   )
 }
 
-async function LedgerTable({ session }: { session: Awaited<ReturnType<typeof getCurrentSession>> }) {
+async function LedgerTable({
+  session,
+  sp,
+}: {
+  session: Awaited<ReturnType<typeof getCurrentSession>>
+  sp: InventorySearchParams
+}) {
   if (!session) return null
-  const entries = await listLedgerEntries(session)
+  const { entries, total, page: currentPage, totalPages } = await listLedgerEntries(session, {
+    page: sp.page ? Number(sp.page) : undefined,
+    branchId: sp.ledgerBranchId || undefined,
+    productId: sp.ledgerProductId || undefined,
+    transactionType: sp.ledgerType || undefined,
+    // P4.7 §44/§45: was `new Date(sp.ledgerFrom)` (no time component — parsed
+    // as UTC midnight, shifting the boundary by the server's own UTC offset)
+    // and a `...T23:59:59.999Z` end boundary (same UTC-vs-local mismatch,
+    // the opposite direction) — both replaced with the shared local-day
+    // boundary helper every other date-range filter in this phase now uses.
+    dateFrom: parseLocalDateParam(sp.ledgerFrom, "start"),
+    dateTo: parseLocalDateParam(sp.ledgerTo, "end"),
+  })
   return (
     <Card>
       <CardContent className="pt-6">
@@ -234,14 +342,15 @@ async function LedgerTable({ session }: { session: Awaited<ReturnType<typeof get
               <TableHead>Type</TableHead>
               <TableHead>Quantity</TableHead>
               <TableHead>Batch</TableHead>
+              <TableHead>Actor</TableHead>
               <TableHead>Reason</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {entries.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} className="text-center text-muted-foreground">
-                  No ledger entries yet.
+                <TableCell colSpan={8} className="text-center text-muted-foreground">
+                  No ledger entries match these filters.
                 </TableCell>
               </TableRow>
             )}
@@ -250,14 +359,22 @@ async function LedgerTable({ session }: { session: Awaited<ReturnType<typeof get
                 <TableCell>{formatDateTime(e.createdAt)}</TableCell>
                 <TableCell>{e.product.name}</TableCell>
                 <TableCell>{e.branch.name}</TableCell>
-                <TableCell className="capitalize">{e.transactionType.replace("_", " ")}</TableCell>
+                <TableCell>{TRANSACTION_TYPE_LABEL[e.transactionType] ?? e.transactionType.replace("_", " ")}</TableCell>
                 <TableCell className={Number(e.quantity) < 0 ? "text-destructive" : ""}>{Number(e.quantity)}</TableCell>
                 <TableCell>{e.batch?.batchNumber ?? "—"}</TableCell>
+                <TableCell>{e.actorName ?? "—"}</TableCell>
                 <TableCell>{e.reason ?? "—"}</TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
+        <PaginationControls
+          page={currentPage}
+          totalPages={totalPages}
+          total={total}
+          basePath="/inventory"
+          searchParams={{ ...sp, page: String(currentPage) }}
+        />
       </CardContent>
     </Card>
   )

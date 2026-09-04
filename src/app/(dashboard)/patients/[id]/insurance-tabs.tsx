@@ -28,10 +28,23 @@ export async function InsuranceTabs({ session, patientId }: { session: SessionCo
     )
   }
 
+  // P3.7 §33/§42: `listPayors` requires `payor.manage` — a narrower,
+  // catalog-administration permission only Accountant holds — but this tab
+  // is gated on `coverage.manage`, which Cashier and Receptionist both hold
+  // too (confirmed via direct seed.ts cross-reference). Every Cashier/
+  // Receptionist session previously crashed this entire Patient 360 page
+  // the moment `payors` was fetched unconditionally, not just this tab —
+  // a severe, pre-existing bug found live during this batch's own browser
+  // walkthrough, not introduced by it. Fixed the same defensive-loading way
+  // P3.2/P3.5/P3.6 already established: existing coverage stays fully
+  // visible for any `coverage.manage` holder; only the payor-catalog
+  // picker used to *add* new coverage narrows further to whoever can
+  // actually browse that catalog.
+  const canBrowsePayors = can(session, "payor.manage")
   const [coverages, authorizations, payors] = await Promise.all([
     listPatientCoverage(session, patientId),
     listPatientAuthorizations(session, patientId),
-    listPayors(session),
+    canBrowsePayors ? listPayors(session) : Promise.resolve([]),
   ])
 
   const policyOptions = payors.flatMap((payor) =>

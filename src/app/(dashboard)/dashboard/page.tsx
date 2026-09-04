@@ -1,7 +1,10 @@
 import Link from "next/link"
 import { CalendarDays, Users, Wallet, ListOrdered, Stethoscope, AlertTriangle } from "lucide-react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { MetricCard } from "@/components/ui/metric-card"
+import { StatusBadge } from "@/components/ui/status-badge"
+import { PageHeader, SectionHeader } from "@/components/ui/page-header"
+import { EmptyState } from "@/components/ui/empty-state"
 import { getCurrentSession } from "@/lib/auth/session"
 import { getOrganization } from "@/lib/domains/identity/org-structure"
 import {
@@ -12,20 +15,6 @@ import {
   visibleDashboardSections,
 } from "@/lib/domains/analytics/dashboards"
 import { formatTime } from "@/lib/utils/dates"
-
-function Tile({ label, value, icon: Icon }: { label: string; value: string | number; icon: React.ComponentType<{ className?: string }> }) {
-  return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardDescription>{label}</CardDescription>
-        <Icon className="size-4 text-muted-foreground" />
-      </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-semibold">{value}</div>
-      </CardContent>
-    </Card>
-  )
-}
 
 /**
  * The cross-module pass Phase 1's placeholder (see git history / PROJECT_STATUS.md)
@@ -55,39 +44,31 @@ export default async function DashboardPage() {
 
   return (
     <div className="flex flex-col gap-8">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Welcome, {session.user.firstName}</h1>
-        <p className="text-sm text-muted-foreground">{organization?.displayName ?? "Avant Health Clinic"}</p>
-      </div>
+      <PageHeader title={`Welcome, ${session.user.firstName}`} description={organization?.displayName ?? "Avant Health Clinic"} />
 
       {!hasAnySection && (
-        <Card>
-          <CardHeader>
-            <CardTitle>No dashboard configured for your role</CardTitle>
-            <CardDescription>spec.md §8 names Management, Reception, Doctor, and Finance dashboards — your role doesn&apos;t map to any of them.</CardDescription>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            Use the sidebar to get to your day-to-day work directly.
-          </CardContent>
-        </Card>
+        <EmptyState
+          title="No dashboard configured for your role"
+          description="Management, Reception, Doctor, and Finance dashboards exist — your role doesn't map to any of them. Use the sidebar to get to your day-to-day work directly."
+        />
       )}
 
       {management && (
         <section className="flex flex-col gap-4">
-          <h2 className="text-lg font-semibold">Management</h2>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <Tile label="Today's Appointments" value={management.todaysAppointments} icon={CalendarDays} />
-            <Tile label="Patients Waiting" value={management.waiting} icon={ListOrdered} />
-            <Tile label="New Patients" value={management.newPatients} icon={Users} />
-            <Tile label="No-Shows Today" value={management.noShows} icon={AlertTriangle} />
-            <Tile label="Revenue Today" value={management.revenue.toFixed(2)} icon={Wallet} />
-            <Tile label="Collections Today" value={management.collections.toFixed(2)} icon={Wallet} />
-            <Tile label="Outstanding Receivables" value={management.outstandingReceivables.toFixed(2)} icon={Wallet} />
-            <Tile label="Expenses Today" value={management.expenses.toFixed(2)} icon={Wallet} />
-            <Tile label="Low Stock Products" value={management.lowStockCount} icon={AlertTriangle} />
-            <Tile label="Near-Expiry Batches" value={management.expiringStockCount} icon={AlertTriangle} />
-            <Tile label="Assets Needing Maintenance" value={management.assetsRequiringMaintenance} icon={AlertTriangle} />
-            <Tile label="Employees Present / Absent" value={`${management.employeesPresent} / ${management.employeesAbsent}`} icon={Users} />
+          <SectionHeader title="Management" />
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <MetricCard label="Today's Appointments" value={management.todaysAppointments} icon={CalendarDays} />
+            <MetricCard label="Patients Waiting" value={management.waiting} icon={ListOrdered} />
+            <MetricCard label="New Patients" value={management.newPatients} icon={Users} />
+            <MetricCard label="No-Shows Today" value={management.noShows} icon={AlertTriangle} tone={management.noShows > 0 ? "warning" : "neutral"} />
+            <MetricCard label="Revenue Today" value={management.revenue.toFixed(2)} icon={Wallet} />
+            <MetricCard label="Collections Today" value={management.collections.toFixed(2)} icon={Wallet} tone="success" />
+            <MetricCard label="Outstanding Receivables" value={management.outstandingReceivables.toFixed(2)} icon={Wallet} tone={management.outstandingReceivables > 0 ? "warning" : "neutral"} />
+            <MetricCard label="Expenses Today" value={management.expenses.toFixed(2)} icon={Wallet} />
+            <MetricCard label="Low Stock Products" value={management.lowStockCount} icon={AlertTriangle} tone={management.lowStockCount > 0 ? "warning" : "neutral"} />
+            <MetricCard label="Near-Expiry Batches" value={management.expiringStockCount} icon={AlertTriangle} tone={management.expiringStockCount > 0 ? "warning" : "neutral"} />
+            <MetricCard label="Assets Needing Maintenance" value={management.assetsRequiringMaintenance} icon={AlertTriangle} tone={management.assetsRequiringMaintenance > 0 ? "warning" : "neutral"} />
+            <MetricCard label="Employees Present / Absent" value={`${management.employeesPresent} / ${management.employeesAbsent}`} icon={Users} />
           </div>
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             <Card>
@@ -123,13 +104,13 @@ export default async function DashboardPage() {
 
       {reception && (
         <section className="flex flex-col gap-4">
-          <h2 className="text-lg font-semibold">Reception</h2>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
-            <Tile label="Today's Appointments" value={reception.todaysAppointments.length} icon={CalendarDays} />
-            <Tile label="Arrivals" value={reception.arrivals} icon={Users} />
-            <Tile label="Waiting" value={reception.waiting} icon={ListOrdered} />
-            <Tile label="Upcoming" value={reception.upcoming} icon={CalendarDays} />
-            <Tile label="No-Shows" value={reception.noShows} icon={AlertTriangle} />
+          <SectionHeader title="Reception" />
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            <MetricCard label="Today's Appointments" value={reception.todaysAppointments.length} icon={CalendarDays} />
+            <MetricCard label="Arrivals" value={reception.arrivals} icon={Users} />
+            <MetricCard label="Waiting" value={reception.waiting} icon={ListOrdered} tone={reception.waiting > 0 ? "warning" : "neutral"} />
+            <MetricCard label="Upcoming" value={reception.upcoming} icon={CalendarDays} />
+            <MetricCard label="No-Shows" value={reception.noShows} icon={AlertTriangle} tone={reception.noShows > 0 ? "warning" : "neutral"} />
           </div>
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
@@ -140,11 +121,13 @@ export default async function DashboardPage() {
               </div>
             </CardHeader>
             <CardContent className="flex flex-col gap-2 text-sm">
-              {reception.todaysAppointments.length === 0 && <p className="text-muted-foreground">No appointments today.</p>}
+              {reception.todaysAppointments.length === 0 && (
+                <EmptyState title="No appointments today" description="Use Quick booking above to schedule one." />
+              )}
               {reception.todaysAppointments.slice(0, 10).map((a) => (
-                <div key={a.id} className="flex items-center justify-between border-b pb-1 last:border-0">
+                <div key={a.id} className="flex items-center justify-between border-b border-border py-1.5 last:border-0">
                   <span>{formatTime(a.startTime)} — {a.patient.firstName} {a.patient.lastName} ({a.provider.firstName} {a.provider.lastName})</span>
-                  <Badge variant="outline">{a.status.replace("_", " ")}</Badge>
+                  <StatusBadge status={a.status} />
                 </div>
               ))}
             </CardContent>
@@ -154,18 +137,18 @@ export default async function DashboardPage() {
 
       {doctor && (
         <section className="flex flex-col gap-4">
-          <h2 className="text-lg font-semibold">Your Day</h2>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <Tile label="Today's Schedule" value={doctor.todaysSchedule.length} icon={CalendarDays} />
-            <Tile label="Waiting Patients" value={doctor.waitingPatients} icon={ListOrdered} />
-            <Tile label="Pending Clinical Tasks" value={doctor.pendingClinicalTasks} icon={Stethoscope} />
-            <Tile label="Open Follow-ups" value={doctor.followUps.length} icon={AlertTriangle} />
+          <SectionHeader title="Your Day" />
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <MetricCard label="Today's Schedule" value={doctor.todaysSchedule.length} icon={CalendarDays} />
+            <MetricCard label="Waiting Patients" value={doctor.waitingPatients} icon={ListOrdered} tone={doctor.waitingPatients > 0 ? "warning" : "neutral"} />
+            <MetricCard label="Pending Clinical Tasks" value={doctor.pendingClinicalTasks} icon={Stethoscope} />
+            <MetricCard label="Open Follow-ups" value={doctor.followUps.length} icon={AlertTriangle} />
           </div>
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <Card>
               <CardHeader><CardTitle className="text-base">Today&apos;s Schedule</CardTitle></CardHeader>
               <CardContent className="flex flex-col gap-2 text-sm">
-                {doctor.todaysSchedule.length === 0 && <p className="text-muted-foreground">No appointments today.</p>}
+                {doctor.todaysSchedule.length === 0 && <EmptyState title="No appointments today" />}
                 {doctor.todaysSchedule.map((a) => (
                   <div key={a.id} className="flex justify-between border-b pb-1 last:border-0">
                     <span>{formatTime(a.startTime)} — {a.patient.firstName} {a.patient.lastName}</span>
@@ -177,7 +160,7 @@ export default async function DashboardPage() {
             <Card>
               <CardHeader><CardTitle className="text-base">Recent Patients</CardTitle></CardHeader>
               <CardContent className="flex flex-col gap-2 text-sm">
-                {doctor.recentPatients.length === 0 && <p className="text-muted-foreground">No recent patients.</p>}
+                {doctor.recentPatients.length === 0 && <EmptyState title="No recent patients" />}
                 {doctor.recentPatients.map((p) => (
                   <div key={p.id}>{p.firstName} {p.lastName}</div>
                 ))}
@@ -199,14 +182,14 @@ export default async function DashboardPage() {
 
       {finance && (
         <section className="flex flex-col gap-4">
-          <h2 className="text-lg font-semibold">Finance (Month to Date)</h2>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-6">
-            <Tile label="Revenue" value={finance.revenue.toFixed(2)} icon={Wallet} />
-            <Tile label="Collections" value={finance.collections.toFixed(2)} icon={Wallet} />
-            <Tile label="Receivables" value={finance.receivables.toFixed(2)} icon={Wallet} />
-            <Tile label="Payables" value={finance.payables.toFixed(2)} icon={Wallet} />
-            <Tile label="Expenses" value={finance.expenses.toFixed(2)} icon={Wallet} />
-            <Tile label="Cash Position" value={finance.cashPosition.toFixed(2)} icon={Wallet} />
+          <SectionHeader title="Finance" description="Month to date" />
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
+            <MetricCard label="Revenue" value={finance.revenue.toFixed(2)} icon={Wallet} />
+            <MetricCard label="Collections" value={finance.collections.toFixed(2)} icon={Wallet} tone="success" />
+            <MetricCard label="Receivables" value={finance.receivables.toFixed(2)} icon={Wallet} tone={finance.receivables > 0 ? "warning" : "neutral"} />
+            <MetricCard label="Payables" value={finance.payables.toFixed(2)} icon={Wallet} tone={finance.payables > 0 ? "warning" : "neutral"} />
+            <MetricCard label="Expenses" value={finance.expenses.toFixed(2)} icon={Wallet} />
+            <MetricCard label="Cash Position" value={finance.cashPosition.toFixed(2)} icon={Wallet} />
           </div>
         </section>
       )}

@@ -2,8 +2,9 @@ import "server-only"
 import { Decimal } from "@prisma/client/runtime/client"
 import { db } from "@/lib/db"
 import { nextNumber } from "@/lib/platform/sequences"
+import { log } from "@/lib/platform/logger"
 import { assertPeriodOpen } from "@/lib/domains/accounting/periods"
-import type { Prisma } from "@/generated/prisma/client"
+import type { Prisma, $Enums } from "@/generated/prisma/client"
 
 type Db = Prisma.TransactionClient | typeof db
 
@@ -35,37 +36,15 @@ const POSTING_TRANSACTION_OPTIONS = { timeout: 20_000, maxWait: 10_000 }
  * "use configurable account mappings"). Never hardcode an account by name or
  * id anywhere outside this file — every posting method below resolves
  * through `resolveAccountId`.
+ *
+ * P2 §10: re-exported from the generated Prisma enum (`AccountMapping.intent`
+ * is now a real `PostingIntent` DB enum, not a bare string — see
+ * prisma/schema.prisma) rather than maintained as a second, hand-written
+ * union that could silently drift from the actual column type, which is
+ * exactly the mismatch the original audit flagged. One source of truth now:
+ * add a new intent to the Prisma enum, this type updates itself.
  */
-export type PostingIntent =
-  | "cash"
-  | "card"
-  | "bank"
-  | "online"
-  | "insurance"
-  | "credit"
-  | "other"
-  | "accounts_receivable"
-  | "revenue"
-  | "tax_payable"
-  | "unearned_revenue"
-  | "inventory_asset"
-  | "accounts_payable"
-  | "expense_default"
-  | "salary_expense"
-  | "payroll_payable"
-  // P1 §11: debit side of a product sale's cost recognition.
-  | "cogs"
-  // P1 §13: debit side of a damage/expiry/shrinkage write-off.
-  | "inventory_write_off"
-  // P1 §13: credit side of a stock-count gain.
-  | "inventory_adjustment_gain"
-  // P1 §15: GR/IR clearing — credited at goods-receipt time (provisional
-  // liability), debited when the matching supplier invoice arrives.
-  | "goods_received_not_invoiced"
-  // P1 §15: recoverable purchase tax on a supplier invoice, where entered.
-  | "recoverable_tax"
-  // P1 §17: capitalized asset acquisitions.
-  | "fixed_asset"
+export type PostingIntent = $Enums.PostingIntent
 
 /** Branch-level mapping wins if present; otherwise the org-wide default (branchId null). Throws if neither exists. */
 async function resolveAccountId(tx: Db, organizationId: string, branchId: string | null, intent: PostingIntent): Promise<string> {
@@ -120,41 +99,67 @@ async function postJournal(
   const totalDebit = input.lines.reduce((sum, l) => sum + (l.debit ?? 0), 0)
   const totalCredit = input.lines.reduce((sum, l) => sum + (l.credit ?? 0), 0)
   if (Math.abs(totalDebit - totalCredit) > 0.005) {
+    // P2 §16: "accounting posting failures" — named explicitly in P2.md
+    // §16's own "use it for" list. This chokepoint is the one place that
+    // can log every posting failure once, regardless of which of the ~15
+    // domain functions in this file called it, or whether the call came
+    // synchronously (e.g. postExpense) or via an outbox handler (most of
+    // the rest) — an outbox-routed failure is ALSO caught and logged by
+    // outbox.ts's own dispatchBatch, so this is deliberately the one place
+    // that also covers the synchronous callers that never pass through
+    // there.
+    log({
+      level: "error", event: "accounting.posting_unbalanced", domain: "accounting", operation: "postJournal",
+      organizationId: input.organizationId, branchId: input.branchId, reference: input.referenceType, entityId: input.referenceId ?? undefined,
+    })
     throw new Error(`Journal for ${input.referenceType} would be unbalanced: debit ${totalDebit} vs credit ${totalCredit}.`)
   }
 
-  // P1 §31: the single chokepoint every posting function funnels through —
-  // one guard here protects all of them, not each individually. See
-  // accounting/periods.ts's own doc comment for scope.
-  await assertPeriodOpen(tx, input.organizationId, input.journalDate ?? new Date())
+  try {
+    // P1 §31: the single chokepoint every posting function funnels through —
+    // one guard here protects all of them, not each individually. See
+    // accounting/periods.ts's own doc comment for scope.
+    await assertPeriodOpen(tx, input.organizationId, input.journalDate ?? new Date())
 
-  const journalNumber = await nextNumber({ organizationId: input.organizationId, sequenceType: "JRN", prefix: "JRN" })
-  const journal = await tx.journal.create({
-    data: {
-      organizationId: input.organizationId,
-      branchId: input.branchId,
-      journalNumber,
-      journalDate: input.journalDate ?? new Date(),
-      referenceType: input.referenceType,
-      referenceId: input.referenceId,
-      description: input.description,
-      postedBy: input.postedBy,
-    },
-  })
-
-  for (const line of input.lines.filter((l) => (l.debit ?? 0) > 0 || (l.credit ?? 0) > 0)) {
-    await tx.journalLine.create({
+    const journalNumber = await nextNumber({ organizationId: input.organizationId, sequenceType: "JRN", prefix: "JRN" })
+    const journal = await tx.journal.create({
       data: {
-        journalId: journal.id,
-        accountId: line.accountId,
-        debit: new Decimal(line.debit ?? 0),
-        credit: new Decimal(line.credit ?? 0),
-        description: line.description ?? null,
+        organizationId: input.organizationId,
+        branchId: input.branchId,
+        journalNumber,
+        journalDate: input.journalDate ?? new Date(),
+        referenceType: input.referenceType,
+        referenceId: input.referenceId,
+        description: input.description,
+        postedBy: input.postedBy,
       },
     })
-  }
 
-  return journal
+    for (const line of input.lines.filter((l) => (l.debit ?? 0) > 0 || (l.credit ?? 0) > 0)) {
+      await tx.journalLine.create({
+        data: {
+          journalId: journal.id,
+          accountId: line.accountId,
+          debit: new Decimal(line.debit ?? 0),
+          credit: new Decimal(line.credit ?? 0),
+          description: line.description ?? null,
+        },
+      })
+    }
+
+    return journal
+  } catch (error) {
+    // Logged, then re-thrown unchanged — this function's error-propagation
+    // behavior to its own callers (a closed-period rejection, a DB error,
+    // ...) is completely unaffected; this is an observability side effect,
+    // not a change to what the caller sees or how the enclosing transaction
+    // reacts.
+    log({
+      level: "error", event: "accounting.posting_failed", domain: "accounting", operation: "postJournal",
+      organizationId: input.organizationId, branchId: input.branchId, reference: input.referenceType, entityId: input.referenceId ?? undefined, error,
+    })
+    throw error
+  }
 }
 
 function tenderIntent(method: string): PostingIntent {
@@ -278,13 +283,38 @@ export async function postInvoiceVoided(invoiceId: string) {
  * whichever tender method was used), Cr Accounts Receivable. A split payment
  * (spec.md §35) produces one debit line per tender against a single AR
  * credit for the total, generalizing the single-tender example.
+ *
+ * P3.13: `referenceId` was previously `invoice.id` — meaning a SECOND
+ * payment against the same invoice (a normal, explicitly-supported
+ * workflow: partial payment now, remainder later — see P3.7's own
+ * "§17-19: partial payment then remaining payment" test) collided with
+ * `postJournal`'s own check-before-insert idempotency guard (keyed on
+ * `(organizationId, referenceType, referenceId)`), which found the FIRST
+ * payment's journal already sitting at that same key and silently returned
+ * it instead of posting the second payment at all — the second payment's
+ * cash/revenue never reached the general ledger, even though the
+ * operational Invoice/Payment rows correctly showed it as paid. Found live
+ * during P3.13's own cross-role workflow (a partial-then-final Cashier
+ * payment, verified downstream by Accounting) — a real accounting
+ * corruption, not a hypothetical one. `traceability.ts`'s own "payment"
+ * case already expected `referenceId` to be a real `Payment.id`
+ * (`db.payment.findFirst({ where: { id: referenceId } })`), confirming this
+ * was a genuine pre-existing bug rather than an intentional shared key —
+ * every payment's traceability drill-down was already silently returning
+ * "Payment not found" before this fix, for the exact same reason. Fixed by
+ * keying each posting on the payment(s) this specific call actually
+ * created (`paymentIds[0]` — one journal per `recordPayment` call, exactly
+ * as `tenders` here already aggregates a single call's tenders into one
+ * journal), so a second, later call gets its own distinct journal.
  */
 export async function postPaymentReceived(
   invoiceId: string,
-  tenders: { method: string; amount: number }[]
+  tenders: { method: string; amount: number }[],
+  paymentIds: string[]
 ) {
   const invoice = await db.invoice.findUniqueOrThrow({ where: { id: invoiceId } })
   const total = tenders.reduce((sum, t) => sum + t.amount, 0)
+  const referenceId = paymentIds[0] ?? invoice.id
 
   await db.$transaction(async (tx) => {
     const arAccount = await resolveAccountId(tx, invoice.organizationId, invoice.branchId, "accounts_receivable")
@@ -299,7 +329,7 @@ export async function postPaymentReceived(
       organizationId: invoice.organizationId,
       branchId: invoice.branchId,
       referenceType: "payment",
-      referenceId: invoice.id,
+      referenceId,
       description: `Payment received for invoice ${invoice.invoiceNumber}`,
       postedBy: null,
       lines: [...tenderLines, { accountId: arAccount, credit: total }],
@@ -747,16 +777,24 @@ export async function postManualJournal(input: {
   postedBy: string
   lines: { accountId: string; debit: number; credit: number; description?: string | null }[]
 }) {
-  return db.$transaction((tx) =>
-    postJournal(tx, {
-      organizationId: input.organizationId,
-      branchId: input.branchId,
-      referenceType: "manual",
-      referenceId: null,
-      description: input.description,
-      postedBy: input.postedBy,
-      journalDate: input.journalDate,
-      lines: input.lines.map((l) => ({ accountId: l.accountId, debit: l.debit, credit: l.credit, description: l.description ?? undefined })),
-    })
+  // P2 Batch 5: the one posting function in this file that had been left on
+  // Prisma's 5000ms default instead of POSTING_TRANSACTION_OPTIONS — found
+  // via a real "transaction expired" failure under this environment's own
+  // documented Supabase-pooler latency (see that constant's own doc comment
+  // for why every other posting function here already needed this same
+  // widening). No functional change, just closing the one gap.
+  return db.$transaction(
+    (tx) =>
+      postJournal(tx, {
+        organizationId: input.organizationId,
+        branchId: input.branchId,
+        referenceType: "manual",
+        referenceId: null,
+        description: input.description,
+        postedBy: input.postedBy,
+        journalDate: input.journalDate,
+        lines: input.lines.map((l) => ({ accountId: l.accountId, debit: l.debit, credit: l.credit, description: l.description ?? undefined })),
+      }),
+    POSTING_TRANSACTION_OPTIONS
   )
 }

@@ -1,6 +1,8 @@
 import "dotenv/config"
 import { db } from "../src/lib/db"
 import { hashPassword } from "../src/lib/auth/password"
+import { generateRawToken } from "../src/lib/auth/tokens"
+import type { $Enums } from "../src/generated/prisma/client"
 
 // Permission catalog: capability-based, resource.action (spec.md §7). This is the
 // full v1 catalog including permissions for domains that land in later phases —
@@ -21,6 +23,11 @@ const PERMISSIONS: { code: string; category: string; description: string }[] = [
   { code: "reports.export", category: "administration", description: "Export reports" },
   { code: "system_events.view", category: "administration", description: "View background system events (outbox) and their status" },
   { code: "system_events.retry", category: "administration", description: "Manually retry a failed or dead-lettered system event" },
+  // P4.6 §46: a real, narrow permission for the onboarding/import workspace
+  // — not folded into the broad `users.manage`/`settings.edit`, so a role
+  // can be granted onboarding/import ability without also getting user
+  // management or full settings edit, and vice versa.
+  { code: "data_import.manage", category: "administration", description: "Run clinic onboarding data imports (patients, products, suppliers, services, opening inventory, ...)" },
 
   // Practice management
   { code: "patient.view", category: "practice", description: "View patient records" },
@@ -187,6 +194,19 @@ const SYSTEM_ROLES: { name: string; permissions: string[] }[] = [
       "accounting.view", "accounting.post", "accounting.period.manage", "chart_of_account.manage", "account_mapping.manage",
       "expense.create", "supplier_invoice.manage", "reports.export",
       "payor.manage", "coverage.manage", "claim.create", "claim.adjudicate",
+      // P3.9 §25/§30: found live during this batch's own browser walkthrough
+      // — Receivables (/receivables) and the Accounting overview both
+      // already called `listOutstandingInvoices`, which requires
+      // `invoice.view`, a permission Accountant never held; the page's own
+      // gate (`accounting.view`) let the role reach the page and then crash
+      // on the very first read. `payment.view` closes the matching gap for
+      // inspecting payments (§30's explicit "Accountant can inspect
+      // invoice/payment journals... Cashier collections"). Deliberately
+      // READ-ONLY — no `invoice.create`/`invoice.void`/`invoice.discount`/
+      // `payment.create`/`refund.*`, which stay Cashier/Clinic-Manager-only
+      // operational controls per §30's own "never give Accountant cashier
+      // operational controls they don't need."
+      "invoice.view", "payment.view",
     ],
   },
   {
@@ -295,7 +315,10 @@ const DEFAULT_ACCOUNTS: { code: string; name: string; type: "asset" | "liability
 
 // intent -> account code. Org-wide default (branchId null); a branch can
 // override any of these later via the Account Mappings admin screen.
-const DEFAULT_MAPPINGS: { intent: string; accountCode: string }[] = [
+// P2 §10: intent is now the real PostingIntent enum, not a bare string — a
+// typo here (e.g. "acounts_payable") is now a compile-time error instead of
+// a silently-broken seed row.
+const DEFAULT_MAPPINGS: { intent: $Enums.PostingIntent; accountCode: string }[] = [
   { intent: "cash", accountCode: "1000" },
   { intent: "card", accountCode: "1010" },
   { intent: "bank", accountCode: "1010" },
@@ -619,15 +642,36 @@ async function main() {
   })
 
   if (!existingSuperAdmin) {
-    const devPassword = "ChangeMe123!"
-    console.log(`Creating Super Admin user (admin@avant.local / ${devPassword}) — change this password immediately.`)
+    // P4.1 §32: this script is DEPLOYMENT.md's own documented production
+    // bootstrap mechanism ("run npm run db:seed once, against the fresh
+    // production database... to create... the initial Super Admin
+    // account") — a hardcoded, well-known password here was a real
+    // production risk, not just a local-dev convenience, since nothing
+    // stopped this exact code path from being the one that actually
+    // provisions a live deployment's first admin account. Local
+    // development keeps the previous convenient, well-known password
+    // (never a security boundary in dev); a real deployment either sets
+    // SUPER_ADMIN_BOOTSTRAP_PASSWORD explicitly (e.g. injected from the
+    // hosting platform's own secret manager) or gets a freshly generated
+    // one printed exactly once, here, which must be captured immediately —
+    // it is never stored anywhere and this script cannot show it again.
+    const isProduction = process.env.NODE_ENV === "production"
+    const bootstrapPassword = process.env.SUPER_ADMIN_BOOTSTRAP_PASSWORD ?? (isProduction ? generateRawToken() : "ChangeMe123!")
+    if (isProduction && !process.env.SUPER_ADMIN_BOOTSTRAP_PASSWORD) {
+      console.log(`\n${"=".repeat(70)}`)
+      console.log(`Creating Super Admin user: admin@avant.local`)
+      console.log(`Generated password (shown once — capture this now): ${bootstrapPassword}`)
+      console.log(`${"=".repeat(70)}\n`)
+    } else {
+      console.log(`Creating Super Admin user (admin@avant.local / ${bootstrapPassword}) — change this password immediately.`)
+    }
     const user = await db.user.create({
       data: {
         organizationId: organization.id,
         email: "admin@avant.local",
         firstName: "Super",
         lastName: "Admin",
-        passwordHash: await hashPassword(devPassword),
+        passwordHash: await hashPassword(bootstrapPassword),
       },
     })
     await db.userRole.create({ data: { userId: user.id, roleId: superAdminRole.id } })

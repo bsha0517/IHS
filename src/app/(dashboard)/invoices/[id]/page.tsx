@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { getCurrentSession } from "@/lib/auth/session"
 import { can } from "@/lib/platform/permissions-core"
 import { getInvoice } from "@/lib/domains/billing/invoices"
+import { loadOrNotFound } from "@/lib/platform/not-found"
 import { getMyOpenSession } from "@/lib/domains/billing/cashier"
 import { listPatientCoverage } from "@/lib/domains/claims/coverage"
 import { formatDateTime } from "@/lib/utils/dates"
@@ -29,7 +30,8 @@ export default async function InvoiceDetailPage({ params }: { params: Promise<{ 
   if (!session || !can(session, "invoice.view")) redirect("/dashboard")
 
   const { id } = await params
-  const [invoice, cashierSession] = await Promise.all([getInvoice(session, id), getMyOpenSession(session)])
+  // Targeted backlog closure, item 4 — see loadOrNotFound's own doc comment.
+  const [invoice, cashierSession] = await Promise.all([loadOrNotFound(() => getInvoice(session, id)), getMyOpenSession(session)])
   const coverages = can(session, "coverage.manage") ? await listPatientCoverage(session, invoice.patientId) : []
 
   const outstanding = Number(invoice.totalAmount) - Number(invoice.paidAmount)
@@ -151,6 +153,16 @@ export default async function InvoiceDetailPage({ params }: { params: Promise<{ 
                 args={[invoice.id]}
               />
             )}
+            {/* P3.7 §26: the actual system rule — a paid/partially-paid
+                invoice cannot be voided directly (billing/invoices.ts's own
+                voidInvoice enforces this server-side); surfaced here so the
+                rule is explained rather than the Void button just quietly
+                not appearing. */}
+            {Number(invoice.paidAmount) > 0 && invoice.status !== "void" && can(session, "invoice.void") && (
+              <p className="w-full text-sm text-muted-foreground">
+                This invoice has payments applied and cannot be voided directly — issue a refund for the paid amount first.
+              </p>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -170,6 +182,7 @@ export default async function InvoiceDetailPage({ params }: { params: Promise<{ 
                   <TableHead>Reference</TableHead>
                   <TableHead>Amount</TableHead>
                   <TableHead>Date</TableHead>
+                  <TableHead />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -180,6 +193,13 @@ export default async function InvoiceDetailPage({ params }: { params: Promise<{ 
                     <TableCell>{p.reference ?? "—"}</TableCell>
                     <TableCell>{p.amount.toFixed(2)}</TableCell>
                     <TableCell>{formatDateTime(p.receivedAt)}</TableCell>
+                    <TableCell>
+                      <Button asChild size="sm" variant="ghost">
+                        <Link href={`/payments/${p.id}/print`} target="_blank">
+                          Receipt
+                        </Link>
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>

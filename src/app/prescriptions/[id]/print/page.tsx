@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation"
 import { getCurrentSession } from "@/lib/auth/session"
 import { getPrescription } from "@/lib/domains/clinical/prescriptions"
-import { getOrganization } from "@/lib/domains/identity/org-structure"
+import { getOrganizationIdentity } from "@/lib/domains/identity/org-structure"
 import { calculateAge, formatDate } from "@/lib/utils/dates"
 import { PrintButton } from "@/app/prescriptions/[id]/print/print-button"
 
@@ -13,7 +13,11 @@ export default async function PrescriptionPrintPage({ params }: { params: Promis
   if (!session) redirect("/login")
 
   const { id } = await params
-  const [prescription, organization] = await Promise.all([getPrescription(session, id), getOrganization(session)])
+  // P3.6 §30: was `getOrganization`, which requires `settings.view` — only
+  // Clinic Manager holds that permission, so this page threw ForbiddenError
+  // for every Doctor trying to print their own patient's prescription. See
+  // `getOrganizationIdentity`'s own comment for the full reasoning.
+  const [prescription, organization] = await Promise.all([getPrescription(session, id), getOrganizationIdentity(session)])
 
   return (
     <div className="mx-auto max-w-2xl p-8 print:p-0">

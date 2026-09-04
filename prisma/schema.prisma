@@ -41,6 +41,7 @@ model Organization {
   settings                Setting[]
   notifications           Notification[]
   outboxEvents            OutboxEvent[]
+  importJobs              ImportJob[]
   clinicalAccessLogs      ClinicalAccessLog[]
   patients                Patient[]
   providers               Provider[]
@@ -99,6 +100,7 @@ model Organization {
   dispensingReturns       DispensingReturn[]
   imagingServices         ImagingService[]
   imagingOrders           ImagingOrder[]
+  imagingReportAmendments ImagingReportAmendment[]
   payors                  Payor[]
   insurancePlans          InsurancePlan[]
   policies                Policy[]
@@ -138,6 +140,7 @@ model Branch {
   settings           Setting[]
   sessions           Session[]
   patients           Patient[]
+  importJobs         ImportJob[]
   providerBranches   ProviderBranch[]
   providerSchedules  ProviderSchedule[]
   appointments       Appointment[]
@@ -270,6 +273,64 @@ model User {
   providerProfile     Provider?
   employeeProfile     Employee?
 
+  // P2 §14, Category A: back-relations for every actor FK added this batch
+  // (see each field's own model for the reasoning) — Prisma requires both
+  // sides of a named relation. Named `xAsY` where the plain past-tense name
+  // would collide with an existing field/relation on this model.
+  patientAllergiesNoted            PatientAllergy[]           @relation("PatientAllergyNoter")
+  patientConditionsNoted           PatientCondition[]         @relation("PatientConditionNoter")
+  patientMedicationHistoryNoted    PatientMedicationHistory[] @relation("PatientMedicationHistoryNoter")
+  episodesCreated                  Episode[]                  @relation("EpisodeCreator")
+  encountersCreated                Encounter[]                @relation("EncounterCreator")
+  diagnosesMade                    Diagnosis[]                @relation("DiagnosisDiagnoser")
+  clinicalNotesAuthored            ClinicalNote[]             @relation("ClinicalNoteAuthor")
+  clinicalNotesFinalized           ClinicalNote[]             @relation("ClinicalNoteFinalizer")
+  specimensCollected               Specimen[]                 @relation("SpecimenCollector")
+  labResultsEntered                LabOrderTest[]             @relation("LabOrderTestEnterer")
+  labResultsVerified               LabOrderTest[]             @relation("LabOrderTestVerifier")
+  dispensingRecordsVerified        DispensingRecord[]         @relation("DispensingRecordVerifier")
+  dispensingRecordsDispensed       DispensingRecord[]         @relation("DispensingRecordDispenser")
+  dispensingReturnsProcessed       DispensingReturn[]         @relation("DispensingReturnReturner")
+  imagingOrdersPerformed           ImagingOrder[]             @relation("ImagingOrderPerformer")
+  imagingOrdersReported            ImagingOrder[]             @relation("ImagingOrderReporter")
+  imagingOrdersVerified            ImagingOrder[]             @relation("ImagingOrderVerifier")
+  imagingReportAmendmentsMade      ImagingReportAmendment[]   @relation("ImagingReportAmendmentAmender")
+  importJobsStarted                ImportJob[]                @relation("ImportJobStarter")
+  chargesCreated                   Charge[]                   @relation("ChargeCreator")
+  invoicesCreated                  Invoice[]                  @relation("InvoiceCreator")
+  paymentsReceived                 Payment[]                  @relation("PaymentReceiver")
+  refundsRequested                 Refund[]                   @relation("RefundRequester")
+  refundsAuthorized                Refund[]                   @relation("RefundAuthorizer")
+  cashMovementsRecorded            CashMovement[]             @relation("CashMovementRecorder")
+  purchaseRequestsRequested        PurchaseRequest[]          @relation("PurchaseRequestRequester")
+  purchaseRequestsApproved         PurchaseRequest[]          @relation("PurchaseRequestApprover")
+  goodsReceiptsReceived            GoodsReceipt[]             @relation("GoodsReceiptReceiver")
+  supplierPaymentsPaid             SupplierPayment[]          @relation("SupplierPaymentPayer")
+  accountingPeriodsClosed          AccountingPeriod[]         @relation("AccountingPeriodCloser")
+  journalsPosted                   Journal[]                  @relation("JournalPoster")
+  expensesPaid                     Expense[]                  @relation("ExpensePayer")
+  leaveRequestsDecided             LeaveRequest[]             @relation("LeaveRequestDecider")
+  payrollRunsCreated               PayrollRun[]               @relation("PayrollRunCreator")
+  payrollRunsApproved              PayrollRun[]               @relation("PayrollRunApprover")
+  appointmentStatusChangesRecorded AppointmentStatusHistory[] @relation("AppointmentStatusHistoryChanger")
+  // P3.4 §3: VitalSign.recordedBy was a bare scalar with no relation at all
+  // (unlike every other actor field on this model, all named above) — a
+  // real gap noticed in P3.3, closed here narrowly. Verified against the
+  // live database before adding this: `recordedBy` is set in exactly one
+  // place (clinical/vitals.ts's recordVitals, always `session.user.id`),
+  // there is no user hard-delete path, and a direct check of every existing
+  // vital_sign row found zero nulls and zero orphaned recordedBy values —
+  // no backfill needed. `onDelete: Restrict` matches the same Category A
+  // reasoning as every other clinical-authorship actor FK above.
+  vitalSignsRecorded               VitalSign[]                @relation("VitalSignRecorder")
+
+  // P2 §11: verified against the live database before adding this —
+  // zero existing (organizationId, username) duplicates among the rows that
+  // actually have one set. NULL is distinct in a Postgres unique index (the
+  // same tradeoff already accepted for number_sequence/tax_rule/
+  // account_mapping's own nullable-branch uniqueness), so users who never
+  // set a username never collide with each other.
+  @@unique([organizationId, username])
   @@unique([organizationId, email])
   @@index([organizationId])
   @@map("user")
@@ -307,20 +368,37 @@ model Session {
   @@map("session")
 }
 
+// P4.3 §9: which login surface an attempt came from — staff (`User`) or the
+// patient portal (`PatientPortalAccount`). Added so this one table can back
+// IP-based rate limiting for BOTH surfaces (the portal previously had no
+// login-history table at all — see PROJECT_STATUS.md's Phase 12 Known
+// Issues — rather than build a second, parallel table for it).
+enum LoginChannel {
+  staff
+  portal
+}
+
 model LoginHistory {
-  id             String   @id @default(uuid())
-  userId         String?  @map("user_id")
-  emailAttempted String   @map("email_attempted")
+  id             String       @id @default(uuid())
+  userId         String?      @map("user_id")
+  channel        LoginChannel @default(staff)
+  emailAttempted String       @map("email_attempted")
   success        Boolean
   ip             String?
-  userAgent      String?  @map("user_agent")
+  userAgent      String?      @map("user_agent")
   reason         String?
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
 
   user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([emailAttempted, createdAt])
+  // P4.3 §9: the IP-based brute-force throttle (src/lib/auth/rate-limit.ts)
+  // counts recent failed attempts by ip+channel within a sliding window —
+  // this is exactly that query's access path. Storage-backed (not
+  // process-memory) specifically so it works correctly across multiple/
+  // serverless application instances, per §9's own requirement.
+  @@index([ip, channel, createdAt])
   @@map("login_history")
 }
 
@@ -464,6 +542,39 @@ model NumberSequence {
   @@map("number_sequence")
 }
 
+// P4.4 §19/§25/§32: a durable heartbeat for infrastructure jobs that don't
+// otherwise leave a persistent trace of "did this actually run" —
+// specifically the Outbox sweep scheduler and the logical backup script.
+// A cron endpoint returning 200 once, or a script exiting 0, proves nothing
+// about whether the NEXT scheduled run ever happens; this table is what lets
+// operations answer "is the scheduler stale?" / "is the backup stale?" from
+// durable state rather than trusting a single past HTTP response.
+//
+// Deliberately NOT organization-scoped (no organizationId column) — the
+// outbox sweep and the backup job are both platform-wide infrastructure
+// (one shared scheduler, one shared database, regardless of how many
+// organizations share it), not a per-tenant concern. `metadata` is a small,
+// safe JSON blob (counts, sizes, a Postgres version string) — never a
+// credential, connection string, or any patient/financial content; see
+// scripts/db/backup.ts and src/app/api/cron/outbox-sweep/route.ts for what's
+// actually written there.
+model OperationalJobState {
+  id            String    @id @default(uuid())
+  /// A short, stable identifier — "outbox_sweep", "backup". Not a foreign key
+  /// to anything; this is intentionally its own small, generic model rather
+  /// than a job-scheduler framework (P4.4 §32's own "do NOT create a generic
+  /// enterprise scheduler").
+  key           String    @unique
+  lastAttemptAt DateTime? @map("last_attempt_at") @db.Timestamptz(3)
+  lastSuccessAt DateTime? @map("last_success_at") @db.Timestamptz(3)
+  lastFailureAt DateTime? @map("last_failure_at") @db.Timestamptz(3)
+  lastError     String?   @map("last_error")
+  metadata      Json?
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("operational_job_state")
+}
+
 // P1 §33: business-level idempotency for client-initiated "create a new
 // record" actions with nothing pre-existing to atomically claim (unlike
 // dispenseRecord's verified->dispensed claim or completeRefund's
@@ -518,6 +629,90 @@ model OutboxEvent {
   @@index([status, createdAt])
   @@index([status, nextRetryAt])
   @@map("outbox_event")
+}
+
+// P4.6 — Clinic Onboarding / Data Import. `status` is a real, closed-set
+// state machine (like OutboxStatus/DispensingStatus) so it's a proper enum;
+// `type` (below) stays a plain String — same convention OutboxEvent.eventType
+// already uses for exactly this "open, app-defined discriminator" shape, so
+// a future new import type never needs a migration to add.
+enum ImportJobStatus {
+  uploaded
+  validated
+  ready
+  processing
+  completed
+  failed
+  cancelled
+}
+
+// One row per dry-run-then-commit import attempt. Deliberately does NOT
+// store the uploaded file itself (P4.6 §13/§38's own chosen architecture —
+// see src/lib/platform/import/engine.ts's own doc comment): the browser
+// re-submits the same file content on commit, and `contentHash` is the
+// integrity token proving it's the identical dataset the dry-run actually
+// validated, not a swapped-in different file. `summary` carries the last
+// dry-run's own counts/preview (small, aggregate — never raw row data).
+model ImportJob {
+  id               String          @id @default(uuid())
+  organizationId   String          @map("organization_id")
+  branchId         String?         @map("branch_id")
+  type             String
+  templateVersion  String          @map("template_version")
+  status           ImportJobStatus @default(uploaded)
+  fileName         String          @map("file_name")
+  // SHA-256 of the uploaded file's exact bytes — the commit-freshness token
+  // (P4.6 §38): commit re-parses and re-validates the resubmitted file from
+  // scratch, then confirms this hash still matches before touching any
+  // domain row, so a commit can never silently apply to a different/edited
+  // file than the one the dry-run's preview was actually showing.
+  contentHash      String          @map("content_hash")
+  totalRows        Int             @default(0) @map("total_rows")
+  validRows        Int             @default(0) @map("valid_rows")
+  invalidRows      Int             @default(0) @map("invalid_rows")
+  duplicateRows    Int             @default(0) @map("duplicate_rows")
+  importedRows     Int             @default(0) @map("imported_rows")
+  skippedRows      Int             @default(0) @map("skipped_rows")
+  // Small, aggregate-only preview/summary data (first ~50 rows' classification,
+  // never full source rows) — see engine.ts's own doc comment on why this
+  // stays deliberately narrow (P4.6 §12: "avoid storing full source rows
+  // containing sensitive patient data").
+  summary          Json?
+  startedBy        String          @map("started_by")
+  startedAt        DateTime        @default(now()) @map("started_at") @db.Timestamptz(3)
+  completedAt      DateTime?       @map("completed_at") @db.Timestamptz(3)
+
+  organization Organization      @relation(fields: [organizationId], references: [id])
+  branch       Branch?           @relation(fields: [branchId], references: [id])
+  // P2 §14, Category A: who ran a bulk import is real operational/audit
+  // evidence — must survive that admin's own account being deactivated.
+  startedByUser User             @relation("ImportJobStarter", fields: [startedBy], references: [id], onDelete: Restrict)
+  errors        ImportJobError[]
+
+  @@index([organizationId, type, startedAt])
+  @@map("import_job")
+}
+
+// Row-level validation failures for one ImportJob. Deliberately narrow —
+// row number + field + a stable error code + a safe, human-readable
+// message — never the source row's own field values (P4.6 §12's own
+// explicit instruction: avoid persisting PHI in error metadata). The
+// uploaded file itself (never stored) remains the only place the actual
+// row content lives; a validation report only ever needs to say WHERE and
+// WHY a row failed, not repeat what a user already has in their own CSV.
+model ImportJobError {
+  id        String   @id @default(uuid())
+  jobId     String   @map("job_id")
+  rowNumber Int      @map("row_number")
+  field     String?
+  errorCode String   @map("error_code")
+  message   String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  job ImportJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, rowNumber])
+  @@map("import_job_error")
 }
 
 model Setting {
@@ -581,6 +776,16 @@ model Patient {
   organizationId               String        @map("organization_id")
   registrationBranchId         String        @map("registration_branch_id")
   mrn                          String        @map("mrn")
+  // P4.6 §21: a bulk-imported patient still gets a real, system-generated
+  // Avant MRN (`registerPatient`'s own `nextNumber()` call, unchanged) —
+  // system-integrity of the internal sequence is preserved, never
+  // overwritten by an imported value. This is the OLD system's own
+  // identifier, kept only for cross-reference during/after a migration
+  // (e.g. "find this patient by their old clinic's chart number"). Not
+  // unique-enforced — a legacy system's own numbering scheme isn't this
+  // system's problem to guarantee collision-free across every possible
+  // source clinic.
+  legacyMrn                    String?       @map("legacy_mrn")
   firstName                    String        @map("first_name")
   middleName                   String?       @map("middle_name")
   lastName                     String        @map("last_name")
@@ -638,6 +843,10 @@ model Patient {
   @@index([organizationId, mobile])
   @@index([organizationId, email])
   @@index([organizationId, nationalId])
+  // P2 §3: listPatients (patients/service.ts) orderBy createdAt desc,
+  // paginated — no existing index's trailing column is createdAt.
+  @@index([organizationId, createdAt])
+  @@index([organizationId, legacyMrn])
   @@map("patient")
 }
 
@@ -662,7 +871,13 @@ model PatientAllergy {
   // record a patient has; it must not silently vanish if Patient is ever
   // deleted. No code path deletes a Patient today; Restrict just makes that
   // a hard guarantee instead of an unenforced convention.
-  patient Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  patient     Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  // P2 §14, Category A: a patient-safety alert must survive the noting
+  // clinician's account being deactivated (never deleted by this app, but
+  // Restrict makes that a hard guarantee rather than an unenforced
+  // convention — the same reasoning as the Patient relation immediately
+  // above).
+  notedByUser User?   @relation("PatientAllergyNoter", fields: [notedBy], references: [id], onDelete: Restrict)
 
   @@index([patientId])
   @@map("patient_allergy")
@@ -691,7 +906,9 @@ model PatientCondition {
   notedAt     DateTime                 @default(now()) @map("noted_at") @db.Timestamptz(3)
 
   // P0-05: was Cascade — same reasoning as PatientAllergy above.
-  patient Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  patient     Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  // P2 §14, Category A: same reasoning as PatientAllergy.notedByUser above.
+  notedByUser User?   @relation("PatientConditionNoter", fields: [notedBy], references: [id], onDelete: Restrict)
 
   @@index([patientId, category])
   @@map("patient_condition")
@@ -709,7 +926,9 @@ model PatientMedicationHistory {
   notedAt        DateTime  @default(now()) @map("noted_at") @db.Timestamptz(3)
 
   // P0-05: was Cascade — same reasoning as PatientAllergy above.
-  patient Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  patient     Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  // P2 §14, Category A: same reasoning as PatientAllergy.notedByUser above.
+  notedByUser User?   @relation("PatientMedicationHistoryNoter", fields: [notedBy], references: [id], onDelete: Restrict)
 
   @@index([patientId])
   @@map("patient_medication_history")
@@ -780,6 +999,12 @@ model Provider {
   commissionRules     CommissionRule[]
   commissionAccruals  CommissionAccrual[]
 
+  // P2 §11: verified against the live database — zero existing
+  // (organizationId, licenseNumber) duplicates among providers that have one
+  // set; NULL stays distinct per Postgres's usual unique-index semantics, so
+  // a provider record created before a license number is on file never
+  // collides with another one in the same state.
+  @@unique([organizationId, licenseNumber])
   @@index([organizationId])
   @@map("provider")
 }
@@ -977,7 +1202,11 @@ model AppointmentStatusHistory {
   changedAt     DateTime           @default(now()) @map("changed_at") @db.Timestamptz(3)
   reason        String?
 
-  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  // P2 §14, Category A: this table IS the audit trail for appointment
+  // status changes — the actor of the audit trail itself must survive
+  // account deactivation.
+  changedByUser User?       @relation("AppointmentStatusHistoryChanger", fields: [changedBy], references: [id], onDelete: Restrict)
 
   @@index([appointmentId])
   @@map("appointment_status_history")
@@ -1039,9 +1268,17 @@ model Episode {
   primaryProvider Provider?    @relation("EpisodePrimaryProvider", fields: [primaryProviderId], references: [id])
   encounters      Encounter[]
   diagnoses       Diagnosis[]
+  // P2 §14, Category A: who opened this episode of care must survive that
+  // staff member's account being deactivated — same Restrict reasoning as
+  // every other actor relation added this batch.
+  createdByUser   User?        @relation("EpisodeCreator", fields: [createdBy], references: [id], onDelete: Restrict)
 
   @@unique([organizationId, episodeNumber])
   @@index([patientId])
+  // P2 §3: listEpisodes (P1's own final batch's Episodes/Encounters/Orders
+  // fix, clinical/episodes.ts) filters branchId and orderBy startDate desc —
+  // same reasoning as Encounter/ClinicalOrder above.
+  @@index([branchId, startDate])
   @@map("episode")
 }
 
@@ -1106,11 +1343,17 @@ model Encounter {
   patientPackageSessions PatientPackageSession[]
   priorAuthorizations    PriorAuthorization[]
   claims                 Claim[]
+  // P2 §14, Category A: same reasoning as Episode.createdByUser.
+  createdByUser          User?                    @relation("EncounterCreator", fields: [createdBy], references: [id], onDelete: Restrict)
 
   @@unique([organizationId, encounterNumber])
   @@index([patientId])
   @@index([providerId, startAt])
-  @@index([branchId])
+  // P2 §3: widened from a bare branchId — listEncounters (P1's own final
+  // batch's Episodes/Encounters/Orders fix, clinical/encounters.ts) filters
+  // branchId and orderBy startAt desc, still paginated but scanning a
+  // branch's full encounter history to sort every time otherwise.
+  @@index([branchId, startAt])
   @@index([episodeId])
   @@map("encounter")
 }
@@ -1134,12 +1377,23 @@ model VitalSign {
   respiratoryRatePerMin   Int?     @map("respiratory_rate_per_min")
   bloodGlucoseMgDl        Decimal? @map("blood_glucose_mg_dl") @db.Decimal(6, 2)
 
-  organization Organization @relation(fields: [organizationId], references: [id])
-  patient      Patient      @relation(fields: [patientId], references: [id])
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  patient        Patient      @relation(fields: [patientId], references: [id])
   // P0-05: was Cascade — deleting an Encounter must not silently erase the
   // vitals recorded during it. No code path deletes an Encounter today.
-  encounter    Encounter    @relation(fields: [encounterId], references: [id], onDelete: Restrict)
-  branch       Branch       @relation(fields: [branchId], references: [id])
+  encounter      Encounter    @relation(fields: [encounterId], references: [id], onDelete: Restrict)
+  branch         Branch       @relation(fields: [branchId], references: [id])
+  // P3.4 §3/§24: closes the P3.3 vitals-attribution backlog item —
+  // `recordedBy` already only ever held a real User id (see User's own
+  // `vitalSignsRecorded` comment for the verification), so this adds the
+  // relation on the *existing* column rather than a new
+  // `recordedByUserId` column/migration-with-backfill. `onDelete: Restrict`
+  // matches every other clinical-authorship actor FK in this schema — a
+  // vital sign's recorder must survive that user's account being
+  // deactivated (deactivation is a status flip, not a delete, so this
+  // should never actually fire in practice, but the constraint is the
+  // correct safety net if a hard delete is ever added elsewhere).
+  recordedByUser User?        @relation("VitalSignRecorder", fields: [recordedBy], references: [id], onDelete: Restrict)
 
   @@index([organizationId, patientId, recordedAt])
   @@index([encounterId])
@@ -1183,14 +1437,17 @@ model Diagnosis {
   diagnosedBy    String?         @map("diagnosed_by")
   diagnosedAt    DateTime        @default(now()) @map("diagnosed_at") @db.Timestamptz(3)
 
-  organization Organization   @relation(fields: [organizationId], references: [id])
-  patient      Patient        @relation(fields: [patientId], references: [id])
+  organization    Organization   @relation(fields: [organizationId], references: [id])
+  patient         Patient        @relation(fields: [patientId], references: [id])
   // P0-05: was Cascade — a diagnosis must not silently disappear if its
   // Encounter is ever deleted.
-  encounter    Encounter      @relation(fields: [encounterId], references: [id], onDelete: Restrict)
-  episode      Episode?       @relation(fields: [episodeId], references: [id])
-  code         DiagnosisCode? @relation(fields: [diagnosisCode], references: [code])
-  claimItems   ClaimItem[]
+  encounter       Encounter      @relation(fields: [encounterId], references: [id], onDelete: Restrict)
+  episode         Episode?       @relation(fields: [episodeId], references: [id])
+  code            DiagnosisCode? @relation(fields: [diagnosisCode], references: [code])
+  claimItems      ClaimItem[]
+  // P2 §14, Category A: clinical accountability for a diagnosis must
+  // survive the diagnosing clinician's account being deactivated.
+  diagnosedByUser User?          @relation("DiagnosisDiagnoser", fields: [diagnosedBy], references: [id], onDelete: Restrict)
 
   @@index([organizationId, patientId])
   @@index([encounterId])
@@ -1238,14 +1495,18 @@ model ClinicalNote {
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  organization Organization   @relation(fields: [organizationId], references: [id])
+  organization    Organization   @relation(fields: [organizationId], references: [id])
   // P0-05: was Cascade — directly contradicts this model's own "finalized
   // notes are never edited in place" comment above; the amendment chain
   // means nothing if the whole encounter can be deleted out from under it.
-  encounter    Encounter      @relation(fields: [encounterId], references: [id], onDelete: Restrict)
-  patient      Patient        @relation(fields: [patientId], references: [id])
-  amends       ClinicalNote?  @relation("ClinicalNoteAmendment", fields: [amendsId], references: [id])
-  amendments   ClinicalNote[] @relation("ClinicalNoteAmendment")
+  encounter       Encounter      @relation(fields: [encounterId], references: [id], onDelete: Restrict)
+  patient         Patient        @relation(fields: [patientId], references: [id])
+  amends          ClinicalNote?  @relation("ClinicalNoteAmendment", fields: [amendsId], references: [id])
+  amendments      ClinicalNote[] @relation("ClinicalNoteAmendment")
+  // P2 §14, Category A: clinical documentation authorship/finalization —
+  // malpractice- and compliance-relevant, must survive account deactivation.
+  authoredByUser  User?          @relation("ClinicalNoteAuthor", fields: [authoredBy], references: [id], onDelete: Restrict)
+  finalizedByUser User?          @relation("ClinicalNoteFinalizer", fields: [finalizedBy], references: [id], onDelete: Restrict)
 
   @@index([encounterId, noteType, isCurrent])
   @@index([patientId])
@@ -1317,7 +1578,10 @@ model ClinicalOrder {
   @@unique([organizationId, orderNumber])
   @@index([patientId])
   @@index([encounterId])
-  @@index([branchId])
+  // P2 §3: widened from a bare branchId — listOrders (P1's own final
+  // batch's Episodes/Encounters/Orders fix, clinical/orders.ts) filters
+  // branchId and orderBy orderedAt desc.
+  @@index([branchId, orderedAt])
   @@index([orderingProviderId])
   @@map("clinical_order")
 }
@@ -1527,6 +1791,11 @@ model Charge {
   voidReason        String?          @map("void_reason")
   createdBy         String?          @map("created_by")
   createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  // P2 §12: Charge is genuinely mutable after creation (status flips
+  // pending->invoiced->void; voidReason is set later, not at creation) —
+  // added for the same traceability reason User/Provider/Encounter already
+  // carry one, not merely for schema uniformity.
+  updatedAt         DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   organization       Organization        @relation(fields: [organizationId], references: [id])
   branch             Branch              @relation(fields: [branchId], references: [id])
@@ -1540,6 +1809,10 @@ model Charge {
   labOrderTest       LabOrderTest?
   dispensingRecord   DispensingRecord?
   imagingOrder       ImagingOrder?
+  // P2 §14, Category A: every dollar of revenue traces back to a Charge —
+  // who created it must survive that staff member's account being
+  // deactivated.
+  createdByUser      User?               @relation("ChargeCreator", fields: [createdBy], references: [id], onDelete: Restrict)
 
   @@index([organizationId, patientId, status])
   @@index([encounterId])
@@ -1547,6 +1820,12 @@ model Charge {
   @@index([providerId])
   @@index([serviceId])
   @@index([productId])
+  // P2 §3: revenue-cycle.ts's dashboard groupBy (by status, filtered on
+  // organizationId+branchId+createdAt range) — the per-patient list
+  // functions (listPendingCharges/listPatientCharges) don't need this, their
+  // result sets are inherently tiny (one patient's charges), but the
+  // org-wide date-range aggregate does.
+  @@index([organizationId, createdAt])
   @@map("charge")
 }
 
@@ -1579,6 +1858,10 @@ model Invoice {
   voidReason                     String?       @map("void_reason")
   createdBy                      String?       @map("created_by")
   createdAt                      DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  // P2 §12: Invoice mutates in place after creation (status/paidAmount move
+  // through partially_paid/paid/void, final*Responsibility is set later at
+  // remittance) — same traceability reasoning as Charge/Payment.
+  updatedAt                      DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
   issuedAt                       DateTime      @default(now()) @map("issued_at") @db.Timestamptz(3)
   // Insurance path (spec.md §38/§40, Phase 11) — all six nullable: self-pay
   // invoices (the vast majority until a real payor is configured) leave every
@@ -1607,12 +1890,26 @@ model Invoice {
   patientPackages    PatientPackage[]
   commissionAccruals CommissionAccrual[]
   claims             Claim[]
+  // P2 §14, Category A: same reasoning as Charge.createdByUser.
+  createdByUser      User?               @relation("InvoiceCreator", fields: [createdBy], references: [id], onDelete: Restrict)
 
   @@unique([organizationId, invoiceNumber])
   @@index([organizationId, patientId, status])
   @@index([branchId])
   @@index([providerId])
   @@index([payorId])
+  // P2 §3: financial-report date-range aggregates (revenue-cycle.ts,
+  // financial.ts — Dr AR/Cr Revenue-style totals filtered by
+  // organizationId+branchId+issuedAt range) and listOutstandingInvoices
+  // (Receivables page, orderBy issuedAt asc) both filter/sort on issuedAt,
+  // uncovered by any existing index.
+  @@index([organizationId, issuedAt])
+  // P2 §3: the main Invoices list (billing/invoices.ts, currently take: 100,
+  // orderBy createdAt desc) sorts on createdAt specifically — a distinct
+  // column from issuedAt above (draft invoices, if any exist, would diverge;
+  // in practice generateInvoice sets both together, but the index must match
+  // the actual sorted column, not the usually-equal one).
+  @@index([organizationId, createdAt])
   @@map("invoice")
 }
 
@@ -1672,6 +1969,9 @@ model Payment {
   status           PaymentStatus @default(completed)
   receivedBy       String?       @map("received_by")
   receivedAt       DateTime      @default(now()) @map("received_at") @db.Timestamptz(3)
+  // P2 §12: Payment mutates in place after creation (status flips
+  // completed->reversed) — same traceability reasoning as Charge/Invoice.
+  updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
   // Traceability for an insurance-tender payment recorded as a claim's
   // remittance (spec.md §39's "Remittance" step) — reuses the existing
   // recordPayment() path (spec.md §35 already lists "Insurance" as a tender)
@@ -1685,11 +1985,19 @@ model Payment {
   allocations        PaymentAllocation[]
   refunds            Refund[]
   commissionAccruals CommissionAccrual[]
+  // P2 §14, Category A: cash-handling accountability must survive the
+  // receiving cashier's account being deactivated.
+  receivedByUser     User?               @relation("PaymentReceiver", fields: [receivedBy], references: [id], onDelete: Restrict)
 
   @@unique([organizationId, receiptNumber])
   @@index([cashierSessionId])
   @@index([branchId])
   @@index([claimId])
+  // P2 §3: financial-report date-range aggregates (organizationId+branchId+
+  // status+receivedAt range) and three separate list functions in
+  // billing/payments.ts all orderBy receivedAt — uncovered by any existing
+  // index.
+  @@index([organizationId, receivedAt])
   @@map("payment")
 }
 
@@ -1759,6 +2067,11 @@ model Refund {
   // P1 §19: negative CommissionAccrual rows this refund caused — see
   // CommissionAccrual.refundId's own doc comment.
   commissionReversals CommissionAccrual[]
+  // P2 §14, Category A: request/authorize is a deliberate segregation-of-
+  // duties control point (money leaving the business) — both actors must
+  // survive account deactivation.
+  requestedByUser     User?               @relation("RefundRequester", fields: [requestedBy], references: [id], onDelete: Restrict)
+  authorizedByUser    User?               @relation("RefundAuthorizer", fields: [authorizedBy], references: [id], onDelete: Restrict)
 
   @@unique([organizationId, refundNumber])
   @@index([organizationId, status])
@@ -1819,6 +2132,9 @@ model CashMovement {
 
   organization   Organization   @relation(fields: [organizationId], references: [id])
   cashierSession CashierSession @relation(fields: [cashierSessionId], references: [id], onDelete: Cascade)
+  // P2 §14, Category A: same cash-handling accountability as
+  // Payment.receivedByUser.
+  recordedByUser User?          @relation("CashMovementRecorder", fields: [recordedBy], references: [id], onDelete: Restrict)
 
   @@index([cashierSessionId])
   @@map("cash_movement")
@@ -2069,6 +2385,14 @@ model StockLedgerEntry {
 
   @@index([organizationId, branchId, productId])
   @@index([batchId])
+  // P2 §3: listLedgerEntries (org+optional productId/branchId, orderBy
+  // createdAt desc, still take: 200) — the existing composite's trailing
+  // column is productId, not createdAt, so the sort was unsupported.
+  // referenceType+referenceId was considered (this table's own doc comment
+  // calls it a polymorphic pointer) but no current query filters on it —
+  // not added, per P2.md's own "don't index a documented convention with no
+  // real caller" caution.
+  @@index([organizationId, branchId, createdAt])
   @@map("stock_ledger_entry")
 }
 
@@ -2163,10 +2487,15 @@ model PurchaseRequest {
   approvedAt      DateTime?             @map("approved_at") @db.Timestamptz(3)
   rejectionReason String?               @map("rejection_reason")
 
-  organization   Organization          @relation(fields: [organizationId], references: [id])
-  branch         Branch                @relation(fields: [branchId], references: [id])
-  lines          PurchaseRequestLine[]
-  purchaseOrders PurchaseOrder[]
+  organization    Organization          @relation(fields: [organizationId], references: [id])
+  branch          Branch                @relation(fields: [branchId], references: [id])
+  lines           PurchaseRequestLine[]
+  purchaseOrders  PurchaseOrder[]
+  // P2 §14, Category A: request/approve is a deliberate segregation-of-
+  // duties control point (procurement spend) — both actors must survive
+  // account deactivation.
+  requestedByUser User?                 @relation("PurchaseRequestRequester", fields: [requestedBy], references: [id], onDelete: Restrict)
+  approvedByUser  User?                 @relation("PurchaseRequestApprover", fields: [approvedBy], references: [id], onDelete: Restrict)
 
   @@unique([organizationId, requestNumber])
   @@index([organizationId, status])
@@ -2269,13 +2598,22 @@ model GoodsReceipt {
   receivedBy      String?            @map("received_by")
   receivedAt      DateTime           @default(now()) @map("received_at") @db.Timestamptz(3)
 
-  organization  Organization       @relation(fields: [organizationId], references: [id])
-  branch        Branch             @relation(fields: [branchId], references: [id])
-  purchaseOrder PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id])
-  supplier      Supplier           @relation(fields: [supplierId], references: [id])
-  lines         GoodsReceiptLine[]
+  organization   Organization       @relation(fields: [organizationId], references: [id])
+  branch         Branch             @relation(fields: [branchId], references: [id])
+  purchaseOrder  PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id])
+  supplier       Supplier           @relation(fields: [supplierId], references: [id])
+  lines          GoodsReceiptLine[]
+  // P2 §14, Category A: receiving accountability — a goods receipt creates
+  // a real inventory/GR-IR-clearing obligation and must survive the
+  // receiving staff member's account being deactivated.
+  receivedByUser User?              @relation("GoodsReceiptReceiver", fields: [receivedBy], references: [id], onDelete: Restrict)
 
   @@unique([organizationId, receiptNumber])
+  // P2 §3: this table had zero indexes beyond the unique constraint —
+  // listGoodsReceipts (org+branchId narrowed+optional purchaseOrderId,
+  // orderBy receivedAt desc, still take: 100) had no support at all beyond
+  // organizationId's leftmost position in the unique index above.
+  @@index([organizationId, branchId, receivedAt])
   @@map("goods_receipt")
 }
 
@@ -2340,6 +2678,10 @@ model SupplierInvoice {
 
   @@unique([organizationId, supplierId, invoiceNumber])
   @@index([organizationId, status])
+  // P2 §3: listSupplierInvoices (org+optional supplierId/status, orderBy
+  // createdAt desc, still take: 100) — neither existing index's trailing
+  // column is createdAt, so the common no-filter case still sorted unindexed.
+  @@index([organizationId, createdAt])
   @@map("supplier_invoice")
 }
 
@@ -2363,6 +2705,9 @@ model SupplierPayment {
   organization    Organization    @relation(fields: [organizationId], references: [id])
   branch          Branch          @relation(fields: [branchId], references: [id])
   supplierInvoice SupplierInvoice @relation(fields: [supplierInvoiceId], references: [id])
+  // P2 §14, Category A: money leaving the business — must survive the
+  // paying staff member's account being deactivated.
+  paidByUser      User?           @relation("SupplierPaymentPayer", fields: [paidBy], references: [id], onDelete: Restrict)
 
   @@index([supplierInvoiceId])
   @@map("supplier_payment")
@@ -2433,13 +2778,46 @@ model ChartOfAccount {
 // Phase 4/5's TaxRule (NULL is distinct in a unique index, and this is a
 // low-volume, admin-only config table where the COALESCE-sentinel workaround
 // isn't worth repeating a third time).
+// P2 §10: was a bare `String` despite the application already operating on a
+// closed taxonomy (the exact same union `PostingIntent` in
+// accounting/posting-service.ts already enumerates) — a real schema/code
+// mismatch, not a hypothetical one. Verified against the live database
+// before this migration: all 22 existing distinct `intent` values matched
+// this enum's members exactly, so the conversion needed no data cleanup.
+// Grown the same way every other enum in this schema grows — `ALTER TYPE
+// ... ADD VALUE` per new posting intent, never a free-form string again.
+enum PostingIntent {
+  cash
+  card
+  bank
+  online
+  insurance
+  credit
+  other
+  accounts_receivable
+  revenue
+  tax_payable
+  unearned_revenue
+  inventory_asset
+  accounts_payable
+  expense_default
+  salary_expense
+  payroll_payable
+  cogs
+  inventory_write_off
+  inventory_adjustment_gain
+  goods_received_not_invoiced
+  recoverable_tax
+  fixed_asset
+}
+
 model AccountMapping {
-  id             String   @id @default(uuid())
-  organizationId String   @map("organization_id")
-  branchId       String?  @map("branch_id")
-  intent         String
-  accountId      String   @map("account_id")
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  id             String        @id @default(uuid())
+  organizationId String        @map("organization_id")
+  branchId       String?       @map("branch_id")
+  intent         PostingIntent
+  accountId      String        @map("account_id")
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
 
   organization Organization   @relation(fields: [organizationId], references: [id])
   branch       Branch?        @relation(fields: [branchId], references: [id])
@@ -2478,6 +2856,10 @@ model AccountingPeriod {
   reason         String
 
   organization Organization @relation(fields: [organizationId], references: [id])
+  // P2 §14, Category A: closing/reopening a financial period is an
+  // audit-critical control point that must survive the closing
+  // accountant's account being deactivated.
+  closedByUser User?        @relation("AccountingPeriodCloser", fields: [closedBy], references: [id], onDelete: Restrict)
 
   @@unique([organizationId, periodStart])
   @@map("accounting_period")
@@ -2506,6 +2888,10 @@ model Journal {
   organization Organization  @relation(fields: [organizationId], references: [id])
   branch       Branch        @relation(fields: [branchId], references: [id])
   lines        JournalLine[]
+  // P2 §14, Category A: a manual journal entry is direct, unmediated GL
+  // access — must survive the posting accountant's account being
+  // deactivated.
+  postedByUser User?         @relation("JournalPoster", fields: [postedBy], references: [id], onDelete: Restrict)
 
   @@unique([organizationId, journalNumber])
   @@index([organizationId, referenceType, referenceId])
@@ -2560,6 +2946,9 @@ model Expense {
   organization   Organization   @relation(fields: [organizationId], references: [id])
   branch         Branch         @relation(fields: [branchId], references: [id])
   expenseAccount ChartOfAccount @relation(fields: [expenseAccountId], references: [id])
+  // P2 §14, Category A: same money-leaving-the-business reasoning as
+  // SupplierPayment.paidByUser.
+  paidByUser     User?          @relation("ExpensePayer", fields: [paidBy], references: [id], onDelete: Restrict)
 
   @@index([organizationId, branchId, expenseDate])
   @@map("expense")
@@ -2759,8 +3148,12 @@ model LeaveRequest {
   decidedAt       DateTime?          @map("decided_at") @db.Timestamptz(3)
   rejectionReason String?            @map("rejection_reason")
 
-  organization Organization @relation(fields: [organizationId], references: [id])
-  employee     Employee     @relation(fields: [employeeId], references: [id])
+  organization  Organization @relation(fields: [organizationId], references: [id])
+  employee      Employee     @relation(fields: [employeeId], references: [id])
+  // P2 §14, Category A: approving/rejecting leave is an HR compliance
+  // decision (entitlement, scheduling impact) that must survive the
+  // deciding manager's account being deactivated.
+  decidedByUser User?        @relation("LeaveRequestDecider", fields: [decidedBy], references: [id], onDelete: Restrict)
 
   @@index([organizationId, employeeId, status])
   @@map("leave_request")
@@ -2811,10 +3204,27 @@ model PayrollRun {
   paidAt         DateTime?        @map("paid_at") @db.Timestamptz(3)
   createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  organization Organization     @relation(fields: [organizationId], references: [id])
-  branch       Branch           @relation(fields: [branchId], references: [id])
-  lines        PayrollRunLine[]
+  organization   Organization     @relation(fields: [organizationId], references: [id])
+  branch         Branch           @relation(fields: [branchId], references: [id])
+  lines          PayrollRunLine[]
+  // P2 §14, Category A: payroll creation/approval is high financial and HR
+  // sensitivity — both actors must survive account deactivation.
+  createdByUser  User?            @relation("PayrollRunCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+  approvedByUser User?            @relation("PayrollRunApprover", fields: [approvedBy], references: [id], onDelete: Restrict)
 
+  // P3.10 §34/§35: previously no protection at all against two payroll runs
+  // being created for the same branch+period — two HR users racing (or one
+  // HR user double-submitting) `createPayrollRun` could each independently
+  // succeed, each generating its own full set of PayrollRunLine rows for
+  // every active employee, each independently approvable/payable — a real
+  // double-pay risk, not a cosmetic duplicate. `PayrollRunLine`'s own
+  // `@@unique([payrollRunId, employeeId])` only prevents one employee
+  // appearing twice WITHIN a single run; it does nothing against two
+  // separate runs for the same period. This is the real guard, enforced at
+  // the DB level (not just an app-level check-then-create, which the exact
+  // race this closes would still slip through) — createPayrollRun (payroll.ts)
+  // catches the resulting P2002 and returns a friendly error.
+  @@unique([organizationId, branchId, periodStart, periodEnd])
   @@index([organizationId, status])
   @@map("payroll_run")
 }
@@ -2964,6 +3374,12 @@ model CommissionAccrual {
   @@index([refundId])
   @@index([branchId])
   @@index([invoiceId])
+  // P2 §3: commissions.ts's own date-range list/report functions and
+  // analytics/reports/hr.ts's provider-grouped commission report (groupBy
+  // providerId, filtered on organizationId+branchId+accruedAt range) both
+  // filter/sort on accruedAt — the existing (organizationId, providerId,
+  // status) index doesn't cover it.
+  @@index([organizationId, providerId, accruedAt])
   @@map("commission_accrual")
 }
 
@@ -3199,12 +3615,15 @@ model Specimen {
   rejectionReason String?        @map("rejection_reason")
   createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  organization  Organization   @relation(fields: [organizationId], references: [id])
-  branch        Branch         @relation(fields: [branchId], references: [id])
+  organization    Organization   @relation(fields: [organizationId], references: [id])
+  branch          Branch         @relation(fields: [branchId], references: [id])
   // P0-05: was Cascade — a collected specimen record must not vanish with
   // its parent ClinicalOrder.
-  clinicalOrder ClinicalOrder  @relation(fields: [clinicalOrderId], references: [id], onDelete: Restrict)
-  orderTests    LabOrderTest[]
+  clinicalOrder   ClinicalOrder  @relation(fields: [clinicalOrderId], references: [id], onDelete: Restrict)
+  orderTests      LabOrderTest[]
+  // P2 §14, Category A: specimen chain-of-custody must survive the
+  // collecting staff member's account being deactivated.
+  collectedByUser User?          @relation("SpecimenCollector", fields: [collectedBy], references: [id], onDelete: Restrict)
 
   @@unique([organizationId, specimenNumber])
   @@index([clinicalOrderId])
@@ -3271,16 +3690,21 @@ model LabOrderTest {
   amendsId           String?            @map("amends_id")
   createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  organization  Organization   @relation(fields: [organizationId], references: [id])
+  organization   Organization   @relation(fields: [organizationId], references: [id])
   // P0-05: was Cascade — an actual lab result must not vanish with its
   // parent ClinicalOrder.
-  clinicalOrder ClinicalOrder  @relation(fields: [clinicalOrderId], references: [id], onDelete: Restrict)
-  labTest       LabTest        @relation(fields: [labTestId], references: [id])
-  labPanel      LabPanel?      @relation(fields: [labPanelId], references: [id])
-  specimen      Specimen?      @relation(fields: [specimenId], references: [id])
-  charge        Charge?        @relation(fields: [chargeId], references: [id])
-  amends        LabOrderTest?  @relation("LabResultAmendment", fields: [amendsId], references: [id])
-  amendments    LabOrderTest[] @relation("LabResultAmendment")
+  clinicalOrder  ClinicalOrder  @relation(fields: [clinicalOrderId], references: [id], onDelete: Restrict)
+  labTest        LabTest        @relation(fields: [labTestId], references: [id])
+  labPanel       LabPanel?      @relation(fields: [labPanelId], references: [id])
+  specimen       Specimen?      @relation(fields: [specimenId], references: [id])
+  charge         Charge?        @relation(fields: [chargeId], references: [id])
+  amends         LabOrderTest?  @relation("LabResultAmendment", fields: [amendsId], references: [id])
+  amendments     LabOrderTest[] @relation("LabResultAmendment")
+  // P2 §14, Category A: result entry/verification is patient-safety-
+  // critical and must survive the entering/verifying staff member's account
+  // being deactivated.
+  enteredByUser  User?          @relation("LabOrderTestEnterer", fields: [enteredBy], references: [id], onDelete: Restrict)
+  verifiedByUser User?          @relation("LabOrderTestVerifier", fields: [verifiedBy], references: [id], onDelete: Restrict)
 
   @@index([organizationId, status])
   @@index([clinicalOrderId])
@@ -3353,6 +3777,13 @@ model DispensingRecord {
   dispensedBy        String?          @map("dispensed_by")
   dispensedAt        DateTime?        @map("dispensed_at") @db.Timestamptz(3)
   notes              String?
+  // Targeted backlog closure, item 8: true only when the selected catalog
+  // medication didn't obviously match the prescribed one (see
+  // src/lib/utils/medication-match.ts) AND the pharmacist explicitly
+  // confirmed the substitution was intentional — never set for an ordinary,
+  // obviously-matching dispense. Default false, not "unknown" — a normal
+  // dispense against a matching medication never needed confirmation.
+  substitutionConfirmed Boolean       @default(false) @map("substitution_confirmed")
   createdAt          DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
 
   organization     Organization       @relation(fields: [organizationId], references: [id])
@@ -3363,6 +3794,11 @@ model DispensingRecord {
   patient          Patient            @relation(fields: [patientId], references: [id])
   charge           Charge?            @relation(fields: [chargeId], references: [id])
   returns          DispensingReturn[]
+  // P2 §14, Category A: medication verification/dispensing is patient-
+  // safety-critical (controlled substances, dosing errors) and must survive
+  // the verifying/dispensing staff member's account being deactivated.
+  verifiedByUser   User?              @relation("DispensingRecordVerifier", fields: [verifiedBy], references: [id], onDelete: Restrict)
+  dispensedByUser  User?              @relation("DispensingRecordDispenser", fields: [dispensedBy], references: [id], onDelete: Restrict)
 
   @@unique([organizationId, dispensingNumber])
   @@index([organizationId, status])
@@ -3394,6 +3830,9 @@ model DispensingReturn {
   // never an edit" purpose; a return record must not vanish with the
   // dispensing record it corrects.
   dispensingRecord DispensingRecord @relation(fields: [dispensingRecordId], references: [id], onDelete: Restrict)
+  // P2 §14, Category A: same controlled-substance/patient-safety reasoning
+  // as DispensingRecord.verifiedByUser/dispensedByUser.
+  returnedByUser   User?            @relation("DispensingReturnReturner", fields: [returnedBy], references: [id], onDelete: Restrict)
 
   @@index([dispensingRecordId])
   @@map("dispensing_return")
@@ -3478,18 +3917,71 @@ model ImagingOrder {
   notes            String?
   createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  organization   Organization   @relation(fields: [organizationId], references: [id])
+  organization    Organization   @relation(fields: [organizationId], references: [id])
   // P0-05: was Cascade — an actual radiology report must not vanish with
   // its parent ClinicalOrder.
-  clinicalOrder  ClinicalOrder  @relation(fields: [clinicalOrderId], references: [id], onDelete: Restrict)
-  imagingService ImagingService @relation(fields: [imagingServiceId], references: [id])
-  charge         Charge?        @relation(fields: [chargeId], references: [id])
-  room           Room?          @relation(fields: [roomId], references: [id])
+  clinicalOrder   ClinicalOrder  @relation(fields: [clinicalOrderId], references: [id], onDelete: Restrict)
+  imagingService  ImagingService @relation(fields: [imagingServiceId], references: [id])
+  charge          Charge?        @relation(fields: [chargeId], references: [id])
+  room            Room?          @relation(fields: [roomId], references: [id])
+  // P2 §14, Category A: the perform/report/verify chain is patient-safety-
+  // critical (same reasoning as LabOrderTest's entered/verified pair) and
+  // must survive the relevant staff member's account being deactivated.
+  performedByUser User?          @relation("ImagingOrderPerformer", fields: [performedBy], references: [id], onDelete: Restrict)
+  reportedByUser  User?          @relation("ImagingOrderReporter", fields: [reportedBy], references: [id], onDelete: Restrict)
+  verifiedByUser  User?          @relation("ImagingOrderVerifier", fields: [verifiedBy], references: [id], onDelete: Restrict)
+
+  amendments ImagingReportAmendment[]
 
   @@unique([organizationId, accessionNumber])
   @@index([organizationId, status])
   @@index([imagingServiceId])
   @@map("imaging_order")
+}
+
+// Targeted backlog closure, item 7 (BACKLOG.md's "No amendment/correction
+// mechanism for finalized Radiology reports"): a verified ImagingOrder is
+// correctly immutable (nothing transitions it back out of "verified"), but
+// that previously left no supported way to correct a real error in a
+// finalized report. Lab's own equivalent (LabOrderTest.isCurrent/amendsId)
+// reuses the SAME row shape for its correction because a ClinicalOrder can
+// own many LabOrderTest rows already — creating one more for an amendment
+// costs nothing structurally. ImagingOrder is different: it has exactly one
+// row per ClinicalOrder (`clinicalOrderId` is `@unique`), so the identical
+// "create a second row, flip isCurrent" trick isn't available without
+// relaxing that uniqueness — a much wider, riskier change touching every
+// existing `findUnique`-by-clinicalOrderId lookup across the radiology
+// domain. This narrow, dedicated table gets the same conceptual outcome
+// (the original stays frozen forever; a correction is a new, separate,
+// fully-audited row; "current" is derived, never overwritten) without
+// touching ImagingOrder's own shape or any existing query against it.
+model ImagingReportAmendment {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  imagingOrderId String   @map("imaging_order_id")
+  reportText     String?  @map("report_text")
+  impression     String?
+  // Required (unlike Lab's own optional `notes` on amendLabResult) — item 7
+  // explicitly requires "reason for amendment required" for radiology, a
+  // deliberate, stricter divergence from Lab's looser convention, not an
+  // oversight.
+  reason         String
+  amendedBy      String   @map("amended_by")
+  amendedAt      DateTime @default(now()) @map("amended_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  // Restrict, not Cascade — an ImagingOrder with a real correction history
+  // must never disappear with it (same P0-05 discipline as ImagingOrder's
+  // own relation to ClinicalOrder).
+  imagingOrder ImagingOrder @relation(fields: [imagingOrderId], references: [id], onDelete: Restrict)
+  // P2 §14, Category A: who corrected a finalized clinical report is
+  // patient-safety/medico-legal evidence — must survive that staff member's
+  // account being deactivated, same reasoning as every other clinical actor
+  // FK in this schema.
+  amendedByUser User @relation("ImagingReportAmendmentAmender", fields: [amendedBy], references: [id], onDelete: Restrict)
+
+  @@index([imagingOrderId, amendedAt])
+  @@map("imaging_report_amendment")
 }
 
 // ---------------------------------------------------------------------------
@@ -3727,6 +4219,10 @@ model Claim {
   @@index([branchId])
   @@index([patientId])
   @@index([payorId])
+  // P2 §3: listClaims (org+optional status/branchId, orderBy createdAt
+  // desc, currently fully unbounded — see P2_FINDINGS.md §8) had no date
+  // index at all.
+  @@index([organizationId, createdAt])
   @@map("claim")
 }
 

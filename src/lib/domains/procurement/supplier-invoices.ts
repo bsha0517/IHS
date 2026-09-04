@@ -7,8 +7,12 @@ import { auditFromSession } from "@/lib/platform/audit"
 import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/outbox"
 import "@/lib/platform/event-handlers"
 import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
+import { resolvePage, paginationSkipTake, totalPages } from "@/lib/platform/pagination"
+import { claimIdempotencyKey, recordIdempotentResult, resolveDuplicateRequest, isIdempotencyKeyConflict } from "@/lib/platform/idempotency"
 import type { SessionContext } from "@/lib/auth/session"
 import type { SupplierInvoiceInput, SupplierPaymentInput } from "@/lib/domains/procurement/schemas"
+
+const SUPPLIER_INVOICE_IDEMPOTENCY_SCOPE = "supplier_invoice.create"
 
 /**
  * P1 §32 (finding A3, same shape as `applyPaymentAtomically` /
@@ -56,33 +60,60 @@ async function applySupplierPaymentAtomically(
  * posting-service.ts) rather than synchronously in this transaction — same
  * cross-domain-trigger reasoning as postGoodsReceiptCompleted, not the
  * direct-user-action reasoning postExpense/postAssetAcquired use.
+ *
+ * P3.8 §41: `idempotencyKey`, when the caller supplies one (the
+ * SupplierInvoiceDialog generates one per dialog-open, the same pattern
+ * ReceiveDialog already used — see createGoodsReceiptAction/
+ * createAdHocCharge), makes a double-submitted request (double-click,
+ * network retry) return the SAME invoice instead of creating a second real
+ * AP liability. This dialog is a genuine operational step on the P3.8
+ * procurement screen (Purchasing page and the PO detail page both render
+ * it), so the same double-submit risk `createGoodsReceipt`/
+ * `createAdHocCharge` were already fixed for applies here too.
  */
-export async function createSupplierInvoice(session: SessionContext, input: SupplierInvoiceInput) {
+export async function createSupplierInvoice(session: SessionContext, input: SupplierInvoiceInput & { idempotencyKey?: string }) {
   assertCan(session, "supplier_invoice.manage", { branchId: input.branchId })
 
-  const created = await db.$transaction(async (tx) => {
-    const invoice = await tx.supplierInvoice.create({
-      data: {
+  let created
+  try {
+    created = await db.$transaction(async (tx) => {
+      if (input.idempotencyKey) {
+        await claimIdempotencyKey(tx, { organizationId: session.user.organizationId, scope: SUPPLIER_INVOICE_IDEMPOTENCY_SCOPE, key: input.idempotencyKey })
+      }
+
+      const invoice = await tx.supplierInvoice.create({
+        data: {
+          organizationId: session.user.organizationId,
+          branchId: input.branchId,
+          supplierId: input.supplierId,
+          purchaseOrderId: input.purchaseOrderId ?? null,
+          invoiceNumber: input.invoiceNumber,
+          amount: new Decimal(input.amount),
+          taxAmount: new Decimal(input.taxAmount ?? 0),
+          dueDate: input.dueDate ?? null,
+          createdBy: session.user.id,
+        },
+      })
+
+      await writeOutboxEvent(tx, {
         organizationId: session.user.organizationId,
-        branchId: input.branchId,
-        supplierId: input.supplierId,
-        purchaseOrderId: input.purchaseOrderId ?? null,
-        invoiceNumber: input.invoiceNumber,
-        amount: new Decimal(input.amount),
-        taxAmount: new Decimal(input.taxAmount ?? 0),
-        dueDate: input.dueDate ?? null,
-        createdBy: session.user.id,
-      },
-    })
+        eventType: "SupplierInvoiceCreated",
+        payload: { supplierInvoiceId: invoice.id },
+      })
 
-    await writeOutboxEvent(tx, {
-      organizationId: session.user.organizationId,
-      eventType: "SupplierInvoiceCreated",
-      payload: { supplierInvoiceId: invoice.id },
-    })
+      if (input.idempotencyKey) {
+        await recordIdempotentResult(tx, { organizationId: session.user.organizationId, scope: SUPPLIER_INVOICE_IDEMPOTENCY_SCOPE, key: input.idempotencyKey, resultId: invoice.id })
+      }
 
-    return invoice
-  })
+      return invoice
+    })
+  } catch (error) {
+    if (input.idempotencyKey && isIdempotencyKeyConflict(error)) {
+      const resultId = await resolveDuplicateRequest({ organizationId: session.user.organizationId, scope: SUPPLIER_INVOICE_IDEMPOTENCY_SCOPE, key: input.idempotencyKey })
+      return getSupplierInvoice(session, resultId) // idempotent replay — the original request's own result, not a new invoice
+    }
+    throw error
+  }
 
   await auditFromSession(session, "create", "supplier_invoice", created.id, {
     new: { invoiceNumber: created.invoiceNumber, amount: input.amount, taxAmount: input.taxAmount ?? 0 },
@@ -98,6 +129,11 @@ export async function recordSupplierPayment(session: SessionContext, input: Supp
   const invoice = await db.supplierInvoice.findFirstOrThrow({
     where: { id: input.supplierInvoiceId, organizationId: session.user.organizationId },
   })
+  // P3.8 §46: previously unchecked — any session holding `supplier_invoice.manage`
+  // anywhere could pay ANY branch's supplier invoice. getSupplierInvoice/
+  // listSupplierInvoices already enforced this on the read side; this write
+  // path did not.
+  assertBranchAccess(getAuthorizedBranchScope(session), invoice.branchId)
   if (invoice.status === "cancelled") throw new Error("Cannot pay a cancelled supplier invoice.")
   // Total AP obligation is amount + taxAmount (P1 §15) — matching the total
   // credited to Accounts Payable by postSupplierInvoiceCreated, not `amount`
@@ -144,20 +180,72 @@ export async function recordSupplierPayment(session: SessionContext, input: Supp
   return result
 }
 
-export async function listSupplierInvoices(session: SessionContext, filters: { supplierId?: string; status?: string } = {}) {
+const SUPPLIER_INVOICE_PAGE_SIZE = 50
+
+/** P2 §8: was `take: 100` with no page param. Real server-side pagination now. */
+export async function listSupplierInvoices(session: SessionContext, filters: { supplierId?: string; status?: string; page?: number } = {}) {
   assertCan(session, "supplier_invoice.manage")
   const scope = getAuthorizedBranchScope(session)
-  return db.supplierInvoice.findMany({
-    where: {
-      organizationId: session.user.organizationId,
-      supplierId: filters.supplierId,
-      status: filters.status as never,
-      branchId: narrowBranchFilter(scope),
-    },
-    include: { supplier: true, purchaseOrder: true, payments: true },
-    orderBy: { createdAt: "desc" },
-    take: 100,
-  })
+  const page = resolvePage(filters.page)
+  const where: Prisma.SupplierInvoiceWhereInput = {
+    organizationId: session.user.organizationId,
+    supplierId: filters.supplierId,
+    status: filters.status as never,
+    branchId: narrowBranchFilter(scope),
+  }
+  const [invoices, total] = await Promise.all([
+    db.supplierInvoice.findMany({
+      where,
+      include: { supplier: true, purchaseOrder: true, payments: true },
+      orderBy: { createdAt: "desc" },
+      ...paginationSkipTake(page, SUPPLIER_INVOICE_PAGE_SIZE),
+    }),
+    db.supplierInvoice.count({ where }),
+  ])
+  return { invoices, total, page, pageSize: SUPPLIER_INVOICE_PAGE_SIZE, totalPages: totalPages(total, SUPPLIER_INVOICE_PAGE_SIZE) }
+}
+
+/**
+ * Backs the Payables page — every supplier invoice still owed money.
+ *
+ * P2 §8: previously the page fetched `listSupplierInvoices` (all
+ * statuses, unbounded) and filtered to pending/partially_paid in
+ * JavaScript — exactly the "load everything, filter/paginate only in the
+ * browser-side code" pattern this section exists to close, even though
+ * the filtering happened in a server component rather than the browser
+ * itself. The status filter now runs in the WHERE clause, so pagination
+ * and the "total owed" figure are both correct regardless of how many
+ * paid/cancelled invoices exist alongside the outstanding ones.
+ */
+export async function listOutstandingSupplierInvoices(session: SessionContext, filters: { page?: number } = {}) {
+  assertCan(session, "supplier_invoice.manage")
+  const scope = getAuthorizedBranchScope(session)
+  const page = resolvePage(filters.page)
+  const where: Prisma.SupplierInvoiceWhereInput = {
+    organizationId: session.user.organizationId,
+    branchId: narrowBranchFilter(scope),
+    status: { in: ["pending", "partially_paid"] },
+  }
+  const [invoices, total, sums] = await Promise.all([
+    db.supplierInvoice.findMany({
+      where,
+      include: { supplier: true, purchaseOrder: true, payments: true },
+      orderBy: { createdAt: "desc" },
+      ...paginationSkipTake(page, SUPPLIER_INVOICE_PAGE_SIZE),
+    }),
+    db.supplierInvoice.count({ where }),
+    db.supplierInvoice.aggregate({ where, _sum: { amount: true, taxAmount: true, paidAmount: true } }),
+  ])
+  // P3.9 §27: was `amount - paidAmount` — omitted taxAmount entirely, so any
+  // taxed supplier invoice understated both this row's own "Outstanding"
+  // figure and the Payables page's "total owed" banner by exactly its tax
+  // amount. The real AP obligation is amount + taxAmount (P1 §15) — the
+  // same total postSupplierInvoiceCreated actually credited to Accounts
+  // Payable, and what recordSupplierPayment's own outstanding-balance guard
+  // (above) already checks against; this was the one place still using the
+  // narrower, wrong total.
+  const totalOutstanding = Number(sums._sum.amount ?? 0) + Number(sums._sum.taxAmount ?? 0) - Number(sums._sum.paidAmount ?? 0)
+  return { invoices, total, totalOutstanding, page, pageSize: SUPPLIER_INVOICE_PAGE_SIZE, totalPages: totalPages(total, SUPPLIER_INVOICE_PAGE_SIZE) }
 }
 
 export async function getSupplierInvoice(session: SessionContext, id: string) {

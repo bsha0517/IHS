@@ -1,3 +1,4 @@
+import Link from "next/link"
 import { redirect } from "next/navigation"
 import { getCurrentSession } from "@/lib/auth/session"
 import { can } from "@/lib/platform/permissions-core"
@@ -6,6 +7,7 @@ import { formatDate } from "@/lib/utils/dates"
 import { Card, CardContent } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { LineEditDialog } from "@/app/(dashboard)/payroll/[id]/line-edit-dialog"
 import { MoveToReviewButton, ApproveRunButton, MarkPaidDialog } from "@/app/(dashboard)/payroll/[id]/workflow-actions"
 
@@ -70,7 +72,12 @@ export default async function PayrollRunDetailPage({ params }: { params: Promise
                     <TableCell className="text-right">{Number(l.bonus).toFixed(2)}</TableCell>
                     <TableCell className="text-right">{deductions.toFixed(2)}</TableCell>
                     <TableCell className="text-right font-medium">{Number(l.netSalary).toFixed(2)}</TableCell>
-                    <TableCell>
+                    <TableCell className="flex items-center gap-1">
+                      <Button asChild size="sm" variant="outline">
+                        <Link href={`/payslips/${l.id}/print`} target="_blank">
+                          Payslip
+                        </Link>
+                      </Button>
                       {editable && canProcess && (
                         <LineEditDialog
                           line={{

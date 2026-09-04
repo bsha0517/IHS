@@ -26,11 +26,13 @@ export default async function PurchaseOrderDetailPage({ params }: { params: Prom
   if (!session || !can(session, "purchase_order.create")) redirect("/dashboard")
 
   const { id } = await params
-  const [po, receipts, branches] = await Promise.all([
+  const [po, receiptsResult, branches] = await Promise.all([
     getPurchaseOrder(session, id),
+    // Scoped to one purchase order — naturally small, no pagination UI needed here.
     listGoodsReceipts(session, { purchaseOrderId: id }),
     listAccessibleBranches(session),
   ])
+  const receipts = receiptsResult.receipts
 
   const outstandingLines = po.lines
     .filter((l) => l.receivedQuantity < l.quantity)

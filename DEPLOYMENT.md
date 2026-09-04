@@ -19,7 +19,8 @@ If a real deployment later needs richer charts, native Excel export, or programm
 
 ## Environments
 
-- **Local development**: `next dev` against a real Postgres database (this project has used a Supabase-hosted instance throughout, not a local/Docker Postgres — see Migrations below for the one real workflow constraint that comes from that).
+- **Local development**: `next dev` against a local Docker Postgres instance (`his_dev`) — see [LOCAL_DATABASE_SETUP.md](LOCAL_DATABASE_SETUP.md). **Corrected from earlier in this project's history**: local dev and the integration suite both ran against the same shared, remote Supabase-hosted database through P0/P1/P2 — the root cause of this suite's repeated nondeterministic failures, since that database was (and staging/production still are) also reachable by the live Vercel deployment. Local dev/test now run entirely against local Postgres containers instead; see Migrations below for the Supabase-specific workflow constraint that no longer applies locally as a result.
+- **Testing**: the integration suite (`npm run test:integration` / `npm run test`) runs against a second, disposable local database (`his_test`), never against `DATABASE_URL`/Supabase — enforced by `test/setup-test-database.ts`, which refuses to run at all if the configured test database looks like it points at Supabase or any other hosted/shared host. **Integration tests must never run against a staging or production Supabase database** — this is the explicit policy, not just an incidental default; see LOCAL_DATABASE_SETUP.md for how it's technically enforced.
 - **Production**: same Next.js application, `next build && next start` (or a platform that runs those for you — e.g. Vercel, or any Node host). No file storage, SMS/WhatsApp/Email provider, or other external service is wired up yet — see below.
 
 **No file storage adapter exists** — every phase that touched documents (`EmployeeDocument`, `Asset` maintenance/calibration records, patient documents) deliberately stayed metadata-only (see PROJECT_STATUS.md's many "no file storage" Known Issues entries). There is no `STORAGE_DRIVER`/S3 configuration to set because there is no code path that reads one.
@@ -33,8 +34,19 @@ DATABASE_URL=        # Postgres connection string, required. The RUNTIME connect
                       # used by the running application (src/lib/db.ts) for every
                       # request. Must point at the restricted `avant_app_runtime` role,
                       # never the schema owner — see "Database Privileges" below.
-                      # This project connects through Supabase's Supavisor pooler
-                      # (aws-*.pooler.supabase.com:5432).
+                      # Must use Supabase's Supavisor pooler in TRANSACTION mode
+                      # (aws-*.pooler.supabase.com:6543, with ?pgbouncer=true) — never
+                      # session mode (port 5432), which this line incorrectly named
+                      # before this correction. Session mode holds one Postgres
+                      # connection per pooled client for the client's whole lifetime;
+                      # under serverless concurrency (each Vercel function instance
+                      # opening its own `pg.Pool`, src/lib/db.ts) that exhausts the
+                      # pooler's own connection cap fast — this is exactly what caused
+                      # a real production `EMAXCONNSESSION` ("max clients reached in
+                      # session mode") outage. Transaction mode returns the underlying
+                      # connection to the pooler after each query/transaction instead
+                      # of holding it for the client's lifetime, which is what
+                      # serverless needs — see src/lib/db.ts's own doc comment.
 DIRECT_DATABASE_URL=  # Postgres connection string, required for migrations. The
                       # MIGRATION connection — used only by the Prisma CLI
                       # (migrate/generate/db seed, see prisma.config.ts). Must point
@@ -49,23 +61,34 @@ CRON_SECRET=          # Optional. Bearer token /api/cron/outbox-sweep requires (
 OUTBOX_PROCESSING_TIMEOUT_MS=  # Optional, default 300000 (5 minutes). How long an
                       # outbox event may sit in "processing" before P1 §3's recovery
                       # presumes it crashed — see src/lib/platform/outbox.ts.
+
+TEST_DATABASE_URL=   # Local development/testing only — never set in a deployed
+TEST_DIRECT_DATABASE_URL=  # (staging/production) environment. The integration
+                      # suite's own runtime/owner connections to the disposable
+                      # `his_test` database — substituted in automatically by
+                      # test/setup-test-database.ts, never read by application
+                      # code. See LOCAL_DATABASE_SETUP.md.
 ```
 
 `SESSION_SECRET` was named in Phase 0's speculative env var list but is never read anywhere — session/reset tokens are 256-bit `crypto.randomBytes` values (`src/lib/auth/tokens.ts`), hashed with SHA-256 before storage; the token's own randomness is what makes it unguessable, not an HMAC secret, so there was never a code path that needed one. `STORAGE_DRIVER`/`S3_*` were likewise speculative and are unused for the reason above.
 
 `DATABASE_URL` and `DIRECT_DATABASE_URL` both fail loudly at import/CLI-invocation time if missing — the former via Prisma Client construction in `src/lib/db.ts`, the latter via `prisma.config.ts`'s own datasource resolution. There is currently no separate explicit "fail loudly at process boot" check beyond that.
 
+## Release Process (P4.8)
+
+**A specific release/upgrade — not just a first-time deployment** — now has its own dedicated process: [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) (what to confirm), [docs/RELEASE_RUNBOOK.md](docs/RELEASE_RUNBOOK.md) (the actual commands, in order), and [docs/DATABASE_MIGRATION_SAFETY.md](docs/DATABASE_MIGRATION_SAFETY.md) (migration classification, expand/migrate/contract, rollback philosophy). `npm run release:check` is the single pre-release gate (schema validation, migration drift, typecheck, lint, component tests, integration tests, build — stops at the first failure); `npm run db:upgrade:drill` is a real local migration-rehearsal drill. This section and the Deployment Checklist below remain the authoritative *first-time* production setup steps; the release docs above are what every *subsequent* release follows.
+
 ## Migrations
 
 `prisma migrate deploy` as an explicit, separate deploy step — never auto-applied on server boot, consistent throughout all 14 phases.
 
-**A real, binding workflow constraint discovered in Phase 3 and re-confirmed through Phase 10, not the originally-planned one**: `prisma migrate dev` does not work cleanly against this Supabase-hosted database — its shadow-database drift detection flags Supabase's own pre-installed extensions (`pgcrypto`, `pg_stat_statements`, etc.) as drift, and `migrate dev --create-only` has been observed to hang indefinitely attempting shadow-database creation. Every migration in this project's history (30 total — the final count, as of the P1 remediation pass's conclusion, Batch 10) was instead generated via:
+**A real, binding workflow constraint discovered in Phase 3 and re-confirmed through Phase 10, not the originally-planned one**: `prisma migrate dev` does not work cleanly against a Supabase-hosted database — its shadow-database drift detection flags Supabase's own pre-installed extensions (`pgcrypto`, `pg_stat_statements`, etc.) as drift, and `migrate dev --create-only` has been observed to hang indefinitely attempting shadow-database creation. Every migration in this project's history (32 total, as of the P2 remediation pass's conclusion) was instead generated via:
 
 ```bash
 prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --script
 ```
 
-with the "Loaded Prisma config..." noise line stripped, the SQL reviewed by hand, placed into a manually-created `prisma/migrations/<timestamp>_<name>/migration.sql`, and applied with `prisma migrate deploy`. A production deployment against a different (non-Supabase-pooled) Postgres instance may not hit this constraint, but this codebase's own migration history was built entirely through the manual path — reproduce a fresh environment the same way, not via `migrate dev`.
+with the "Loaded Prisma config..." noise line stripped, the SQL reviewed by hand, placed into a manually-created `prisma/migrations/<timestamp>_<name>/migration.sql`, and applied with `prisma migrate deploy`. This constraint is specific to Supabase's shadow-database behavior — it applies to staging/production (still Supabase-hosted) but not to the local `his_dev`/`his_test` Postgres containers [LOCAL_DATABASE_SETUP.md](LOCAL_DATABASE_SETUP.md) introduced, which are plain Postgres with no such quirk. `npm run db:dev:setup`/`db:test:setup` still use `migrate deploy` (never `migrate dev`) regardless, for consistency with the one workflow this project's entire migration history was built and tested through — reproduce a fresh environment the same way.
 
 ## Database Privileges (P0-06, closed for real in P1 §1 — 2026-08-27)
 

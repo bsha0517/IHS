@@ -1,15 +1,17 @@
 import { redirect } from "next/navigation"
 import { getCurrentSession } from "@/lib/auth/session"
 import { can } from "@/lib/platform/permissions-core"
-import { listEmployees } from "@/lib/domains/hr/employees"
+import { listActiveEmployeeRoster } from "@/lib/domains/hr/employees"
 import { listShifts, listAttendance } from "@/lib/domains/hr/attendance"
 import { formatDate, formatTime } from "@/lib/utils/dates"
 import { Card, CardContent } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { CheckInButton, CheckOutButton } from "@/app/(dashboard)/attendance/roster-actions"
 import { ShiftDialog } from "@/app/(dashboard)/attendance/shift-dialog"
+import { AdjustAttendanceDialog } from "@/app/(dashboard)/attendance/adjust-dialog"
 
 export default async function AttendancePage() {
   const session = await getCurrentSession()
@@ -19,7 +21,7 @@ export default async function AttendancePage() {
   const canManage = can(session, "employee.manage")
 
   const [employees, shifts, todayRecords, recentHistory] = await Promise.all([
-    listEmployees(session, { status: "active" }),
+    listActiveEmployeeRoster(session),
     listShifts(session),
     listAttendance(session, { from: startOfToday(), to: endOfToday() }),
     listAttendance(session),
@@ -29,7 +31,7 @@ export default async function AttendancePage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Attendance</h1>
+      <PageHeader title="Attendance" />
 
       <Tabs defaultValue="roster">
         <TabsList>
@@ -72,7 +74,7 @@ export default async function AttendancePage() {
                           <Badge variant={record?.checkInAt ? "default" : "outline"}>{record ? record.status.replace("_", " ") : "not checked in"}</Badge>
                         </TableCell>
                         <TableCell>
-                          {canRecord && !record?.checkInAt && <CheckInButton employeeId={e.id} branchId={e.branchId} shiftId={shifts[0]?.id ?? null} />}
+                          {canRecord && !record?.checkInAt && <CheckInButton employeeId={e.id} branchId={e.branchId} shifts={shifts} />}
                           {canRecord && record?.checkInAt && !record.checkOutAt && <CheckOutButton attendanceRecordId={record.id} />}
                         </TableCell>
                       </TableRow>
@@ -99,12 +101,13 @@ export default async function AttendancePage() {
                     <TableHead>Late</TableHead>
                     <TableHead>Overtime</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {recentHistory.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center text-muted-foreground">
+                      <TableCell colSpan={10} className="text-center text-muted-foreground">
                         No attendance history yet.
                       </TableCell>
                     </TableRow>
@@ -123,6 +126,21 @@ export default async function AttendancePage() {
                       <TableCell>{r.overtimeMinutes > 0 ? `${r.overtimeMinutes}m` : "—"}</TableCell>
                       <TableCell>
                         <Badge variant="outline">{r.status.replace("_", " ")}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        {canManage && (
+                          <AdjustAttendanceDialog
+                            record={{
+                              id: r.id,
+                              employeeName: `${r.employee.firstName} ${r.employee.lastName}`,
+                              checkInAt: r.checkInAt ? r.checkInAt.toISOString() : null,
+                              checkOutAt: r.checkOutAt ? r.checkOutAt.toISOString() : null,
+                              breakMinutes: r.breakMinutes,
+                              status: r.status,
+                              notes: r.notes,
+                            }}
+                          />
+                        )}
                       </TableCell>
                     </TableRow>
                   ))}

@@ -1,6 +1,7 @@
 import "server-only"
 import type { SessionContext } from "@/lib/auth/session"
 import { ForbiddenError } from "@/lib/platform/permissions-core"
+import { log } from "@/lib/platform/logger"
 
 const SUPER_ADMIN_ROLE = "Super Admin"
 
@@ -68,6 +69,19 @@ export function narrowBranchFilter(scope: BranchScope, requestedBranchId?: strin
 export function assertBranchAccess(scope: BranchScope, branchId: string | null | undefined): void {
   if (scope.isOrgWide) return
   if (!branchId || !scope.branchIds.includes(branchId)) {
+    // P2 §16: "authorization anomalies" — deliberately not logged at every
+    // `can()`/`assertCan()` permission denial (those are routine — a nav
+    // item hidden from a role, a button correctly disabled — and logging
+    // every one would be exactly the "noisy logging for every ordinary
+    // operation" P2.md §16 warns against). This one is narrower and more
+    // meaningful: a session that already passed a permission check is
+    // reaching for one *specific, already-identified* record outside its
+    // own branch scope — either a UI bug linking somewhere it shouldn't, or
+    // someone probing a resource id directly. Worth a log line either way.
+    log({
+      level: "warn", event: "auth.branch_access_denied", domain: "auth", operation: "assertBranchAccess",
+      organizationId: scope.organizationId, branchId: branchId ?? undefined,
+    })
     throw new ForbiddenError("branch.access")
   }
 }

@@ -4,6 +4,7 @@ import { can } from "@/lib/platform/permissions-core"
 import { listPackages } from "@/lib/domains/packages/service"
 import { listServices } from "@/lib/domains/services/service"
 import { Card, CardContent } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { NewPackageDialog } from "@/app/(dashboard)/packages/package-dialog"
@@ -18,13 +19,11 @@ export default async function PackagesPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Packages</h1>
-          <p className="text-sm text-muted-foreground">{packages.length} package(s)</p>
-        </div>
-        {canManage && <NewPackageDialog services={serviceOptions} />}
-      </div>
+      <PageHeader
+        title="Packages"
+        description={`${packages.length} package(s)`}
+        primaryAction={canManage && <NewPackageDialog services={serviceOptions} />}
+      />
 
       <Card>
         <CardContent>

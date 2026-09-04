@@ -5,7 +5,7 @@ import { requestPasswordReset, confirmPasswordReset } from "@/lib/auth/service"
 
 export type ResetRequestState = { error?: string; submitted?: boolean }
 
-const requestSchema = z.object({ email: z.email() })
+const requestSchema = z.object({ email: z.email().max(254) })
 
 /**
  * Always returns the same shape regardless of whether the account exists
@@ -25,9 +25,9 @@ export async function requestPasswordResetAction(_prevState: ResetRequestState, 
 export type ResetConfirmState = { error?: string; success?: boolean }
 
 const confirmSchema = z.object({
-  token: z.string().min(1),
-  password: z.string().min(8, "Password must be at least 8 characters"),
-  confirmPassword: z.string(),
+  token: z.string().min(1).max(256),
+  password: z.string().min(8, "Password must be at least 8 characters").max(256),
+  confirmPassword: z.string().max(256),
 })
 
 export async function confirmPasswordResetAction(_prevState: ResetConfirmState, formData: FormData): Promise<ResetConfirmState> {

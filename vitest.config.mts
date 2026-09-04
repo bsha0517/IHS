@@ -12,7 +12,12 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    setupFiles: ["dotenv/config"],
+    // Order matters: dotenv populates process.env from .env first, then
+    // setup-test-database.ts substitutes DATABASE_URL/DIRECT_DATABASE_URL
+    // with TEST_DATABASE_URL/TEST_DIRECT_DATABASE_URL before any test file
+    // (and therefore src/lib/db.ts) is imported — see that file's own
+    // comment and LOCAL_DATABASE_SETUP.md.
+    setupFiles: ["dotenv/config", "./test/setup-test-database.ts"],
     include: ["src/**/*.test.ts", "test/**/*.test.ts"],
     // Integration tests share one real Postgres connection pool (src/lib/db.ts) and some
     // create/delete real rows scoped to their own uniquely-named fixtures — run files

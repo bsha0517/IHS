@@ -174,14 +174,24 @@ export async function addDiagnosisAction(_prev: ActionState, formData: FormData)
   return { success: true }
 }
 
+// Targeted backlog closure, item 5: previously threw straight through with
+// no try/catch, unhandled client-side and only visible via the generic
+// route error boundary. Matches the same catch-and-return-ActionState
+// convention every other action in this file (e.g. cancelPrescriptionAction
+// below) already uses.
 export async function updateDiagnosisStatusAction(
   encounterId: string,
   diagnosisId: string,
   status: "active" | "resolved" | "ruled_out"
-) {
+): Promise<ActionState> {
   const session = await requireSession()
-  await updateDiagnosisStatus(session, diagnosisId, status)
+  try {
+    await updateDiagnosisStatus(session, diagnosisId, status)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to update diagnosis status." }
+  }
   revalidateEncounter(encounterId)
+  return { success: true }
 }
 
 export async function createOrderAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
@@ -222,10 +232,16 @@ export async function updateOrderStatusAction(
   revalidateEncounter(encounterId)
 }
 
-export async function cancelOrderAction(encounterId: string, orderId: string, reason: string) {
+// Targeted backlog closure, item 5 — see updateDiagnosisStatusAction's comment.
+export async function cancelOrderAction(encounterId: string, orderId: string, reason: string): Promise<ActionState> {
   const session = await requireSession()
-  await cancelOrder(session, orderId, reason)
+  try {
+    await cancelOrder(session, orderId, reason)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to cancel order." }
+  }
   revalidateEncounter(encounterId)
+  return { success: true }
 }
 
 export async function createPrescriptionAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
@@ -250,10 +266,15 @@ export async function createPrescriptionAction(_prev: ActionState, formData: For
   return { success: true }
 }
 
-export async function cancelPrescriptionAction(encounterId: string, prescriptionId: string) {
+export async function cancelPrescriptionAction(encounterId: string, prescriptionId: string): Promise<ActionState> {
   const session = await requireSession()
-  await cancelPrescription(session, prescriptionId)
+  try {
+    await cancelPrescription(session, prescriptionId)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to cancel prescription." }
+  }
   revalidateEncounter(encounterId)
+  return { success: true }
 }
 
 export async function recommendFollowUpAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
@@ -274,8 +295,14 @@ export async function recommendFollowUpAction(_prev: ActionState, formData: Form
   return { success: true }
 }
 
-export async function dismissFollowUpAction(encounterId: string, followUpId: string) {
+// Targeted backlog closure, item 5 — see updateDiagnosisStatusAction's comment.
+export async function dismissFollowUpAction(encounterId: string, followUpId: string): Promise<ActionState> {
   const session = await requireSession()
-  await dismissFollowUp(session, followUpId)
+  try {
+    await dismissFollowUp(session, followUpId)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to dismiss follow-up." }
+  }
   revalidateEncounter(encounterId)
+  return { success: true }
 }

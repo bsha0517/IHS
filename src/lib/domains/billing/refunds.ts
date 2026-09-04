@@ -6,7 +6,7 @@ import { auditFromSession } from "@/lib/platform/audit"
 import { nextNumber } from "@/lib/platform/sequences"
 import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/outbox"
 import "@/lib/platform/event-handlers"
-import { getAuthorizedBranchScope, narrowBranchFilter } from "@/lib/platform/branch-scope"
+import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
 import { applyRefundAtomically } from "@/lib/domains/billing/invoices"
 import type { SessionContext } from "@/lib/auth/session"
 import type { RequestRefundInput } from "@/lib/domains/billing/schemas"
@@ -23,6 +23,9 @@ export async function requestRefund(session: SessionContext, input: RequestRefun
   const invoice = await db.invoice.findFirstOrThrow({
     where: { id: input.invoiceId, organizationId: session.user.organizationId },
   })
+  // P3.7 §41: see charges.ts's `voidCharge` comment for the full reasoning
+  // — this applies identically across every write in this file.
+  assertBranchAccess(getAuthorizedBranchScope(session), invoice.branchId)
   if (new Decimal(input.amount).greaterThan(invoice.paidAmount)) {
     throw new Error(`Refund amount cannot exceed the ${Number(invoice.paidAmount).toFixed(2)} already paid on this invoice.`)
   }
@@ -55,6 +58,7 @@ export async function authorizeRefund(session: SessionContext, refundId: string)
   const refund = await db.refund.findFirstOrThrow({
     where: { id: refundId, organizationId: session.user.organizationId },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), refund.branchId)
   if (refund.status !== "requested") {
     throw new Error(`Only a requested refund can be authorized (this one is "${refund.status}").`)
   }
@@ -73,6 +77,7 @@ export async function rejectRefund(session: SessionContext, refundId: string, re
   const refund = await db.refund.findFirstOrThrow({
     where: { id: refundId, organizationId: session.user.organizationId },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), refund.branchId)
   if (refund.status !== "requested") {
     throw new Error(`Only a requested refund can be rejected (this one is "${refund.status}").`)
   }
@@ -93,6 +98,7 @@ export async function completeRefund(session: SessionContext, refundId: string, 
     where: { id: refundId, organizationId: session.user.organizationId },
     include: { invoice: true },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), refund.branchId)
   if (refund.status !== "authorized") {
     throw new Error(`Only an authorized refund can be completed (this one is "${refund.status}").`)
   }

@@ -15,6 +15,7 @@ const TIMEOUT = 60000
 describe("P1 §17: asset acquisition posting", () => {
   let organizationId: string
   let branchId: string
+  let userId: string
   let fixedAssetAccountId: string
   let apAccountId: string
   let bankAccountId: string
@@ -23,7 +24,7 @@ describe("P1 §17: asset acquisition posting", () => {
   function session(): SessionContext {
     return {
       sessionId: "test-asset-acquisition",
-      user: { id: "00000000-0000-0000-0000-0000000000f6", organizationId, email: "asset-acquisition-test@test.local", firstName: "Asset", lastName: "Test" },
+      user: { id: userId, organizationId, email: "asset-acquisition-test@test.local", firstName: "Asset", lastName: "Test" },
       activeBranchId: branchId,
       branchIds: [branchId],
       permissions: new Set(["asset.manage"]),
@@ -35,6 +36,12 @@ describe("P1 §17: asset acquisition posting", () => {
     const branch = await db.branch.findFirstOrThrow()
     organizationId = branch.organizationId
     branchId = branch.id
+    // P2 §14: previously a hardcoded, never-created id — createAsset's
+    // synchronous postAssetAcquired posting writes this straight into
+    // Journal.postedBy, which now has a real FK to `user` (§14, Category A).
+    // Same class of fix as the other test files this batch.
+    const user = await db.user.findFirstOrThrow({ where: { organizationId } })
+    userId = user.id
 
     const [fixedAsset, ap, bank] = await Promise.all([
       db.chartOfAccount.findFirstOrThrow({ where: { organizationId, code: "1400" } }),

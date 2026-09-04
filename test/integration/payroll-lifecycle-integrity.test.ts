@@ -48,7 +48,18 @@ describe("P1 §18: payroll lifecycle accounting and replay idempotency", () => {
     }
   }
 
+  // P3.10 §34/§35: PayrollRun now carries a real
+  // @@unique([organizationId, branchId, periodStart, periodEnd]) — this
+  // helper used to hardcode the exact same August 2026 period on every
+  // call, which was harmless before that constraint existed (each call's
+  // own run/line/journal rows are independently tracked and cleaned up) but
+  // collides with it now. Each call gets its own distinct period instead;
+  // nothing in this file's assertions depends on the specific dates.
+  let periodCounter = 0
   async function createRunWithLine(netSalary: number) {
+    periodCounter += 1
+    const periodStart = new Date(Date.UTC(2026, 7, 1) + periodCounter * 40 * 24 * 60 * 60 * 1000)
+    const periodEnd = new Date(periodStart.getTime() + 29 * 24 * 60 * 60 * 1000)
     const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     const employee = await db.employee.create({
       data: {
@@ -64,7 +75,7 @@ describe("P1 §18: payroll lifecycle accounting and replay idempotency", () => {
     const run = await db.payrollRun.create({
       data: {
         organizationId, branchId,
-        periodStart: new Date("2026-08-01"), periodEnd: new Date("2026-08-31"),
+        periodStart, periodEnd,
         createdBy: userId,
         lines: { create: [{ employeeId: employee.id, basicSalary: netSalary, netSalary }] },
       },

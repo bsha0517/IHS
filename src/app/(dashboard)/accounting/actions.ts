@@ -6,7 +6,10 @@ import { createAccount, updateAccount } from "@/lib/domains/accounting/chart-of-
 import { setMapping } from "@/lib/domains/accounting/account-mappings"
 import { createManualJournal, reverseJournal } from "@/lib/domains/accounting/journals"
 import { closePeriod, reopenPeriod } from "@/lib/domains/accounting/periods"
+import { getJournalTrace, REFERENCE_TYPE_LABELS } from "@/lib/domains/accounting/traceability"
+import { retryAccountingException, sweepAccountingExceptions } from "@/lib/domains/accounting/exceptions"
 import { chartOfAccountSchema, accountMappingSchema, manualJournalSchema } from "@/lib/domains/accounting/schemas"
+import { formatDateTime } from "@/lib/utils/dates"
 
 export type ActionState = { error?: string; success?: boolean }
 
@@ -131,4 +134,47 @@ export async function reopenPeriodAction(periodId: string, reason: string): Prom
   }
   revalidatePath("/accounting")
   return { success: true }
+}
+
+export async function retryAccountingExceptionAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const session = await requireSession()
+  const eventId = String(formData.get("eventId") ?? "")
+  try {
+    await retryAccountingException(session, eventId)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to retry." }
+  }
+  revalidatePath("/accounting")
+  return { success: true }
+}
+
+export async function sweepAccountingExceptionsAction(): Promise<ActionState & { recovered?: number; processed?: number }> {
+  const session = await requireSession()
+  try {
+    const result = await sweepAccountingExceptions(session)
+    revalidatePath("/accounting")
+    return { success: true, ...result }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to sweep." }
+  }
+}
+
+/**
+ * P2 §6: Business Transaction → Journal → Journal Lines → Source Reference,
+ * fetched only when a journal's detail dialog is actually opened (see
+ * JournalDetailDialog) — not embedded in the journals list's own initial
+ * page load, which would turn every page view into N extra source-lookup
+ * queries for rows nobody inspects.
+ */
+export async function getJournalTraceAction(journalId: string) {
+  const session = await requireSession()
+  const { source, related } = await getJournalTrace(session, journalId)
+  return {
+    source,
+    related: related.map((r) => ({
+      ...r,
+      journalDate: formatDateTime(r.journalDate),
+      referenceTypeLabel: REFERENCE_TYPE_LABELS[r.referenceType] ?? r.referenceType.replace(/_/g, " "),
+    })),
+  }
 }

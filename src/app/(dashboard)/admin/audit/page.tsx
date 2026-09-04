@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation"
+import { Download } from "lucide-react"
 import { getCurrentSession } from "@/lib/auth/session"
 import { can } from "@/lib/platform/permissions-core"
 import { listAuditLog } from "@/lib/domains/identity/audit-queries"
@@ -11,15 +12,15 @@ import { Button } from "@/components/ui/button"
 export default async function AuditPage({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string }>
+  searchParams: Promise<{ page?: string; from?: string; to?: string }>
 }) {
   const session = await getCurrentSession()
   if (!session || !can(session, "audit.review")) {
     redirect("/dashboard")
   }
 
-  const { page: pageParam } = await searchParams
-  const page = Math.max(1, Number(pageParam ?? 1) || 1)
+  const sp = await searchParams
+  const page = Math.max(1, Number(sp.page ?? 1) || 1)
   const { entries, total, totalPages } = await listAuditLog(session, page)
 
   return (
@@ -32,9 +33,17 @@ export default async function AuditPage({
       </div>
 
       <Card>
-        <CardHeader>
-          <CardTitle>Recent activity</CardTitle>
-          <CardDescription>{total} total entries</CardDescription>
+        <CardHeader className="flex-row items-start justify-between">
+          <div>
+            <CardTitle>Recent activity</CardTitle>
+            <CardDescription>{total} total entries</CardDescription>
+          </div>
+          {/* P4.7 §30 — the export route has its own from/to date range (defaults to month-to-date, same as every other report/export in this app) independent of this page's own simple pagination; it independently re-checks audit.review server-side. */}
+          <Button asChild size="sm" variant="outline">
+            <a href={`/api/reports/export/data/audit-log?${new URLSearchParams({ ...(sp.from ? { from: sp.from } : {}), ...(sp.to ? { to: sp.to } : {}) }).toString()}`}>
+              <Download className="size-4" /> Export CSV
+            </a>
+          </Button>
         </CardHeader>
         <CardContent>
           <Table>

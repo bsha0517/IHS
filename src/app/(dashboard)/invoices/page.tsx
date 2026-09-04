@@ -5,8 +5,10 @@ import { can } from "@/lib/platform/permissions-core"
 import { listInvoices } from "@/lib/domains/billing/invoices"
 import { formatDateTime } from "@/lib/utils/dates"
 import { Card, CardContent } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import { PaginationControls } from "@/components/domain/pagination-controls"
 
 const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
   issued: "outline",
@@ -15,18 +17,20 @@ const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "
   void: "destructive",
 }
 
-export default async function InvoicesPage() {
+export default async function InvoicesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>
+}) {
   const session = await getCurrentSession()
   if (!session || !can(session, "invoice.view")) redirect("/dashboard")
 
-  const invoices = await listInvoices(session)
+  const sp = await searchParams
+  const { invoices, total, page, totalPages } = await listInvoices(session, { page: sp.page ? Number(sp.page) : undefined })
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Invoices</h1>
-        <p className="text-sm text-muted-foreground">{invoices.length} invoice(s)</p>
-      </div>
+      <PageHeader title="Invoices" description={`${total} invoice(s)`} />
 
       <Card>
         <CardContent>
@@ -71,6 +75,7 @@ export default async function InvoicesPage() {
               ))}
             </TableBody>
           </Table>
+          <PaginationControls page={page} totalPages={totalPages} total={total} basePath="/invoices" searchParams={sp} />
         </CardContent>
       </Card>
     </div>

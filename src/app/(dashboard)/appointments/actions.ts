@@ -9,6 +9,7 @@ import {
   cancelAppointment,
   markNoShow,
   rescheduleAppointment,
+  listStaffAvailableSlots,
 } from "@/lib/domains/appointments/service"
 import { checkIn as checkInPatient, callPatient, completeConsultation } from "@/lib/domains/appointments/service"
 import { bookAppointmentSchema, rescheduleAppointmentSchema } from "@/lib/domains/appointments/schemas"
@@ -110,4 +111,30 @@ export async function cancelAppointmentAction(appointmentId: string, reason: str
 export async function markNoShowAction(appointmentId: string) {
   const session = await requireSession()
   await runStatusAction(() => markNoShow(session, appointmentId))
+}
+
+/**
+ * P3.1 §12/§13: real-slot lookup for the New Appointment / Reschedule
+ * dialogs. Returns ISO strings (not Date objects) across the client
+ * boundary — the same convention `book/actions.ts`'s public equivalent
+ * already established. Never throws a raw error to the client: an
+ * unconfigured/no-schedule provider on the chosen day is a normal "no
+ * slots" case, not a failure, and the underlying `listStaffAvailableSlots`
+ * already returns an empty array for that rather than throwing.
+ */
+export async function listAvailableSlotsAction(
+  providerId: string,
+  branchId: string,
+  dateIso: string,
+  serviceDurationMinutes: number
+): Promise<string[]> {
+  const session = await requireSession()
+  if (!providerId || !branchId || !dateIso) return []
+  const slots = await listStaffAvailableSlots(session, {
+    providerId,
+    branchId,
+    date: new Date(dateIso),
+    serviceDurationMinutes: serviceDurationMinutes || 30,
+  })
+  return slots.map((s) => s.toISOString())
 }

@@ -2,9 +2,10 @@ import { redirect } from "next/navigation"
 import { getCurrentSession } from "@/lib/auth/session"
 import { can } from "@/lib/platform/permissions-core"
 import { listLeaveRequests } from "@/lib/domains/hr/leave"
-import { listEmployees } from "@/lib/domains/hr/employees"
+import { listActiveEmployeeRoster } from "@/lib/domains/hr/employees"
 import { formatDate } from "@/lib/utils/dates"
 import { Card, CardContent } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -27,12 +28,12 @@ export default async function LeavePage() {
   const canApprove = can(session, "leave.approve")
   const canManage = can(session, "employee.manage")
 
-  const [requests, employees] = await Promise.all([listLeaveRequests(session), listEmployees(session, { status: "active" })])
+  const [requests, employees] = await Promise.all([listLeaveRequests(session), listActiveEmployeeRoster(session)])
   const employeeOptions = employees.map((e) => ({ id: e.id, firstName: e.firstName, lastName: e.lastName }))
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Leave</h1>
+      <PageHeader title="Leave" />
 
       <Tabs defaultValue="requests">
         <TabsList>
@@ -55,14 +56,17 @@ export default async function LeavePage() {
                     <TableHead>Type</TableHead>
                     <TableHead>Dates</TableHead>
                     <TableHead>Days</TableHead>
+                    <TableHead>Reason</TableHead>
+                    <TableHead>Requested</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead>Decided by</TableHead>
                     <TableHead />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {requests.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center text-muted-foreground">
+                      <TableCell colSpan={9} className="text-center text-muted-foreground">
                         No leave requests yet.
                       </TableCell>
                     </TableRow>
@@ -77,9 +81,17 @@ export default async function LeavePage() {
                         {formatDate(r.startDate)} – {formatDate(r.endDate)}
                       </TableCell>
                       <TableCell>{r.days}</TableCell>
+                      <TableCell className="max-w-48 truncate" title={r.reason ?? undefined}>
+                        {r.reason ?? "—"}
+                      </TableCell>
+                      <TableCell>{formatDate(r.requestedAt)}</TableCell>
                       <TableCell>
                         <Badge variant={STATUS_VARIANT[r.status] ?? "outline"}>{r.status}</Badge>
+                        {r.status === "rejected" && r.rejectionReason && (
+                          <p className="mt-1 text-xs text-muted-foreground">{r.rejectionReason}</p>
+                        )}
                       </TableCell>
+                      <TableCell>{r.decidedByUser ? `${r.decidedByUser.firstName} ${r.decidedByUser.lastName}` : "—"}</TableCell>
                       <TableCell>{canApprove && r.status === "requested" && <LeaveRequestActions leaveRequestId={r.id} />}</TableCell>
                     </TableRow>
                   ))}

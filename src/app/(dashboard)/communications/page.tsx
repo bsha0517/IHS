@@ -6,11 +6,13 @@ import { listMessageHistory } from "@/lib/domains/communications/service"
 import { listUpcomingAppointmentsForReminder, listOutstandingInvoicesForReminder, listPatientsWithBirthdayToday } from "@/lib/domains/communications/hub"
 import { formatDateTime, formatDate } from "@/lib/utils/dates"
 import { Card, CardContent } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { TemplateDialog } from "@/app/(dashboard)/communications/template-dialog"
 import { SendReminderButton, SendPaymentReminderButton, SendBirthdayGreetingButton } from "@/app/(dashboard)/communications/send-buttons"
+import { PaginationControls } from "@/components/domain/pagination-controls"
 
 const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
   queued: "outline",
@@ -18,25 +20,31 @@ const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "
   failed: "destructive",
 }
 
-export default async function CommunicationsPage() {
+export default async function CommunicationsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>
+}) {
   const session = await getCurrentSession()
   if (!session || !can(session, "communication.send")) redirect("/dashboard")
 
   const canManageTemplates = can(session, "communication.manage")
+  const sp = await searchParams
 
-  const [upcoming, outstanding, birthdays, templates, history] = await Promise.all([
+  const [upcoming, outstanding, birthdays, templates, historyResult] = await Promise.all([
     listUpcomingAppointmentsForReminder(session),
     listOutstandingInvoicesForReminder(session),
     listPatientsWithBirthdayToday(session),
     listTemplates(session),
-    listMessageHistory(session),
+    listMessageHistory(session, { page: sp.page ? Number(sp.page) : undefined }),
   ])
+  const { messages: history, total: historyTotal, page: historyPage, totalPages: historyTotalPages } = historyResult
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Communications</h1>
+      <PageHeader title="Communications" />
 
-      <Tabs defaultValue="reminders">
+      <Tabs defaultValue={sp.page ? "history" : "reminders"}>
         <TabsList className="flex-wrap">
           <TabsTrigger value="reminders">Appointment Reminders</TabsTrigger>
           <TabsTrigger value="payments">Payment Reminders</TabsTrigger>
@@ -245,6 +253,7 @@ export default async function CommunicationsPage() {
                   ))}
                 </TableBody>
               </Table>
+              <PaginationControls page={historyPage} totalPages={historyTotalPages} total={historyTotal} basePath="/communications" searchParams={sp} />
             </CardContent>
           </Card>
         </TabsContent>

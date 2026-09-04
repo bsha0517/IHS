@@ -2,6 +2,9 @@
   "name": "avant-his",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
     "dev": "next dev",
     "postinstall": "prisma generate",
@@ -11,7 +14,21 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "db:seed": "tsx prisma/seed.ts"
+    "test:integration": "vitest run",
+    "test:components": "vitest run --config vitest.components.config.mts",
+    "test:e2e": "playwright test",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:local:start": "tsx scripts/db/local-start.ts",
+    "db:local:stop": "docker compose stop postgres",
+    "db:dev:setup": "tsx scripts/db/dev-setup.ts",
+    "db:test:setup": "tsx scripts/db/test-setup.ts",
+    "db:test:reset": "tsx scripts/db/test-reset.ts",
+    "db:backup": "tsx scripts/db/backup.ts",
+    "db:restore": "tsx scripts/db/restore.ts",
+    "db:dr:drill": "tsx scripts/db/dr-drill.ts",
+    "db:load-test:setup": "tsx scripts/db/load-test-setup.ts",
+    "db:upgrade:drill": "tsx scripts/db/upgrade-drill.ts",
+    "release:check": "tsx scripts/release/check.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.1",
@@ -38,7 +55,11 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/postcss": "^4",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
     "@types/node": "^20",
     "@types/pg": "^8.23.1",
     "@types/react": "^19",
@@ -47,6 +68,7 @@
     "dotenv": "^17.4.2",
     "eslint": "^9",
     "eslint-config-next": "16.3.2",
+    "jsdom": "^30.0.1",
     "prisma": "^7.9.1",
     "tailwindcss": "^4",
     "tsx": "^4.23.12",

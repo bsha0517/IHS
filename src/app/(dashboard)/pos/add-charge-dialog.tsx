@@ -33,6 +33,17 @@ export function AddChargeDialog({
   const [productId, setProductId] = useState<string>("")
   const [description, setDescription] = useState("")
   const [unitPrice, setUnitPrice] = useState<string>("")
+  // P3.7 §45: one key per dialog-open, resubmitted unchanged by every retry
+  // of that attempt — the same "createAdHocCharge previously had no
+  // duplicate-submission guard" fix as recordPayment's own idempotencyKey.
+  // See createAdHocCharge (billing/charges.ts) for what the server does
+  // with it.
+  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID())
+
+  function handleSubmit(formData: FormData) {
+    formData.set("idempotencyKey", idempotencyKey)
+    submit(formData)
+  }
 
   function onServiceChange(value: string) {
     setServiceId(value)
@@ -55,7 +66,13 @@ export function AddChargeDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (o) setIdempotencyKey(crypto.randomUUID())
+        setOpen(o)
+      }}
+    >
       <DialogTrigger asChild>
         <Button size="sm" variant="outline">
           <Plus /> Add charge
@@ -65,7 +82,7 @@ export function AddChargeDialog({
         <DialogHeader>
           <DialogTitle>Add charge</DialogTitle>
         </DialogHeader>
-        <form action={submit} className="grid gap-4">
+        <form action={handleSubmit} className="grid gap-4">
           <input type="hidden" name="patientId" value={patientId} />
           <input type="hidden" name="branchId" value={branchId} />
           {state.error && (

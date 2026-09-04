@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { FormSection, FormFieldFull } from "@/components/ui/form-section"
 import { useActionDialog } from "@/hooks/use-action-dialog"
 import { createEmployeeAction, updateEmployeeAction, type ActionState } from "@/app/(dashboard)/employees/actions"
 
@@ -66,7 +67,10 @@ export function EmployeeDialog({
               <AlertDescription>{state.error}</AlertDescription>
             </Alert>
           )}
-          <div className="grid grid-cols-2 gap-4">
+          {/* P4.7A.1 §34/§35 — grouped via the shared FormSection primitive;
+              field list and layout are unchanged, just labeled sections
+              instead of an unbroken stack of two-column rows. */}
+          <FormSection title="Identity">
             <div className="grid gap-2">
               <Label htmlFor="firstName">First name</Label>
               <Input id="firstName" name="firstName" defaultValue={existing?.firstName} required />
@@ -75,8 +79,9 @@ export function EmployeeDialog({
               <Label htmlFor="lastName">Last name</Label>
               <Input id="lastName" name="lastName" defaultValue={existing?.lastName} required />
             </div>
-          </div>
-          <div className="grid grid-cols-2 gap-4">
+          </FormSection>
+
+          <FormSection title="Assignment">
             <div className="grid gap-2">
               <Label htmlFor="branchId">Branch</Label>
               <Select name="branchId" defaultValue={existing?.branchId} required>
@@ -107,8 +112,6 @@ export function EmployeeDialog({
                 </SelectContent>
               </Select>
             </div>
-          </div>
-          <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2">
               <Label htmlFor="designation">Designation</Label>
               <Input id="designation" name="designation" defaultValue={existing?.designation} required />
@@ -128,8 +131,6 @@ export function EmployeeDialog({
                 </SelectContent>
               </Select>
             </div>
-          </div>
-          <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2">
               <Label htmlFor="managerId">Manager</Label>
               <Select name="managerId" defaultValue={existing?.managerId ?? undefined}>
@@ -157,15 +158,21 @@ export function EmployeeDialog({
                 required
               />
             </div>
-          </div>
-          <div className="grid gap-2">
-            <Label htmlFor="basicSalary">Basic salary</Label>
-            <Input id="basicSalary" name="basicSalary" type="number" min="0" step="0.01" defaultValue={existing?.basicSalary ?? 0} required />
-          </div>
-          <div className="grid gap-2">
-            <Label htmlFor="bankDetails">Bank details</Label>
-            <Textarea id="bankDetails" name="bankDetails" defaultValue={existing?.bankDetails ?? ""} />
-          </div>
+          </FormSection>
+
+          <FormSection title="Compensation">
+            <div className="grid gap-2">
+              <Label htmlFor="basicSalary">Basic salary</Label>
+              <Input id="basicSalary" name="basicSalary" type="number" min="0" step="0.01" defaultValue={existing?.basicSalary ?? 0} required />
+            </div>
+            <FormFieldFull>
+              <div className="grid gap-2">
+                <Label htmlFor="bankDetails">Bank details</Label>
+                <Textarea id="bankDetails" name="bankDetails" defaultValue={existing?.bankDetails ?? ""} />
+              </div>
+            </FormFieldFull>
+          </FormSection>
+
           <DialogFooter>
             <Button type="submit" disabled={pending}>
               {pending ? "Saving..." : existing ? "Save changes" : "Create employee"}

@@ -102,8 +102,16 @@ describe("P1 §19: provider commission basis and refund reversal", () => {
 
   afterAll(async () => {
     await db.commissionAccrual.deleteMany({ where: { invoiceId: { in: invoiceIds } } })
+    // P3.13: a "payment" journal's referenceId is the Payment's own id, not
+    // the invoice's (posting-service.ts's postPaymentReceived, fixed this
+    // batch) — resolve the real payment ids first so this cleanup still
+    // finds them.
+    const paymentIds = (await db.payment.findMany({ where: { allocations: { some: { invoiceId: { in: invoiceIds } } } }, select: { id: true } })).map((p) => p.id)
     const journals = await db.journal.findMany({
-      where: { organizationId, OR: [{ referenceType: "invoice", referenceId: { in: invoiceIds } }, { referenceType: "payment", referenceId: { in: invoiceIds } }, { referenceType: "refund" }] },
+      where: {
+        organizationId,
+        OR: [{ referenceType: "invoice", referenceId: { in: invoiceIds } }, { referenceType: "payment", referenceId: { in: paymentIds } }, { referenceType: "refund" }],
+      },
     })
     await db.journalLine.deleteMany({ where: { journalId: { in: journals.map((j) => j.id) } } })
     await db.journal.deleteMany({ where: { id: { in: journals.map((j) => j.id) } } })

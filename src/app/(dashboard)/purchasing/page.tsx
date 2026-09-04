@@ -13,11 +13,13 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { PageHeader } from "@/components/ui/page-header"
 import { NewRequestDialog } from "@/app/(dashboard)/purchasing/new-request-dialog"
 import { RequestActions } from "@/app/(dashboard)/purchasing/request-actions"
 import { NewOrderDialog } from "@/app/(dashboard)/purchasing/new-order-dialog"
 import { SupplierInvoiceDialog } from "@/app/(dashboard)/purchasing/supplier-invoice-dialog"
 import { RecordPaymentDialog } from "@/app/(dashboard)/purchasing/record-payment-dialog"
+import { PaginationControls } from "@/components/domain/pagination-controls"
 
 const PO_STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
   draft: "outline",
@@ -27,18 +29,30 @@ const PO_STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" 
   cancelled: "destructive",
 }
 
-export default async function PurchasingPage() {
+const EMPTY_SUPPLIER_INVOICES = { invoices: [], total: 0, page: 1, pageSize: 50, totalPages: 1 } as const
+
+export default async function PurchasingPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string; requestsPage?: string; ordersPage?: string }>
+}) {
   const session = await getCurrentSession()
   if (!session || !can(session, "purchase_request.create")) redirect("/dashboard")
 
-  const [requests, orders, invoices, suppliers, products, branches] = await Promise.all([
-    listPurchaseRequests(session),
-    listPurchaseOrders(session),
-    can(session, "supplier_invoice.manage") ? listSupplierInvoices(session) : Promise.resolve([]),
+  const sp = await searchParams
+  const [requestsResult, ordersResult, invoicesResult, suppliers, products, branches] = await Promise.all([
+    listPurchaseRequests(session, { page: sp.requestsPage ? Number(sp.requestsPage) : undefined }),
+    listPurchaseOrders(session, { page: sp.ordersPage ? Number(sp.ordersPage) : undefined }),
+    can(session, "supplier_invoice.manage")
+      ? listSupplierInvoices(session, { page: sp.page ? Number(sp.page) : undefined })
+      : Promise.resolve(EMPTY_SUPPLIER_INVOICES),
     can(session, "purchase_order.create") ? listSuppliers(session) : Promise.resolve([]),
     listProducts(session),
     listAccessibleBranches(session),
   ])
+  const { requests, total: requestTotal, page: requestPage, totalPages: requestTotalPages } = requestsResult
+  const { orders, total: orderTotal, page: orderPage, totalPages: orderTotalPages } = ordersResult
+  const { invoices, total: invoiceTotal, page: invoicePage, totalPages: invoiceTotalPages } = invoicesResult
 
   const canApprove = can(session, "purchase_request.approve")
   const canCreateOrder = can(session, "purchase_order.create")
@@ -58,9 +72,9 @@ export default async function PurchasingPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Purchasing</h1>
+      <PageHeader title="Purchasing" />
 
-      <Tabs defaultValue="requests">
+      <Tabs defaultValue={sp.page ? "invoices" : sp.ordersPage ? "orders" : "requests"}>
         <TabsList>
           <TabsTrigger value="requests">Purchase Requests</TabsTrigger>
           <TabsTrigger value="orders">Purchase Orders</TabsTrigger>
@@ -108,6 +122,14 @@ export default async function PurchasingPage() {
                   ))}
                 </TableBody>
               </Table>
+              <PaginationControls
+                page={requestPage}
+                totalPages={requestTotalPages}
+                total={requestTotal}
+                basePath="/purchasing"
+                searchParams={{ ...sp, requestsPage: String(requestPage) }}
+                pageParam="requestsPage"
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -155,6 +177,14 @@ export default async function PurchasingPage() {
                   ))}
                 </TableBody>
               </Table>
+              <PaginationControls
+                page={orderPage}
+                totalPages={orderTotalPages}
+                total={orderTotal}
+                basePath="/purchasing"
+                searchParams={{ ...sp, ordersPage: String(orderPage) }}
+                pageParam="ordersPage"
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -212,6 +242,7 @@ export default async function PurchasingPage() {
                     })}
                   </TableBody>
                 </Table>
+                <PaginationControls page={invoicePage} totalPages={invoiceTotalPages} total={invoiceTotal} basePath="/purchasing" searchParams={sp} />
               </CardContent>
             </Card>
           </TabsContent>

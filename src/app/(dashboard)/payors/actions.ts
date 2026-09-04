@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
-import { createPayor, updatePayor, deactivatePayor, createInsurancePlan, deactivateInsurancePlan, createPolicy, deactivatePolicy } from "@/lib/domains/claims/payors"
+import { createPayor, updatePayor, createInsurancePlan, createPolicy } from "@/lib/domains/claims/payors"
 import { payorSchema, insurancePlanSchema, policySchema } from "@/lib/domains/claims/schemas"
 
 export type ActionState = { error?: string; success?: boolean }
@@ -52,12 +52,6 @@ export async function updatePayorAction(_prev: ActionState, formData: FormData):
   return { success: true }
 }
 
-export async function deactivatePayorAction(id: string) {
-  const session = await requireSession()
-  await deactivatePayor(session, id)
-  revalidatePath("/payors")
-}
-
 export async function createInsurancePlanAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const session = await requireSession()
   const parsed = insurancePlanSchema.safeParse({
@@ -75,12 +69,6 @@ export async function createInsurancePlanAction(_prev: ActionState, formData: Fo
   return { success: true }
 }
 
-export async function deactivateInsurancePlanAction(id: string) {
-  const session = await requireSession()
-  await deactivateInsurancePlan(session, id)
-  revalidatePath("/payors")
-}
-
 export async function createPolicyAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const session = await requireSession()
   const parsed = policySchema.safeParse({
@@ -96,10 +84,4 @@ export async function createPolicyAction(_prev: ActionState, formData: FormData)
   }
   revalidatePath("/payors")
   return { success: true }
-}
-
-export async function deactivatePolicyAction(id: string) {
-  const session = await requireSession()
-  await deactivatePolicy(session, id)
-  revalidatePath("/payors")
 }

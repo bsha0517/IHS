@@ -94,8 +94,12 @@ export async function createAdHocChargeAction(_prev: ActionState, formData: Form
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
+  // P3.7 §45: the form generates this once per dialog-open and resubmits it
+  // unchanged on any retry — see createAdHocCharge (billing/charges.ts).
+  const idempotencyKey = String(formData.get("idempotencyKey") ?? "") || undefined
+
   try {
-    await createAdHocCharge(session, parsed.data)
+    await createAdHocCharge(session, { ...parsed.data, idempotencyKey })
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to add charge." }
   }
@@ -103,10 +107,15 @@ export async function createAdHocChargeAction(_prev: ActionState, formData: Form
   return { success: true }
 }
 
-export async function voidChargeAction(chargeId: string, reason: string) {
+export async function voidChargeAction(chargeId: string, reason: string): Promise<ActionState> {
   const session = await requireSession()
-  await voidCharge(session, chargeId, reason)
+  try {
+    await voidCharge(session, chargeId, reason)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to void charge." }
+  }
   revalidatePath("/pos")
+  return { success: true }
 }
 
 export async function generateInvoiceAction(_prev: ActionState, formData: FormData): Promise<ActionState> {

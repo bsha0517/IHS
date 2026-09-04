@@ -7,6 +7,7 @@ import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/ou
 import { assertValidTransition } from "@/lib/platform/state-machine"
 import "@/lib/platform/event-handlers"
 import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
+import { listAvailableSlots } from "@/lib/domains/booking/service"
 import type { SessionContext } from "@/lib/auth/session"
 import type { $Enums } from "@/generated/prisma/client"
 import type { BookAppointmentInput, RescheduleAppointmentInput } from "@/lib/domains/appointments/schemas"
@@ -70,6 +71,24 @@ export function translateBookingError(error: unknown): never {
     throw new BookingConflictError("This room is already booked for an overlapping time.")
   }
   throw error
+}
+
+/**
+ * P3.1 §12/§13: the staff-facing (New Appointment / Reschedule dialogs)
+ * entry point for real slot availability — reuses `listAvailableSlots`
+ * (booking/service.ts), the exact same schedule/leave/conflict-aware
+ * computation Phase 12's public booking wizard already uses, rather than
+ * building a second one. The only thing added here is what the public path
+ * doesn't need: a permission check and branch-access enforcement, since
+ * this is called by an authenticated staff session, not an anonymous one.
+ */
+export async function listStaffAvailableSlots(
+  session: SessionContext,
+  input: { providerId: string; branchId: string; date: Date; serviceDurationMinutes: number }
+) {
+  assertCan(session, "appointment.view")
+  assertBranchAccess(getAuthorizedBranchScope(session), input.branchId)
+  return listAvailableSlots(input.providerId, input.branchId, input.date, input.serviceDurationMinutes)
 }
 
 export async function bookAppointment(session: SessionContext, input: BookAppointmentInput) {
@@ -167,7 +186,21 @@ export async function listPatientAppointments(session: SessionContext, patientId
   const scope = getAuthorizedBranchScope(session)
   return db.appointment.findMany({
     where: { organizationId: session.user.organizationId, patientId, branchId: narrowBranchFilter(scope) },
-    include: { provider: true, service: true, queueEntry: true, statusHistory: { orderBy: { changedAt: "asc" } } },
+    include: {
+      provider: true,
+      service: true,
+      // P3.2 §12/§6: branch is now shown in Patient 360's Appointments tab
+      // (a multi-branch org's staff previously couldn't tell which branch a
+      // past appointment happened at without opening its detail page), and
+      // `encounter` powers the Overview tab's "current context" summary —
+      // both are cheap `select`s added to an include already being fetched,
+      // not a new query.
+      branch: { select: { name: true } },
+      encounter: { select: { id: true, encounterNumber: true, status: true } },
+      queueEntry: true,
+      statusHistory: { orderBy: { changedAt: "asc" } },
+      rescheduledTo: { select: { id: true, appointmentNumber: true } },
+    },
     orderBy: { startTime: "desc" },
   })
 }
@@ -182,8 +215,19 @@ export async function getAppointment(session: SessionContext, appointmentId: str
       service: true,
       room: true,
       department: true,
+      branch: true,
       queueEntry: true,
-      statusHistory: { orderBy: { changedAt: "asc" } },
+      encounter: true,
+      statusHistory: {
+        orderBy: { changedAt: "asc" },
+        include: { changedByUser: { select: { firstName: true, lastName: true } } },
+      },
+      // P3.1 §14: the reschedule chain already exists on the schema
+      // (`rescheduledFromId`/its inverse relation) but nothing rendered it
+      // — this is what lets the detail page show "Original → Rescheduled →
+      // New appointment" without any new column or table.
+      rescheduledFrom: { select: { id: true, appointmentNumber: true, startTime: true, status: true } },
+      rescheduledTo: { select: { id: true, appointmentNumber: true, startTime: true, status: true } },
     },
   })
   assertBranchAccess(getAuthorizedBranchScope(session), appointment.branchId)

@@ -85,6 +85,7 @@ export async function getSessionContext(rawToken: string | undefined): Promise<S
     include: {
       user: {
         include: {
+          organization: true,
           branchAccess: true,
           roles: {
             include: {
@@ -104,6 +105,14 @@ export async function getSessionContext(rawToken: string | undefined): Promise<S
   if (session.revokedAt) return null
   if (session.expiresAt.getTime() < Date.now()) return null
   if (session.user.status !== "active") return null
+  // P4.3 §5/§16/§21: re-checked on EVERY request, from live DB state, not
+  // just at login — an organization suspended mid-session must not leave
+  // its staff's already-issued sessions still working. Every request
+  // resolves through this function (no session data is cached/embedded in
+  // the cookie itself beyond the opaque token), so this takes effect
+  // immediately, the same way user deactivation already did before this
+  // batch.
+  if (session.user.organization.status !== "active") return null
 
   const permissions = new Set<string>()
   const roleNames: string[] = []

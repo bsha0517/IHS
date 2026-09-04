@@ -1,15 +1,16 @@
 "use client"
 
-import { useTransition } from "react"
+import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { EmptyState } from "@/components/ui/empty-state"
 import { useActionDialog } from "@/hooks/use-action-dialog"
 import { formatDate } from "@/lib/utils/dates"
 import { recommendFollowUpAction, dismissFollowUpAction, type ActionState } from "@/app/(dashboard)/encounters/actions"
@@ -28,6 +29,21 @@ export function FollowUpSection({
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
+  // Targeted backlog closure, item 5 — same pattern as diagnoses-section.tsx.
+  const [actionError, setActionError] = useState<string | null>(null)
+
+  function run(fn: () => Promise<ActionState>) {
+    setActionError(null)
+    startTransition(async () => {
+      try {
+        const result = await fn()
+        if (result?.error) setActionError(result.error)
+        else router.refresh()
+      } catch (e) {
+        setActionError(e instanceof Error ? e.message : "That action couldn't be completed.")
+      }
+    })
+  }
 
   return (
     <Card>
@@ -36,7 +52,12 @@ export function FollowUpSection({
         {canEdit && <AddFollowUpDialog encounterId={encounterId} />}
       </CardHeader>
       <CardContent className="grid gap-2">
-        {followUps.length === 0 && <p className="text-sm text-muted-foreground">No follow-up recommended.</p>}
+        {actionError && (
+          <Alert variant="destructive">
+            <AlertDescription>{actionError}</AlertDescription>
+          </Alert>
+        )}
+        {followUps.length === 0 && <EmptyState title="No follow-up recommended" />}
         {followUps.map((f) => (
           <div key={f.id} className="flex items-center justify-between rounded-md border border-border p-2 text-sm">
             <div>
@@ -44,18 +65,13 @@ export function FollowUpSection({
               {f.reason && <p className="text-muted-foreground">{f.reason}</p>}
             </div>
             <div className="flex items-center gap-2">
-              <Badge variant={f.status === "open" ? "outline" : "secondary"}>{f.status}</Badge>
+              <StatusBadge status={f.status} />
               {canEdit && f.status === "open" && (
                 <Button
                   size="sm"
                   variant="ghost"
                   disabled={pending}
-                  onClick={() =>
-                    startTransition(async () => {
-                      await dismissFollowUpAction(encounterId, f.id)
-                      router.refresh()
-                    })
-                  }
+                  onClick={() => run(() => dismissFollowUpAction(encounterId, f.id))}
                 >
                   Dismiss
                 </Button>

@@ -2,13 +2,15 @@ import "server-only"
 import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
+import { writeClinicalAccessLog } from "@/lib/platform/access-log"
 import { nextNumber } from "@/lib/platform/sequences"
 import { isPharmacyEnabled } from "@/lib/platform/settings"
 import { generateSystemCharge } from "@/lib/domains/billing/charges"
 import { consumeStock } from "@/lib/domains/inventory/stock"
 import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/outbox"
 import "@/lib/platform/event-handlers"
-import { getAuthorizedBranchScope, patientVisibilityWhere } from "@/lib/platform/branch-scope"
+import { getAuthorizedBranchScope, assertBranchAccess, patientVisibilityWhere } from "@/lib/platform/branch-scope"
+import { looksLikeSameMedication } from "@/lib/utils/medication-match"
 import type { SessionContext } from "@/lib/auth/session"
 import type { CreateDispensingRecordInput, ReturnDispensingInput } from "@/lib/domains/pharmacy/schemas"
 
@@ -32,7 +34,32 @@ export async function createDispensingRecord(session: SessionContext, input: Cre
     where: { id: input.prescriptionItemId, prescription: { organizationId: session.user.organizationId } },
     include: { prescription: { include: { encounter: true } } },
   })
+  // P3.6 §36: every Pharmacy write function checked organization membership
+  // but never branch — the same class of gap P3.3/P3.5 already closed in
+  // their own domains, confirmed here by direct code reading rather than
+  // assumed safe. A pharmacist authorized only for Branch B could otherwise
+  // create/verify/dispense/return against a Branch A prescription.
+  assertBranchAccess(getAuthorizedBranchScope(session), item.prescription.encounter.branchId)
   if (item.prescription.status !== "active") throw new Error(`This prescription is "${item.prescription.status}", not active.`)
+
+  // Targeted backlog closure, item 8: server-side mirror of the client
+  // dialog's own warning check — the requirement can't be bypassed by a
+  // client that skips showing it. Never auto-substitutes, never blocks a
+  // legitimate substitution — only requires the pharmacist to have
+  // explicitly ticked the confirmation the dialog shows when the names
+  // don't obviously correspond. See looksLikeSameMedication's own doc
+  // comment for why this is a deliberately simple, non-clinical trigger.
+  const medication = await db.medication.findFirst({
+    where: { id: input.medicationId, organizationId: session.user.organizationId },
+    include: { product: { select: { name: true } } },
+  })
+  if (!medication) throw new Error("This medication no longer exists or is not accessible.")
+  const substitution = !looksLikeSameMedication(item.medicationName, medication.product.name)
+  if (substitution && !input.substitutionConfirmed) {
+    throw new Error(
+      `"${medication.product.name}" doesn't obviously match the prescribed "${item.medicationName}" — confirm the substitution before dispensing.`
+    )
+  }
 
   const dispensingNumber = await nextNumber({ organizationId: session.user.organizationId, sequenceType: "DISP", prefix: "DISP" })
   const created = await db.dispensingRecord.create({
@@ -46,11 +73,12 @@ export async function createDispensingRecord(session: SessionContext, input: Cre
       medicationId: input.medicationId,
       patientId: item.prescription.patientId,
       quantityDispensed: input.quantityDispensed,
+      substitutionConfirmed: substitution && !!input.substitutionConfirmed,
     },
   })
 
   await auditFromSession(session, "create", "dispensing_record", created.id, {
-    new: { prescriptionItemId: item.id, medicationId: input.medicationId, quantity: input.quantityDispensed },
+    new: { prescriptionItemId: item.id, medicationId: input.medicationId, quantity: input.quantityDispensed, substitutionConfirmed: created.substitutionConfirmed },
   })
   return created
 }
@@ -61,6 +89,10 @@ export async function verifyDispensingRecord(session: SessionContext, id: string
   await assertPharmacyEnabled(session.user.organizationId)
 
   const record = await db.dispensingRecord.findFirstOrThrow({ where: { id, organizationId: session.user.organizationId } })
+  // P3.6 §36: see `createDispensingRecord`'s comment for the full reasoning
+  // — `DispensingRecord` carries its own `branchId` directly (no join
+  // needed, unlike Prescription itself).
+  assertBranchAccess(getAuthorizedBranchScope(session), record.branchId)
   if (record.status !== "pending") throw new Error(`Only a pending dispensing can be verified (this one is "${record.status}").`)
 
   const updated = await db.dispensingRecord.update({
@@ -107,6 +139,8 @@ export async function dispenseRecord(session: SessionContext, id: string) {
     where: { id, organizationId: session.user.organizationId },
     include: { medication: { include: { product: true } }, prescriptionItem: true, prescription: true },
   })
+  // P3.6 §36: see `createDispensingRecord`'s comment for the full reasoning.
+  assertBranchAccess(getAuthorizedBranchScope(session), record.branchId)
   if (record.status !== "verified") throw new Error(`Only a verified dispensing can be dispensed (this one is "${record.status}").`)
 
   const unitPrice = Number(record.medication.product.sellingPrice ?? record.medication.product.purchaseCost)
@@ -173,7 +207,37 @@ export async function dispenseRecord(session: SessionContext, id: string) {
       })
     }
 
-    return tx.dispensingRecord.update({ where: { id }, data: { chargeId: charge.id } })
+    const dispensed = await tx.dispensingRecord.update({ where: { id }, data: { chargeId: charge.id } })
+
+    // P3.6 §27: `Prescription.status` never transitioned to `completed`
+    // anywhere in the codebase before this fix — a fully-dispensed
+    // prescription stayed "active" forever, the exact "never leave a fully
+    // fulfilled prescription looking pending" gap this section warns
+    // against. Uses the identical "still open" predicate `listPharmacyQueue`
+    // already computes for the queue itself (remainingQuantity null or >0
+    // on any item), so this can never disagree with what the queue shows —
+    // one definition of "done," not two competing ones. An item with no
+    // `quantity` set can never be counted done by this predicate (there is
+    // no total to compare against), so a prescription with any such item
+    // simply never auto-completes — conservative by construction, never a
+    // false "fully dispensed."
+    const siblings = await tx.prescriptionItem.findMany({
+      where: { prescriptionId: record.prescriptionId },
+      include: { dispensingRecords: { select: { status: true, quantityDispensed: true } } },
+    })
+    const stillOpen = siblings.some((item) => {
+      if (item.quantity == null) return true
+      const dispensedQty = item.dispensingRecords.filter((d) => d.status !== "cancelled").reduce((sum, d) => sum + d.quantityDispensed, 0)
+      return dispensedQty < item.quantity
+    })
+    if (!stillOpen) {
+      // `updateMany` (not `update`) so this is a clean no-op rather than an
+      // error if the prescription was already completed by a concurrent
+      // dispense of a sibling item, and so it never clobbers `cancelled`.
+      await tx.prescription.updateMany({ where: { id: record.prescriptionId, status: "active" }, data: { status: "completed" } })
+    }
+
+    return dispensed
   }, { timeout: 20_000, maxWait: 10_000 })
 
   await auditFromSession(session, "update", "dispensing_record", id, { new: { status: "dispensed" } })
@@ -183,11 +247,44 @@ export async function dispenseRecord(session: SessionContext, id: string) {
 
 /**
  * "Returns" (spec.md §29) — a correcting record, never an edit to the
- * original dispensing. Adds stock back; does not reverse the Charge — and,
- * consistently, does not reverse the COGS dispenseRecord posted either
- * (unlike voidCharge's POS-side postProductSaleVoided). Revenue and cost
- * stay a matched, permanent pair alongside the original invoice; a return
- * is a physical stock correction, not a financial undo.
+ * original dispensing. Always restores stock. Its financial effect depends
+ * on whether the original Charge has been invoiced yet (P3.9 §36-39):
+ *
+ *   - `charge.status === "pending"` (never invoiced — no InvoiceLine, no
+ *     revenue ever recognized, no payment possible): the DispensingRecord ->
+ *     Charge FK (unique, always set once dispensed) makes this state
+ *     unambiguous, so the financial side closes completely here — the
+ *     charge is voided and its COGS posting reversed via the same
+ *     ProductSaleVoided event/postProductSaleVoided path voidCharge uses
+ *     for a POS sale (charge-id-keyed, so it works correctly even though a
+ *     pharmacy Charge never carries `productId` — see voidCharge's own
+ *     stock-reversal branch, which pharmacy charges never trigger since
+ *     dispenseRecord already moved that stock itself, above). Stock,
+ *     revenue, and cost are all correctly closed for this state — not a
+ *     partial fix, since revenue/AR were never touched in the first place.
+ *   - `charge.status === "invoiced"`: NOT reversed here. P3.9 §36 traced
+ *     whether a returned dispensing can be reliably mapped through
+ *     DispensingRecord -> Charge -> InvoiceLine -> Invoice -> Payment/
+ *     refund state — it can, one-to-one, via InvoiceLine's own unique
+ *     `chargeId` (and InvoiceLine already carries this exact line's own
+ *     lineTotal/taxAmount/discountAmount). What it can NOT reliably
+ *     determine is whether — and how much of — THIS SPECIFIC line was ever
+ *     actually paid: `PaymentAllocation` (payment/invoices.ts) is
+ *     invoice-level only, with no line-level granularity, so on a
+ *     multi-line, partially-paid invoice there is no safe way to know
+ *     whether the returned line's own portion was paid, still owed, or
+ *     covered by a payment that was really intended for a sibling line.
+ *     Reversing revenue/AR/issuing a refund here without that guarantee
+ *     risks crediting money that was never collected for this specific
+ *     item, or leaving a genuinely-paid item's revenue overstated — exactly
+ *     the "solve only one leg and call it fixed" outcome P3.9 §37
+ *     prohibits. See BACKLOG.md for the CreditNote/line-level-reversal
+ *     design this needs. The caller (returnDispensingRecordAction) surfaces
+ *     `financialReversal: "manual_review_required"` so the UI can say so
+ *     plainly rather than implying money was refunded.
+ *   - `charge.status === "void"`: nothing to reverse (never billed, or
+ *     already reversed by some other path) — `financialReversal:
+ *     "not_applicable"`.
  *
  * P1 §14/§33: the over-return guard (`alreadyReturned + this <=
  * quantityDispensed`) is re-validated *inside* the transaction against a
@@ -208,11 +305,15 @@ export async function returnDispensingRecord(session: SessionContext, id: string
 
   const record = await db.dispensingRecord.findFirstOrThrow({
     where: { id, organizationId: session.user.organizationId },
-    include: { medication: true },
+    include: { medication: true, charge: true },
   })
+  // P3.6 §36: see `createDispensingRecord`'s comment for the full reasoning.
+  assertBranchAccess(getAuthorizedBranchScope(session), record.branchId)
   if (record.status !== "dispensed") throw new Error("Only a dispensed record can be returned.")
 
-  const created = await db.$transaction(async (tx) => {
+  type FinancialReversal = "reversed" | "manual_review_required" | "not_applicable"
+
+  const { returnRecord: created, financialReversal } = await db.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "dispensing_record" WHERE id = ${id} FOR UPDATE`
 
     const returns = await tx.dispensingReturn.findMany({ where: { dispensingRecordId: id } })
@@ -244,11 +345,47 @@ export async function returnDispensingRecord(session: SessionContext, id: string
       },
     })
 
-    return returnRecord
+    // P3.9 §36-39: only a full return (every unit dispensed, across all
+    // returns) can safely close the Charge — a partial return leaves real
+    // units still legitimately sold, so the Charge/COGS must stay exactly
+    // as posted for those. A charge is never voided/reversed twice
+    // (guarded by its own status check, not this function's own state).
+    const fullyReturned = alreadyReturned + input.quantityReturned >= record.quantityDispensed
+    let financialReversal: FinancialReversal = "not_applicable"
+    if (record.charge?.status === "pending") {
+      if (fullyReturned) {
+        await tx.charge.update({
+          where: { id: record.charge.id },
+          data: { status: "void", voidReason: `Dispensing returned: ${input.reason}` },
+        })
+        await writeOutboxEvent(tx, {
+          organizationId: session.user.organizationId,
+          eventType: "ProductSaleVoided",
+          payload: { branchId: record.charge.branchId, chargeId: record.charge.id },
+        })
+        financialReversal = "reversed"
+      } else {
+        // A partial return leaves the charge covering more units than were
+        // actually kept — Charge has no supported way to reduce its own
+        // quantity/amount in place, so this needs the same manual review a
+        // returned-and-already-invoiced charge does, not a silent no-op.
+        financialReversal = "manual_review_required"
+      }
+    } else if (record.charge?.status === "invoiced") {
+      financialReversal = "manual_review_required"
+    }
+
+    return { returnRecord, financialReversal }
   }, { timeout: 20_000, maxWait: 10_000 })
 
-  await auditFromSession(session, "create", "dispensing_return", created.id, { new: { dispensingRecordId: id, quantity: input.quantityReturned } })
-  return created
+  if (financialReversal === "reversed") {
+    await dispatchPendingOutboxEvents(session.user.organizationId)
+  }
+
+  await auditFromSession(session, "create", "dispensing_return", created.id, {
+    new: { dispensingRecordId: id, quantity: input.quantityReturned, financialReversal },
+  })
+  return { ...created, financialReversal }
 }
 
 export async function listPatientMedicationHistory(session: SessionContext, patientId: string) {
@@ -261,8 +398,11 @@ export async function listPatientMedicationHistory(session: SessionContext, pati
   // relation filter used for branch visibility, since organizationId only
   // exists on Patient here.
   const visibility = patientVisibilityWhere(getAuthorizedBranchScope(session))
-  return db.patientMedicationHistory.findMany({
+  const history = await db.patientMedicationHistory.findMany({
     where: { patientId, patient: { organizationId: session.user.organizationId, ...(visibility ?? {}) } },
     orderBy: { notedAt: "desc" },
   })
+  // P2 §7: medication history is real chart content, previously unlogged.
+  await writeClinicalAccessLog({ session, patientId, resourceType: "medication_history", action: "view" })
+  return history
 }

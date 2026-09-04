@@ -8,15 +8,18 @@ import {
   revokeSession,
   revokeAllUserSessions,
   getCurrentSession,
+  getSessionContext,
 } from "@/lib/auth/session"
 import { generateRawToken, hashToken } from "@/lib/auth/tokens"
 import { NullEmailAdapter } from "@/lib/domains/communications/adapters/email-adapter"
+import { resolveDefaultLandingRoute } from "@/lib/platform/landing"
+import { checkIpRateLimit } from "@/lib/auth/rate-limit"
 
 const MAX_FAILED_ATTEMPTS = 5
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000
 const RESET_TOKEN_TTL_MS = 30 * 60 * 1000
 
-export type LoginResult = { ok: true } | { ok: false; error: string }
+export type LoginResult = { ok: true; redirectTo: string } | { ok: false; error: string }
 
 type RequestMeta = { ip?: string | null; userAgent?: string | null }
 
@@ -29,12 +32,28 @@ type RequestMeta = { ip?: string | null; userAgent?: string | null }
  */
 export async function login(email: string, password: string, meta: RequestMeta): Promise<LoginResult> {
   const normalizedEmail = email.trim().toLowerCase()
-  const user = await db.user.findFirst({ where: { email: normalizedEmail } })
+
+  // P4.3 §9: checked BEFORE the user lookup — an IP already generating
+  // excessive failures is throttled regardless of which email it's
+  // currently trying, so this can't itself become a per-account
+  // enumeration signal (it fires identically for a real account, a
+  // made-up one, or a typo). The per-account lockout below is unaffected
+  // and still applies independently.
+  const rateLimit = await checkIpRateLimit("staff", meta.ip)
+  if (rateLimit.throttled) {
+    await db.loginHistory.create({
+      data: { channel: "staff", emailAttempted: normalizedEmail, success: false, ip: meta.ip ?? null, userAgent: meta.userAgent ?? null, reason: "ip_throttled" },
+    })
+    return { ok: false, error: "Too many attempts from this network. Please try again later." }
+  }
+
+  const user = await db.user.findFirst({ where: { email: normalizedEmail }, include: { organization: true } })
 
   const recordAttempt = (success: boolean, reason?: string) =>
     db.loginHistory.create({
       data: {
         userId: user?.id ?? null,
+        channel: "staff",
         emailAttempted: normalizedEmail,
         success,
         ip: meta.ip ?? null,
@@ -54,8 +73,30 @@ export async function login(email: string, password: string, meta: RequestMeta):
   }
 
   if (user.status !== "active") {
+    // Targeted backlog closure, item 11 (P4.3's own documented LOW-severity
+    // backlog item): this branch previously returned a distinct "This
+    // account is inactive" message BEFORE the password is ever checked —
+    // enough on its own for an unauthenticated caller to learn a given
+    // email belongs to a real, deactivated account. Normalized to the same
+    // message as a nonexistent account/wrong password (below); the real
+    // reason ("inactive") is still recorded in LoginHistory for internal
+    // investigation — nothing about detection or the underlying block is
+    // weakened, only what's disclosed to the unauthenticated caller.
+    // Account lockout ("locked", above) and organization suspension keep
+    // their own distinct messages — narrower, already-documented, separate
+    // concerns this item doesn't ask to change.
     await recordAttempt(false, "inactive")
-    return { ok: false, error: "This account is inactive." }
+    return { ok: false, error: "Invalid email or password." }
+  }
+
+  // P4.3 §5/§16: previously unchecked — a suspended organization's staff
+  // could keep authenticating and using already-issued sessions
+  // indefinitely (see getSessionContext's matching check in session.ts for
+  // the existing-session half of this fix). `OrgStatus.suspended` existed
+  // in the schema with nothing anywhere actually enforcing it.
+  if (user.organization.status !== "active") {
+    await recordAttempt(false, "organization_suspended")
+    return { ok: false, error: "This organization's account is suspended. Contact your administrator." }
   }
 
   const validPassword = await verifyPassword(user.passwordHash, password)
@@ -88,7 +129,14 @@ export async function login(email: string, password: string, meta: RequestMeta):
   })
   await setSessionCookie(rawToken)
 
-  return { ok: true }
+  // P3.12 §33-36: resolved once, centrally, right here — using the raw
+  // token already in scope rather than re-reading it back off the request
+  // cookie jar (which a Server Action mutates but doesn't guarantee every
+  // caller re-reads consistently).
+  const newSession = await getSessionContext(rawToken)
+  const redirectTo = newSession ? resolveDefaultLandingRoute(newSession) : "/dashboard"
+
+  return { ok: true, redirectTo }
 }
 
 export async function logout(): Promise<void> {
@@ -127,10 +175,18 @@ export async function requestPasswordReset(email: string): Promise<RequestPasswo
     },
   })
 
+  // P4.1 §14/§17: a real email provider needs an ABSOLUTE link — a bare
+  // relative path only means anything inside a browser tab already on the
+  // site, which an email client never is. `APP_BASE_URL` is optional (unset
+  // in local dev, where nothing reads this link outside the app itself);
+  // when it's configured, this is the one place in the codebase that turns
+  // it into a real clickable URL — see env.ts's own doc comment.
+  const resetPath = `/reset-password?token=${rawToken}`
+  const resetLink = process.env.APP_BASE_URL ? `${process.env.APP_BASE_URL}${resetPath}` : resetPath
   const result = await new NullEmailAdapter().send({
     to: normalizedEmail,
     subject: "Reset your Avant password",
-    body: `A password reset was requested for your account. Open /reset-password?token=${rawToken} to choose a new password.\n\nThis link expires in 30 minutes. If you didn't request this, you can ignore this message.`,
+    body: `A password reset was requested for your account. Open ${resetLink} to choose a new password.\n\nThis link expires in 30 minutes. If you didn't request this, you can ignore this message.`,
   })
   return { delivered: result.status === "sent" }
 }

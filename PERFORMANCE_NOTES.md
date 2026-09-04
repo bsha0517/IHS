@@ -1,0 +1,50 @@
+# PERFORMANCE_NOTES.md
+
+P2 Batch 7 (§9): report scalability review. Every report named in P2.md §9 — Revenue, Collections, Cash, AR, AP, Inventory Valuation, COGS, P&L, Trial Balance, Balance Sheet, Stock Movement, Provider Performance, Commission reports — was inspected against its real query shape, not assumed. Three real, safe optimizations were made (see P2_REMEDIATION_REPORT.md's Batch 7 section for the full record); this file is the other half of §9's instruction — "document queries likely to become problematic at much larger scale" for everything reviewed and **deliberately left alone**, either because it's already correctly bounded for V1 scale, or because the real fix is a product/architecture decision, not a query optimization this batch should make unilaterally.
+
+No materialized views were introduced or considered necessary — every report below is already fast because it's aggregated in the database (`groupBy`/`aggregate`/raw `SUM`), not because of caching.
+
+---
+
+## Already fine for V1 scale — reviewed, no change needed
+
+**Revenue, Collections, AR, AP, Expenses** (`analytics/reports/financial.ts`'s `getFinancialReport`, and the equivalent figures in `analytics/dashboards.ts`'s `getManagementDashboard`/`getFinanceDashboard`) — every one of these is a single `db.<model>.aggregate()` or `.groupBy()` call with an indexed `(organizationId, branchId, <date column>)` WHERE clause (the indexes P2 Batch 1's own §3 review added). Postgres answers an aggregate over an indexed range in time proportional to the *matching* rows, not the table — this stays fast as journal/invoice/payment history grows for years, the same way it's fast today. All run in parallel via `Promise.all`, never sequentially.
+
+**Revenue Cycle** (`analytics/reports/revenue-cycle.ts`) — charges/claims `groupBy`, collections/patient-responsibility `aggregate`, all date-range bounded. The one `findMany` without a `take` (`rejectedClaims`) is double-bounded by both `status: "rejected"` and the date range, so it can never return more than a period's worth of rejections — not a realistic scale risk.
+
+**Provider Performance / Room Utilization** (`analytics/reports/practice.ts`'s `getPracticeReport`) — appointments fetched once for the requested date range, providers/schedules batched (2 queries, not N+1), utilization computed in memory via `.filter()`/`.reduce()` over the already-fetched arrays. Bounded by the mandatory `from`/`to` on every report request (`reports/page.tsx`'s `defaultReportFilters` defaults to the current month; a user can widen it, but that's a deliberate, visible choice, not an accidental unbounded query).
+
+**Commission Reports** (`payroll/commissions.ts`'s `getProviderStatement`, `hr.ts`'s `commissionByProvider` groupBy) — already batch-optimized in P2 Batch 3 (§4); see P2_REMEDIATION_REPORT.md for that work. Provider-name resolution in `hr.ts` does one batched `provider.findMany` plus an in-memory `.find()` per commission row — O(commissions × providers) in the worst case, but at V1 scale (tens of providers, hundreds of commission rows per period) this is microseconds, not worth a `Map` for the marginal gain.
+
+**Management Dashboard** (`analytics/dashboards.ts`'s `getManagementDashboard`) — 17 parallel aggregate/count/groupBy queries plus one more parallel batch of 3 name-lookups (20 total round trips). Every one is `today`/`month-to-date` bounded and indexed; none scans unbounded history. The query *count* (20) is a real number worth knowing (see PERFORMANCE_BASELINE.md) but is a round-trip-latency concern under concurrent load, not a data-scale one — cross-referenced in the §23 write-up below, not a §9 fix.
+
+**Stock Movement / Fast-Moving / Slow-Moving** (`analytics/reports/inventory.ts`'s `getInventoryReport`) — consumption is a `groupBy` bounded by the report's date range; valuation is a `groupBy` over current batch balances (inherently org/branch-wide, not date-bounded, because "what's on the shelf right now" has no date dimension to filter by). One redundant query was found and fixed this batch (see below); the rest was already correct.
+
+A genuine, if small-scale, N+1 was found (via PERFORMANCE_BASELINE.md's real measurement, not a code-reading guess) in the two helper functions this report also calls: `listNearExpiryBatches`/`listExpiredBatches` (`inventory/stock.ts`) each call `getBalance` once *per batch found*, via `Promise.all(batches.map(...))`. Parallelized, so it costs query *count*, not sequential latency, and bounded by "however many batches are near-expiry or already expired" — a naturally small number at any realistic scale, not the whole product catalog. Not fixed this batch (not one of §9's named reports, and the row count it scales with isn't the "large history" pattern §9 targets) — if this ever needs fixing, the shape is the same `groupBy(["productId","batchId"], _sum: {quantity: true})` `getInventoryReport` itself already uses for its own valuation, applied to just the near-expiry/expired batch set instead of a per-batch loop.
+
+---
+
+## Inherent to double-entry accounting, not fixable by simple date filtering
+
+**Trial Balance, P&L, Balance Sheet** (`accounting/reports.ts`'s `accountBalances`, the shared raw-SQL `LEFT JOIN chart_of_account / journal_line GROUP BY account`) — this query has no lower date bound by design: a balance sheet is *supposed* to be the running balance since the account's inception, not a period figure (an "AR balance for just this month" isn't a real balance sheet number). `asOf` only bounds the upper end. This means the query genuinely scans every `journal_line` the organization has ever posted, every time any of these three statements is requested — and unlike Revenue/Collections/AR/AP above, there's no `WHERE journal_date >= X` that could narrow it without changing what the number *means*.
+
+This is fine at V1 scale (a new clinic's full journal history is a small table) and will stay fine for a long time — Postgres can aggregate millions of indexed rows in well under a second. It becomes a real problem only at a scale this system isn't at yet (years of high-transaction-volume history, likely tens of thousands of journal entries and up), and the correct fix at that point is **not** a smarter query — it's the standard accounting mechanism this system doesn't implement yet and P2.md's own P1 §31 doc comment (`accounting/periods.ts`) already named as deliberately deferred: period-end closing entries that zero income/expense into retained earnings and let later trial balances start from a stored opening balance instead of the beginning of time. Building that is a real, standalone feature (a "close the books" workflow), not a query optimization — flagged here per §9's own "document what's likely to become problematic at much larger scale" instruction, not fixed, and **not** solved by a materialized view (P2.md §9 explicitly warns against introducing one speculatively) since a materialized view of a running balance still needs a real invalidation/incremental-update strategy — which is exactly what period closing *is*.
+
+**Cash Flow's inflow/outflow lists** (`accounting/reports.ts`'s `cashFlow`) — after this batch's fix (see below), the `/accounting` page's own call is bounded to the current month, but the function's `inflows`/`outflows` arrays still have no row cap of their own — a very high-transaction-volume org in one calendar month could still return a large list. Worth adding real pagination here (the same `page`/`pageSize` convention P2 Batch 6 established everywhere else) if this list ever needs to support more than a quick on-page glance — not done this batch since the *typical* case (a modest clinic's monthly cash-touching entries) is nowhere near a problem yet, and speculatively paginating a report tab with no evidence of an actual row-count problem would be exactly the kind of premature optimization P2.md's own "if a report is already efficient enough for the expected V1 scale, leave it alone" instruction warns against.
+
+---
+
+## Fixed this batch (query shape, not report scope)
+
+Three real, safe redundant-query eliminations — no behavior change, verified against `test/integration/report-reconciliation.test.ts`'s existing exact-figure assertions:
+
+1. **`balanceSheet` no longer calls `incomeStatement` internally.** It used to re-run the entire `accountBalances` aggregation a second time purely to get `netIncome`, which is derivable from the `rows` it already had.
+2. **`accounting/page.tsx` and `getFinancialReport` no longer each independently call `trialBalance`/`incomeStatement`/`balanceSheet` separately.** A new `getFinancialStatements` (`accounting/reports.ts`) fetches `accountBalances` exactly once and builds all three from the same `rows` — cutting the accounting page's own account-balance scans from 3 down to 1, and `getFinancialReport`'s from 2 down to 1.
+3. **`getInventoryReport`'s consumption/fast-moving/slow-moving section** no longer runs a second `db.product.findMany` purely to resolve product names — `stockSummary` (already fetched earlier in the same function) already has every product's name.
+4. **`/accounting`'s Cash Flow tab** now defaults to the current month instead of every cash-touching journal line ever posted — the one report screen in the app that had no default date bound at all, unlike every sibling report/dashboard, which already defaults to "this month."
+
+---
+
+## Not reviewed this batch — out of §9's named scope
+
+Payroll lifecycle, leave/attendance summaries, clinical reports (diagnosis/order volume), and asset reports (`analytics/reports/assets.ts`, `clinical.ts`) weren't named in P2.md §9's own list (Revenue, Collections, Cash, AR, AP, Inventory Valuation, COGS, P&L, Trial Balance, Balance Sheet, Stock Movement, Provider Performance, Commission) and weren't reviewed for this batch on that basis — a quick pass during this review didn't surface anything alarming (same `groupBy`/date-bounded shape as everything above), but that's an impression, not the same evidence-based review the named reports got.

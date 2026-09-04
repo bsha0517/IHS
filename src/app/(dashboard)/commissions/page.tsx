@@ -6,6 +6,7 @@ import { listProviders } from "@/lib/domains/providers/service"
 import { listServices } from "@/lib/domains/services/service"
 import { formatDateTime } from "@/lib/utils/dates"
 import { Card, CardContent } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -30,7 +31,7 @@ export default async function CommissionsPage({ searchParams }: { searchParams: 
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Commissions</h1>
+      <PageHeader title="Commissions" />
 
       <Tabs defaultValue="rules">
         <TabsList>

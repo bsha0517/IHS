@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation"
 import { getCurrentSession } from "@/lib/auth/session"
 import { getInvoice } from "@/lib/domains/billing/invoices"
-import { getOrganization } from "@/lib/domains/identity/org-structure"
+import { getOrganizationIdentity } from "@/lib/domains/identity/org-structure"
 import { formatDate } from "@/lib/utils/dates"
 import { PrintButton } from "@/app/prescriptions/[id]/print/print-button"
 
@@ -12,7 +12,12 @@ export default async function InvoicePrintPage({ params }: { params: Promise<{ i
   if (!session) redirect("/login")
 
   const { id } = await params
-  const [invoice, organization] = await Promise.all([getInvoice(session, id), getOrganization(session)])
+  // P3.7 §22: was `getOrganization`, which requires `settings.view` — only
+  // Clinic Manager holds that permission, so this page threw ForbiddenError
+  // for Cashier/Receptionist printing an invoice they just created. Same
+  // fix as P3.6's prescription print page — see `getOrganizationIdentity`'s
+  // own comment for the full reasoning.
+  const [invoice, organization] = await Promise.all([getInvoice(session, id), getOrganizationIdentity(session)])
 
   return (
     <div className="mx-auto max-w-2xl p-8 print:p-0">

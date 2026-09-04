@@ -1,0 +1,107 @@
+name: CI
+
+# P4.1 §26/§27: the CI baseline this project had none of before this batch.
+# Runs against a disposable, CI-local Postgres service container — never
+# `his_dev`, never remote/hosted Supabase (test/setup-test-database.ts's own
+# `assertNotRemoteHost` guard refuses to run at all against anything that
+# looks like a shared/remote host, as a second, independent line of defense
+# beyond this workflow simply not being configured with those credentials).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # The CI-local Postgres service above — same two-role split
+      # (owner/direct vs. restricted runtime) every other environment uses,
+      # provisioned fresh by `db:test:setup` below (local-init.sql equivalent
+      # is run explicitly as a step since GitHub Actions service containers
+      # don't support the docker-compose volume-mounted
+      # /docker-entrypoint-initdb.d convention this project's local dev setup
+      # relies on).
+      TEST_DIRECT_DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/his_test?schema=public"
+      TEST_DATABASE_URL: "postgresql://his_app_runtime:his_app_runtime_ci_only@localhost:5432/his_test?schema=public"
+      # The production build step constructs a Prisma client at module-import
+      # time (src/lib/db.ts) — the connection is never actually queried
+      # during `next build` (every route in this app is server-rendered on
+      # demand, not statically generated with data), so reusing the already
+      # fully set-up `his_test` connection here is just for a syntactically
+      # valid connection string, not a second database to provision.
+      DATABASE_URL: "postgresql://his_app_runtime:his_app_runtime_ci_only@localhost:5432/his_test?schema=public"
+      # prisma.config.ts's own datasource resolution reads this eagerly at
+      # config-load time for any Prisma CLI command (`prisma generate`
+      # included, even though generate itself never opens a connection) —
+      # pointed at the same disposable database's owner connection.
+      DIRECT_DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/his_test?schema=public"
+      NODE_ENV: "test"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+
+      - name: Install dependencies (deterministic — committed lockfile only)
+        run: npm ci
+
+      - name: Create the his_test database and the restricted runtime role
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -c "CREATE DATABASE his_test;"
+          PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -c "CREATE ROLE his_app_runtime WITH LOGIN PASSWORD 'his_app_runtime_ci_only';"
+
+      - name: Prisma generate
+        run: npx prisma generate
+
+      - name: Set up his_test (migrate deploy + grants + seed)
+        run: npm run db:test:setup
+
+      - name: Prisma validate
+        run: npx prisma validate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Integration tests (against his_test only)
+        run: npm run test
+
+      - name: Component tests (P4.8 §59 — jsdom, no database, cheap to run on every PR)
+        run: npm run test:components
+
+      - name: Production build
+        run: npm run build
+
+      # P4.8 §59: Playwright (npm run test:e2e) is deliberately NOT run here.
+      # It needs a live `next dev`/`next start` server plus a fully seeded
+      # database and takes real browser time — wiring it into every PR would
+      # make this CI job slower and more failure-prone (a flaky browser
+      # automation step blocking merges) for a check `npm run test` (real
+      # domain-layer coverage) and this job's own build step already cover
+      # at the level CI needs. It remains a release-candidate/staging step
+      # instead — see docs/RELEASE_RUNBOOK.md's Prepare section and
+      # docs/RELEASE_CHECKLIST.md's Post-Deploy Smoke, both of which run it
+      # against a real built server before a release ships, not on every PR.

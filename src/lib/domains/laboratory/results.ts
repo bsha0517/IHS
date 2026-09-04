@@ -70,8 +70,13 @@ export async function enterNumericResult(session: SessionContext, labOrderTestId
 
   const line = await db.labOrderTest.findFirstOrThrow({
     where: { id: labOrderTestId, organizationId: session.user.organizationId },
-    include: { labTest: true },
+    include: { labTest: true, clinicalOrder: { select: { branchId: true } } },
   })
+  // P3.5 §23: same branch-write gap fixed across every Lab/Radiology write
+  // this batch touched — LabOrderTest has no branchId of its own, so this
+  // goes through its parent ClinicalOrder (already selected above, no
+  // extra round trip).
+  assertBranchAccess(getAuthorizedBranchScope(session), line.clinicalOrder.branchId)
   if (line.resultType !== "numeric") throw new Error("This test expects a text result, not a numeric one.")
   // P1 §20: routes through the same centralized map as everything else —
   // this used to only block re-entry after "verified", which meant a result
@@ -111,8 +116,9 @@ export async function enterTextResult(session: SessionContext, labOrderTestId: s
 
   const line = await db.labOrderTest.findFirstOrThrow({
     where: { id: labOrderTestId, organizationId: session.user.organizationId },
-    include: { labTest: true },
+    include: { labTest: true, clinicalOrder: { select: { branchId: true } } },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), line.clinicalOrder.branchId)
   if (line.resultType !== "text") throw new Error("This test expects a numeric result, not a text one.")
   assertValidTransition(LAB_ORDER_TEST_TRANSITIONS, line.status, "resulted", "a lab result")
 
@@ -155,15 +161,29 @@ export async function verifyResult(session: SessionContext, labOrderTestId: stri
 
   const line = await db.labOrderTest.findFirstOrThrow({
     where: { id: labOrderTestId, organizationId: session.user.organizationId },
+    include: { clinicalOrder: { select: { branchId: true } } },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), line.clinicalOrder.branchId)
   if (!line.isCurrent) throw new Error("Only the current version of a lab result can be verified.")
   assertValidTransition(LAB_ORDER_TEST_TRANSITIONS, line.status, "verified", "a lab result")
 
   const updated = await db.$transaction(async (tx) => {
-    const result = await tx.labOrderTest.update({
-      where: { id: labOrderTestId },
+    // P3.5 §27: the status check above reads *before* this transaction —
+    // two technicians racing to verify the same line (one still has the
+    // form open while the other submits first) would otherwise both pass
+    // that check and both succeed, the second silently overwriting the
+    // first's verifiedBy/verifiedAt with no error to either party. The
+    // `where: { status: "resulted" }` here makes the actual write
+    // conditional on the row still being in the state this call observed —
+    // `updateMany` (not `update`, which requires a plain unique `where`)
+    // so a stale second caller gets `count: 0` and a real, friendly error
+    // instead of silently succeeding.
+    const { count } = await tx.labOrderTest.updateMany({
+      where: { id: labOrderTestId, status: "resulted" },
       data: { status: "verified", verifiedBy: session.user.id, verifiedAt: new Date() },
     })
+    if (count === 0) throw new Error("This result was already verified by someone else — refresh to see the current state.")
+    const result = await tx.labOrderTest.findFirstOrThrow({ where: { id: labOrderTestId } })
 
     if (result.abnormalFlag === "critical_low" || result.abnormalFlag === "critical_high") {
       await writeOutboxEvent(tx, {
@@ -214,8 +234,9 @@ export async function amendLabResult(
 
   const original = await db.labOrderTest.findFirstOrThrow({
     where: { id: labOrderTestId, organizationId: session.user.organizationId },
-    include: { labTest: true },
+    include: { labTest: true, clinicalOrder: { select: { branchId: true } } },
   })
+  assertBranchAccess(getAuthorizedBranchScope(session), original.clinicalOrder.branchId)
   if (!original.isCurrent) throw new Error("Only the current version of a lab result can be amended.")
   if (original.status !== "verified") throw new Error("Only a verified result needs an amendment — edit the entry directly instead.")
 
@@ -300,7 +321,24 @@ export async function listPatientLabResults(session: SessionContext, patientId: 
       isCurrent: true,
       clinicalOrder: { patientId, branchId: narrowBranchFilter(scope) },
     },
-    include: { labTest: true, labPanel: true, clinicalOrder: true },
+    // P3.2 §20: this only powers Patient 360's summary table (test name,
+    // value, range, flag, order link) — it previously pulled every scalar
+    // column via `include` (entered/verified-by ids, free-text `notes`,
+    // the whole LabPanel relation) just to show a one-line row. Narrowed to
+    // exactly what the tab renders; nothing else reads this function.
+    select: {
+      id: true,
+      verifiedAt: true,
+      numericValue: true,
+      unit: true,
+      textValue: true,
+      referenceRangeLow: true,
+      referenceRangeHigh: true,
+      referenceRangeText: true,
+      abnormalFlag: true,
+      labTest: { select: { name: true } },
+      clinicalOrder: { select: { id: true, orderNumber: true } },
+    },
     orderBy: { verifiedAt: "desc" },
   })
   await writeClinicalAccessLog({ session, patientId, resourceType: "lab_results", action: "view" })

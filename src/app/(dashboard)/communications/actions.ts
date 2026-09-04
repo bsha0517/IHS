@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
-import { createTemplate, updateTemplate, deactivateTemplate } from "@/lib/domains/communications/templates"
+import { createTemplate, updateTemplate } from "@/lib/domains/communications/templates"
 import { sendTemplateMessage } from "@/lib/domains/communications/service"
 import { commTemplateSchema } from "@/lib/domains/communications/schemas"
 import { formatDate } from "@/lib/utils/dates"
@@ -50,12 +50,6 @@ export async function updateTemplateAction(_prev: ActionState, formData: FormDat
   }
   revalidatePath("/communications")
   return { success: true }
-}
-
-export async function deactivateTemplateAction(id: string) {
-  const session = await requireSession()
-  await deactivateTemplate(session, id)
-  revalidatePath("/communications")
 }
 
 export async function sendReminderAction(

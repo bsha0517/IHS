@@ -17,6 +17,7 @@ const TIMEOUT = 60000
 describe("P1 §15/§16: procurement AP chain and over-receiving guard", () => {
   let organizationId: string
   let branchId: string
+  let userId: string
   let supplierId: string
   let inventoryAccountId: string
   let apAccountId: string
@@ -30,7 +31,7 @@ describe("P1 §15/§16: procurement AP chain and over-receiving guard", () => {
   function session(): SessionContext {
     return {
       sessionId: "test-procurement-ap",
-      user: { id: "00000000-0000-0000-0000-0000000000f5", organizationId, email: "procurement-ap-test@test.local", firstName: "Procure", lastName: "Test" },
+      user: { id: userId, organizationId, email: "procurement-ap-test@test.local", firstName: "Procure", lastName: "Test" },
       activeBranchId: branchId,
       branchIds: [branchId],
       permissions: new Set(["goods_receipt.create", "supplier_invoice.manage", "purchase_order.manage"]),
@@ -66,6 +67,15 @@ describe("P1 §15/§16: procurement AP chain and over-receiving guard", () => {
     const branch = await db.branch.findFirstOrThrow()
     organizationId = branch.organizationId
     branchId = branch.id
+    // P2 §14: previously a hardcoded, never-created id
+    // ("00000000-0000-0000-0000-0000000000f5") — worked only because
+    // nothing enforced it referenced a real row. createGoodsReceipt/
+    // recordSupplierPayment write this straight into GoodsReceipt.receivedBy/
+    // SupplierPayment.paidBy, which now have a real FK to `user` (§14,
+    // Category A) — found and fixed as a direct consequence of that
+    // migration, the same class of fix as pharmacy-dispensing-integrity.test.ts.
+    const user = await db.user.findFirstOrThrow({ where: { organizationId } })
+    userId = user.id
 
     const supplier = await db.supplier.create({
       data: { organizationId, code: `TESTSUP-${Date.now()}`, companyName: "Test AP Supplier" },

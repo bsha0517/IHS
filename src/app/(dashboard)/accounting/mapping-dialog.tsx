@@ -8,14 +8,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { useActionDialog } from "@/hooks/use-action-dialog"
 import { setMappingAction, type ActionState } from "@/app/(dashboard)/accounting/actions"
+import { postingIntents, POSTING_INTENT_LABELS } from "@/lib/domains/accounting/schemas"
 
 const initialState: ActionState = {}
-
-const POSTING_INTENTS = [
-  "cash", "card", "bank", "online", "insurance", "credit", "other",
-  "accounts_receivable", "revenue", "tax_payable", "unearned_revenue",
-  "inventory_asset", "accounts_payable", "expense_default",
-] as const
 
 export function MappingDialog({
   accounts,
@@ -50,9 +45,9 @@ export function MappingDialog({
                 <SelectValue placeholder="Select intent" />
               </SelectTrigger>
               <SelectContent>
-                {POSTING_INTENTS.map((i) => (
+                {postingIntents.map((i) => (
                   <SelectItem key={i} value={i}>
-                    {i.replace(/_/g, " ")}
+                    {POSTING_INTENT_LABELS[i]}
                   </SelectItem>
                 ))}
               </SelectContent>

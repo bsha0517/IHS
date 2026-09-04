@@ -11,8 +11,10 @@ const initialState: ActionState = {}
 
 export function OrgForm({
   organization,
+  canEdit,
 }: {
   organization: { legalName: string; displayName: string; defaultCurrency: string; defaultTimezone: string }
+  canEdit: boolean
 }) {
   const [state, formAction, pending] = useActionState(updateOrganizationAction, initialState)
 
@@ -31,26 +33,32 @@ export function OrgForm({
 
       <div className="grid gap-2">
         <Label htmlFor="legalName">Legal name</Label>
-        <Input id="legalName" name="legalName" defaultValue={organization.legalName} required />
+        <Input id="legalName" name="legalName" defaultValue={organization.legalName} disabled={!canEdit} required />
       </div>
       <div className="grid gap-2">
         <Label htmlFor="displayName">Display name</Label>
-        <Input id="displayName" name="displayName" defaultValue={organization.displayName} required />
+        <Input id="displayName" name="displayName" defaultValue={organization.displayName} disabled={!canEdit} required />
       </div>
       <div className="grid gap-2">
         <Label htmlFor="defaultCurrency">Default currency (ISO 4217)</Label>
-        <Input id="defaultCurrency" name="defaultCurrency" defaultValue={organization.defaultCurrency} maxLength={3} required />
+        <Input id="defaultCurrency" name="defaultCurrency" defaultValue={organization.defaultCurrency} maxLength={3} disabled={!canEdit} required />
       </div>
       <div className="grid gap-2">
         <Label htmlFor="defaultTimezone">Default timezone (IANA)</Label>
-        <Input id="defaultTimezone" name="defaultTimezone" defaultValue={organization.defaultTimezone} required />
+        <Input id="defaultTimezone" name="defaultTimezone" defaultValue={organization.defaultTimezone} disabled={!canEdit} required />
       </div>
 
-      <div className="sm:col-span-2">
-        <Button type="submit" disabled={pending}>
-          {pending ? "Saving..." : "Save changes"}
-        </Button>
-      </div>
+      {/* P3.12 §52: a `settings.view`-only session (e.g. Clinic Manager,
+          who holds view but not edit — seed.ts) previously saw a fully
+          live-looking form and "Save changes" button that would only fail
+          server-side on submit. */}
+      {canEdit && (
+        <div className="sm:col-span-2">
+          <Button type="submit" disabled={pending}>
+            {pending ? "Saving..." : "Save changes"}
+          </Button>
+        </div>
+      )}
     </form>
   )
 }

@@ -94,7 +94,19 @@ describe("P1 §36: patient financial statement reconciles to AR", () => {
   }, TIMEOUT)
 
   afterAll(async () => {
-    const journals = await db.journal.findMany({ where: { organizationId, referenceType: { in: ["invoice", "invoice_void", "payment", "refund"] }, referenceId: { in: invoiceIds } } })
+    // P3.13: a "payment" journal's referenceId is the Payment's own id, not
+    // the invoice's (posting-service.ts's postPaymentReceived, fixed this
+    // batch) — resolve the real payment ids first so this cleanup still finds them.
+    const paymentIds = (await db.payment.findMany({ where: { allocations: { some: { invoiceId: { in: invoiceIds } } } }, select: { id: true } })).map((p) => p.id)
+    const journals = await db.journal.findMany({
+      where: {
+        organizationId,
+        OR: [
+          { referenceType: { in: ["invoice", "invoice_void", "refund"] }, referenceId: { in: invoiceIds } },
+          { referenceType: "payment", referenceId: { in: paymentIds } },
+        ],
+      },
+    })
     await db.journalLine.deleteMany({ where: { journalId: { in: journals.map((j) => j.id) } } })
     await db.journal.deleteMany({ where: { id: { in: journals.map((j) => j.id) } } })
 

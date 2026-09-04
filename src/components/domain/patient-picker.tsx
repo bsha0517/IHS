@@ -55,7 +55,15 @@ export function PatientPicker({
         <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
         <Input
           placeholder="Search patient by name, MRN, or phone"
-          value={selected ? `${selected.firstName} ${selected.lastName} (${selected.mrn})` : query}
+          value={
+            selected
+              ? // P3.2: `defaultPatient` (e.g. NewAppointmentDialog's "Book
+                // appointment" quick action from Patient 360) may only know
+                // a display name, not the real MRN — trailing " ()" reads
+                // as broken, so each part is only shown when it's real.
+                [`${selected.firstName} ${selected.lastName}`.trim(), selected.mrn && `(${selected.mrn})`].filter(Boolean).join(" ")
+              : query
+          }
           onChange={(e) => {
             setSelected(null)
             setQuery(e.target.value)

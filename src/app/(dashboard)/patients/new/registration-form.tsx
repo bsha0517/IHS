@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useRef, useState, useTransition } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -8,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { FormSection } from "@/components/ui/form-section"
 import { calculateAge, formatDate } from "@/lib/utils/dates"
 import {
   checkDuplicatesAction,
@@ -79,8 +81,10 @@ export function RegistrationForm({
           </Alert>
         )}
 
-        <div>
-          <p className="mb-3 text-sm font-medium">Identity</p>
+        {/* P4.7A.1 §35 — grouped via the shared FormSection primitive instead
+            of each section hand-rolling its own `<p>` mini-heading. Field
+            list and column counts are unchanged. */}
+        <FormSection title="Identity" grid={false}>
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="grid gap-2">
               <Label htmlFor="firstName">First name *</Label>
@@ -117,10 +121,9 @@ export function RegistrationForm({
               <Input id="nationality" name="nationality" />
             </div>
           </div>
-        </div>
+        </FormSection>
 
-        <div>
-          <p className="mb-3 text-sm font-medium">Contact</p>
+        <FormSection title="Contact" grid={false}>
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="grid gap-2">
               <Label htmlFor="mobile">Mobile *</Label>
@@ -147,10 +150,9 @@ export function RegistrationForm({
               <Input id="country" name="country" />
             </div>
           </div>
-        </div>
+        </FormSection>
 
-        <div>
-          <p className="mb-3 text-sm font-medium">Identification</p>
+        <FormSection title="Identification" grid={false}>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="grid gap-2">
               <Label htmlFor="nationalId">National ID</Label>
@@ -161,10 +163,9 @@ export function RegistrationForm({
               <Input id="passportNumber" name="passportNumber" />
             </div>
           </div>
-        </div>
+        </FormSection>
 
-        <div>
-          <p className="mb-3 text-sm font-medium">Emergency contact</p>
+        <FormSection title="Emergency contact" grid={false}>
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="grid gap-2">
               <Label htmlFor="emergencyContactName">Name</Label>
@@ -179,10 +180,9 @@ export function RegistrationForm({
               <Input id="emergencyContactPhone" name="emergencyContactPhone" />
             </div>
           </div>
-        </div>
+        </FormSection>
 
-        <div>
-          <p className="mb-3 text-sm font-medium">Registration</p>
+        <FormSection title="Registration" grid={false}>
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="grid gap-2">
               <Label htmlFor="registrationBranchId">Branch *</Label>
@@ -223,7 +223,7 @@ export function RegistrationForm({
               <Input id="referralSource" name="referralSource" />
             </div>
           </div>
-        </div>
+        </FormSection>
 
         <div>
           <Button type="submit" disabled={pending}>
@@ -244,14 +244,22 @@ export function RegistrationForm({
 
           <div className="grid gap-2">
             {duplicates.map((d) => (
-              <div key={d.id} className="rounded-md border border-border p-3 text-sm">
-                <p className="font-medium">
-                  {d.firstName} {d.lastName} — {d.mrn}
-                </p>
-                <p className="text-muted-foreground">
-                  DOB {formatDate(d.dob)} ({calculateAge(d.dob)}y) · {d.mobile} {d.email ? `· ${d.email}` : ""}
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">Matched on: {d.matchedOn.join(", ")}</p>
+              <div key={d.id} className="flex items-center justify-between gap-3 rounded-md border border-border p-3 text-sm">
+                <div>
+                  <p className="font-medium">
+                    {d.firstName} {d.lastName} — {d.mrn}
+                  </p>
+                  <p className="text-muted-foreground">
+                    DOB {formatDate(d.dob)} ({calculateAge(d.dob)}y) · {d.mobile} {d.email ? `· ${d.email}` : ""}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">Matched on: {d.matchedOn.join(", ")}</p>
+                </div>
+                {/* P3.1 §11: opens in a new tab so the half-filled registration form here is never lost. */}
+                <Button variant="outline" size="sm" asChild>
+                  <Link href={`/patients/${d.id}`} target="_blank" rel="noopener noreferrer">
+                    Open record
+                  </Link>
+                </Button>
               </div>
             ))}
           </div>

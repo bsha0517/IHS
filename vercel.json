@@ -4,5 +4,10 @@
       "path": "/api/cron/outbox-sweep",
       "schedule": "0 0 * * *"
     }
-  ]
+  ],
+  "functions": {
+    "src/app/**/*": {
+      "maxDuration": 60
+    }
+  }
 }

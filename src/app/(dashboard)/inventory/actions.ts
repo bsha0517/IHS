@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
 import { createProduct, updateProduct } from "@/lib/domains/inventory/products"
-import { recordAdjustment } from "@/lib/domains/inventory/stock"
+import { recordAdjustment, listAvailableBatches } from "@/lib/domains/inventory/stock"
 import { createTransfer, completeTransfer, cancelTransfer } from "@/lib/domains/inventory/transfers"
 import { productSchema, stockAdjustmentSchema, stockTransferSchema } from "@/lib/domains/inventory/schemas"
 
@@ -71,6 +71,11 @@ export async function recordAdjustmentAction(_prev: ActionState, formData: FormD
     quantity: formData.get("quantity"),
     transactionType: formData.get("transactionType") || "adjustment",
     reason: formData.get("reason"),
+    reference: formData.get("reference"),
+    newBatchNumber: formData.get("newBatchNumber"),
+    newBatchExpiryDate: formData.get("newBatchExpiryDate"),
+    newBatchManufacturingDate: formData.get("newBatchManufacturingDate"),
+    newBatchPurchaseCost: formData.get("newBatchPurchaseCost"),
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
@@ -104,14 +109,43 @@ export async function createTransferAction(_prev: ActionState, formData: FormDat
   return { success: true }
 }
 
-export async function completeTransferAction(transferId: string) {
+export async function completeTransferAction(transferId: string): Promise<ActionState> {
   const session = await requireSession()
-  await completeTransfer(session, transferId)
+  try {
+    await completeTransfer(session, transferId)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to complete transfer." }
+  }
   revalidatePath("/inventory")
+  return { success: true }
 }
 
-export async function cancelTransferAction(transferId: string, reason: string) {
+export async function cancelTransferAction(transferId: string, reason: string): Promise<ActionState> {
   const session = await requireSession()
-  await cancelTransfer(session, transferId, reason)
+  try {
+    await cancelTransfer(session, transferId, reason)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to cancel transfer." }
+  }
   revalidatePath("/inventory")
+  return { success: true }
+}
+
+/**
+ * P3.8 §20-25: backs TransferDialog's batch selector — real, non-expired,
+ * non-zero-balance batches for one product at one (source) branch, reusing
+ * `listAvailableBatches` (the same FEFO-candidate-pool function
+ * consumeStock's allocation is built on) rather than a second UI-side
+ * expired/balance filter. Returns a plain serializable array since this is
+ * called directly from a client component, not bound as a form action.
+ */
+export async function listAvailableBatchesForTransferAction(branchId: string, productId: string) {
+  const session = await requireSession()
+  const batches = await listAvailableBatches(session, productId, branchId)
+  return batches.map((b) => ({
+    id: b.batch.id,
+    batchNumber: b.batch.batchNumber,
+    balance: Number(b.balance),
+    expiryDate: b.batch.expiryDate ? b.batch.expiryDate.toISOString() : null,
+  }))
 }

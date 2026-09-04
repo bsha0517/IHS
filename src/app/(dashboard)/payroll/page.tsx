@@ -6,6 +6,7 @@ import { listPayrollRuns } from "@/lib/domains/payroll/payroll"
 import { listAccessibleBranches } from "@/lib/domains/billing/cashier"
 import { formatDate } from "@/lib/utils/dates"
 import { Card, CardContent } from "@/components/ui/card"
+import { PageHeader } from "@/components/ui/page-header"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { NewRunDialog } from "@/app/(dashboard)/payroll/new-run-dialog"
@@ -27,10 +28,7 @@ export default async function PayrollPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">Payroll</h1>
-        {canProcess && <NewRunDialog branches={branchOptions} />}
-      </div>
+      <PageHeader title="Payroll" primaryAction={canProcess && <NewRunDialog branches={branchOptions} />} />
 
       <Card>
         <CardContent className="pt-6">

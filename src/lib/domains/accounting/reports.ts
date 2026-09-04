@@ -2,6 +2,7 @@ import "server-only"
 import { db } from "@/lib/db"
 import { assertCan, ForbiddenError } from "@/lib/platform/permissions-core"
 import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess, type BranchScope } from "@/lib/platform/branch-scope"
+import { resolvePage, paginationSkipTake, totalPages } from "@/lib/platform/pagination"
 import { Prisma } from "@/generated/prisma/client"
 import type { SessionContext } from "@/lib/auth/session"
 
@@ -64,9 +65,17 @@ function netBalance(row: AccountBalanceRow): number {
   return isDebitNormal ? row.debit - row.credit : row.credit - row.debit
 }
 
-export async function trialBalance(session: SessionContext, filters: { branchId?: string; asOf?: Date } = {}) {
-  assertCan(session, "accounting.view")
-  const rows = await accountBalances(session.user.organizationId, getAuthorizedBranchScope(session), filters.branchId, filters.asOf)
+/**
+ * P2 §9: `trialBalance`/`incomeStatement`/`balanceSheet` are pure
+ * transforms of the exact same `accountBalances` result — before this
+ * batch, `accounting/page.tsx` called all three independently (three
+ * identical LEFT JOIN/GROUP BY scans of every account × journal_line per
+ * page load) and `getFinancialReport` (analytics/reports/financial.ts)
+ * called two of them the same way. Splitting the fetch from the build
+ * lets both single-statement callers (unchanged below) and multi-
+ * statement callers (`getFinancialStatements`, new) share one fetch.
+ */
+function buildTrialBalance(rows: AccountBalanceRow[]) {
   const lines = rows
     .filter((r) => r.debit !== 0 || r.credit !== 0)
     .map((r) => {
@@ -86,9 +95,7 @@ export async function trialBalance(session: SessionContext, filters: { branchId?
   return { lines, totalDebit, totalCredit, isBalanced: Math.abs(totalDebit - totalCredit) < 0.01 }
 }
 
-export async function incomeStatement(session: SessionContext, filters: { branchId?: string; asOf?: Date } = {}) {
-  assertCan(session, "accounting.view")
-  const rows = await accountBalances(session.user.organizationId, getAuthorizedBranchScope(session), filters.branchId, filters.asOf)
+function buildIncomeStatement(rows: AccountBalanceRow[]) {
   const revenueLines = rows.filter((r) => r.type === "revenue" && (r.debit !== 0 || r.credit !== 0)).map((r) => ({ code: r.code, name: r.name, amount: netBalance(r) }))
   const expenseLines = rows.filter((r) => r.type === "expense" && (r.debit !== 0 || r.credit !== 0)).map((r) => ({ code: r.code, name: r.name, amount: netBalance(r) }))
   const totalRevenue = revenueLines.reduce((sum, l) => sum + l.amount, 0)
@@ -96,29 +103,69 @@ export async function incomeStatement(session: SessionContext, filters: { branch
   return { revenueLines, expenseLines, totalRevenue, totalExpense, netIncome: totalRevenue - totalExpense }
 }
 
-export async function balanceSheet(session: SessionContext, filters: { branchId?: string; asOf?: Date } = {}) {
-  assertCan(session, "accounting.view")
-  const rows = await accountBalances(session.user.organizationId, getAuthorizedBranchScope(session), filters.branchId, filters.asOf)
+/**
+ * Retained earnings isn't its own account — it's the running net income
+ * (revenue - expense) folded into equity, same as any standard balance
+ * sheet where a "Close the books" step hasn't been run yet. Takes
+ * `netIncome` as a parameter rather than recomputing it via
+ * `buildIncomeStatement` internally — the caller already has it (either
+ * from its own `buildIncomeStatement(rows)` call, sharing the same
+ * `rows`, or computed once by `getFinancialStatements` below).
+ */
+function buildBalanceSheet(rows: AccountBalanceRow[], netIncome: number) {
   const assetLines = rows.filter((r) => r.type === "asset" && (r.debit !== 0 || r.credit !== 0)).map((r) => ({ code: r.code, name: r.name, amount: netBalance(r) }))
   const liabilityLines = rows.filter((r) => r.type === "liability" && (r.debit !== 0 || r.credit !== 0)).map((r) => ({ code: r.code, name: r.name, amount: netBalance(r) }))
   const equityLines = rows.filter((r) => r.type === "equity" && (r.debit !== 0 || r.credit !== 0)).map((r) => ({ code: r.code, name: r.name, amount: netBalance(r) }))
 
-  // Retained earnings isn't its own account — it's the running net income
-  // (revenue - expense) folded into equity, same as any standard balance
-  // sheet where a "Close the books" step hasn't been run yet.
-  const income = await incomeStatement(session, filters)
   const totalAssets = assetLines.reduce((sum, l) => sum + l.amount, 0)
   const totalLiabilities = liabilityLines.reduce((sum, l) => sum + l.amount, 0)
-  const totalEquity = equityLines.reduce((sum, l) => sum + l.amount, 0) + income.netIncome
+  const totalEquity = equityLines.reduce((sum, l) => sum + l.amount, 0) + netIncome
 
   return {
     assetLines,
     liabilityLines,
-    equityLines: [...equityLines, { code: "—", name: "Retained Earnings (current period)", amount: income.netIncome }],
+    equityLines: [...equityLines, { code: "—", name: "Retained Earnings (current period)", amount: netIncome }],
     totalAssets,
     totalLiabilities,
     totalEquity,
     isBalanced: Math.abs(totalAssets - (totalLiabilities + totalEquity)) < 0.01,
+  }
+}
+
+export async function trialBalance(session: SessionContext, filters: { branchId?: string; asOf?: Date } = {}) {
+  assertCan(session, "accounting.view")
+  const rows = await accountBalances(session.user.organizationId, getAuthorizedBranchScope(session), filters.branchId, filters.asOf)
+  return buildTrialBalance(rows)
+}
+
+export async function incomeStatement(session: SessionContext, filters: { branchId?: string; asOf?: Date } = {}) {
+  assertCan(session, "accounting.view")
+  const rows = await accountBalances(session.user.organizationId, getAuthorizedBranchScope(session), filters.branchId, filters.asOf)
+  return buildIncomeStatement(rows)
+}
+
+export async function balanceSheet(session: SessionContext, filters: { branchId?: string; asOf?: Date } = {}) {
+  assertCan(session, "accounting.view")
+  const rows = await accountBalances(session.user.organizationId, getAuthorizedBranchScope(session), filters.branchId, filters.asOf)
+  return buildBalanceSheet(rows, buildIncomeStatement(rows).netIncome)
+}
+
+/**
+ * P2 §9: for a caller that needs two or three of trial balance/income
+ * statement/balance sheet at once under the *same* filters — both
+ * `accounting/page.tsx` and `getFinancialReport` (analytics/reports/
+ * financial.ts) do — this fetches `accountBalances` exactly once instead
+ * of once per statement. Same output shape each individual function
+ * already returned, just computed from one shared `rows`.
+ */
+export async function getFinancialStatements(session: SessionContext, filters: { branchId?: string; asOf?: Date } = {}) {
+  assertCan(session, "accounting.view")
+  const rows = await accountBalances(session.user.organizationId, getAuthorizedBranchScope(session), filters.branchId, filters.asOf)
+  const income = buildIncomeStatement(rows)
+  return {
+    trialBalance: buildTrialBalance(rows),
+    incomeStatement: income,
+    balanceSheet: buildBalanceSheet(rows, income.netIncome),
   }
 }
 
@@ -152,15 +199,43 @@ export async function cashFlow(session: SessionContext, filters: { branchId?: st
   return { inflows, outflows, netChange }
 }
 
-export async function listJournals(session: SessionContext, filters: { branchId?: string; referenceType?: string } = {}) {
+const JOURNAL_LIST_PAGE_SIZE = 50
+
+/**
+ * P2 §6: added `dateFrom`/`dateTo`/`postedBy` filters and `postedByUser` to
+ * the include — the accounting/accountant-facing traceability viewer needs
+ * to filter and show the posting actor, both previously missing from this
+ * function even though `Journal.postedBy` has carried a real FK since P2
+ * Batch 2 (§14). `branchId`/`referenceType` filters already existed; this
+ * is the same function, not a parallel query path.
+ *
+ * P2 §8: was `take: 200` with no page param. Real server-side pagination
+ * now, layered on top of the filters above rather than replacing them.
+ */
+export async function listJournals(
+  session: SessionContext,
+  filters: { branchId?: string; referenceType?: string; postedBy?: string; dateFrom?: Date; dateTo?: Date; page?: number } = {}
+) {
   assertCan(session, "accounting.view")
   const scope = getAuthorizedBranchScope(session)
-  return db.journal.findMany({
-    where: { organizationId: session.user.organizationId, branchId: narrowBranchFilter(scope, filters.branchId), referenceType: filters.referenceType },
-    include: { lines: { include: { account: true } }, branch: true },
-    orderBy: { journalDate: "desc" },
-    take: 200,
-  })
+  const page = resolvePage(filters.page)
+  const where: Prisma.JournalWhereInput = {
+    organizationId: session.user.organizationId,
+    branchId: narrowBranchFilter(scope, filters.branchId),
+    referenceType: filters.referenceType,
+    postedBy: filters.postedBy,
+    journalDate: { gte: filters.dateFrom, lte: filters.dateTo },
+  }
+  const [journals, total] = await Promise.all([
+    db.journal.findMany({
+      where,
+      include: { lines: { include: { account: true } }, branch: true, postedByUser: true },
+      orderBy: { journalDate: "desc" },
+      ...paginationSkipTake(page, JOURNAL_LIST_PAGE_SIZE),
+    }),
+    db.journal.count({ where }),
+  ])
+  return { journals, total, page, pageSize: JOURNAL_LIST_PAGE_SIZE, totalPages: totalPages(total, JOURNAL_LIST_PAGE_SIZE) }
 }
 
 export async function getJournal(session: SessionContext, id: string) {

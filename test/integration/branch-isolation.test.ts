@@ -1,6 +1,8 @@
 import "dotenv/config"
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { db } from "@/lib/db"
+import { PrismaClient } from "@/generated/prisma/client"
+import { PrismaPg } from "@prisma/adapter-pg"
 import { listPatients, getPatient } from "@/lib/domains/patients/service"
 import { listAppointments, getAppointment } from "@/lib/domains/appointments/service"
 import { listInvoices, getInvoice } from "@/lib/domains/billing/invoices"
@@ -198,6 +200,17 @@ describe("P0-01: branch data isolation", () => {
     // undefined) — filter rather than let Prisma reject the whole cleanup
     // over one unset id and mask the real failure.
     const ids = (vals: (string | undefined)[]) => vals.filter((v): v is string => !!v)
+    // P2 §7: listPatientOrders now writes a ClinicalAccessLog row per call
+    // (this suite's own "cannot see Branch B's clinical orders" tests call
+    // it repeatedly) — that table is deliberately insert-only for the
+    // app's real runtime role (see audit-log-immutability.test.ts), and
+    // Patient's FK to it is ON DELETE RESTRICT, so patientAId/patientBId
+    // can no longer be deleted below without clearing these rows first via
+    // the schema-owner connection.
+    const ownerDb = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DIRECT_DATABASE_URL }) })
+    await ownerDb.clinicalAccessLog.deleteMany({ where: { patientId: { in: ids([patientAId, patientBId]) } } })
+    await ownerDb.$disconnect()
+
     await db.journalLine.deleteMany({ where: { journalId: { in: ids([journalAId, journalBId]) } } })
     await db.journal.deleteMany({ where: { id: { in: ids([journalAId, journalBId]) } } })
     await db.invoiceLine.deleteMany({ where: { invoiceId: { in: ids([invoiceAId, invoiceBId]) } } })
@@ -237,7 +250,7 @@ describe("P0-01: branch data isolation", () => {
 
     it("list invoices: Branch B's invoice is excluded", async () => {
       const result = await listInvoices(branchASession())
-      const ids = result.map((i) => i.id)
+      const ids = result.invoices.map((i) => i.id)
       expect(ids).toContain(invoiceAId)
       expect(ids).not.toContain(invoiceBId)
     })
@@ -259,7 +272,7 @@ describe("P0-01: branch data isolation", () => {
 
     it("reports/accounting: Branch B's journal is excluded from the list, and direct access is rejected", async () => {
       const result = await listJournals(branchASession(), { referenceType: "test" })
-      const ids = result.map((j) => j.id)
+      const ids = result.journals.map((j) => j.id)
       expect(ids).toContain(journalAId)
       expect(ids).not.toContain(journalBId)
       await expect(getJournal(branchASession(), journalBId)).rejects.toThrow(ForbiddenError)

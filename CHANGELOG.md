@@ -11,9 +11,18 @@ This file does not reconstruct every phase's own history in exhaustive detail �
 - Release safety tooling (P4.8): `npm run release:check` (a single pre-release gate — schema validation, migration drift, typecheck, lint, component tests, integration tests, production build), `npm run db:upgrade:drill` (a real local migration-rehearsal drill reusing the existing backup/restore mechanism), a shared release-version identifier (`src/lib/platform/release.ts`) used identically by `/api/health` and the structured logger.
 - Release process documentation: `docs/RELEASE_CHECKLIST.md`, `docs/RELEASE_RUNBOOK.md`, `docs/DATABASE_MIGRATION_SAFETY.md`, `docs/RELEASE_VERSIONING.md`, `docs/releases/RELEASE_TEMPLATE.md`.
 
+- Commercial go-live documentation (P4.9): `docs/FIRST_CLINIC_GO_LIVE_CHECKLIST.md`, `docs/CLINIC_UAT_SIGNOFF_TEMPLATE.md`, `docs/COMMERCIAL_READINESS.md`.
+- Interrupted-batched-import/retry test coverage (P4.9): a genuine multi-batch (250-row) commit crossing the import engine's 200-row transaction-batch boundary, and a fresh-retry-job test proving already-committed rows are detected as duplicates and never re-created.
+
 ### Changed
 
 - `src/components/ui/tabs.tsx`: fixed a `TabsList` height bug that overlapped page content when a tab row wrapped to more than one line at a narrow viewport (P4.7A.1).
+- `src/app/(dashboard)/appointments/new-appointment-dialog.tsx`: Provider/Service Selects made controlled (P4.9), so a rejected booking submission no longer visually clears the operator's selections.
+
+### Fixed
+
+- The hosted (Supabase) production database had Row Level Security disabled on every table — closed by enabling RLS with a runtime-role-scoped policy (P4.9). See `P4_9_COMMERCIAL_READINESS_ACCEPTANCE_REPORT.md`'s Security section.
+- 4 duplicate synthetic `payroll_run` rows (same organization/branch/period) on the hosted database, left over from earlier phases' manual UAT, were blocking a pending uniqueness migration — resolved with user authorization (P4.9).
 
 ## Baseline at P4.8 — What Commercial-Readiness Means Here
 

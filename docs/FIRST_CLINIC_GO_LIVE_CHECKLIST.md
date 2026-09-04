@@ -46,28 +46,45 @@ direct/session-mode port 5432 for the runtime connection).
 - [ ] Supabase project's restricted runtime role created with the exact grants in
       `prisma/db-setup/` (full CRUD everywhere except `UPDATE`/`DELETE` on `audit_log` and
       `clinical_access_log`).
-- [ ] **Row Level Security**: enable RLS (no policies needed beyond one permissive policy for the
-      runtime role) on every table in the Supabase project before go-live — see
-      `P4_9_COMMERCIAL_READINESS_ACCEPTANCE_REPORT.md`'s Security section for exactly why this
-      matters and the exact SQL. Confirm with Supabase's own advisor (`get_advisors`, type
-      `security`) that no tables remain flagged.
 - [ ] Run `npx prisma migrate deploy` against `DIRECT_DATABASE_URL` — never `migrate dev` against
       this database, ever.
 - [ ] `npx prisma migrate status` shows "up to date" immediately after.
+- [ ] **Row Level Security**: run `npm run db:security:apply` (source-controlled — see
+      `DATABASE.md`'s "Row Level Security" section and `prisma/db-setup/apply-rls.sql`; this is no
+      longer a manual per-table procedure), then `npm run db:security:check` to confirm every table
+      is protected. Optionally cross-check with Supabase's own advisor (`get_advisors`, type
+      `security`) that no tables remain flagged.
 - [ ] Run the production seed (`npm run db:seed` with `NODE_ENV=production` and, ideally,
       `SUPER_ADMIN_BOOTSTRAP_PASSWORD` set from your own secret manager rather than letting the
       script generate and print one). Capture the bootstrap credential immediately — it is shown
       exactly once.
 
-## Backup
+## Backup — REQUIRED BEFORE GO-LIVE
+
+This entire section is a required prerequisite, not a recommendation — see
+`docs/COMMERCIAL_READINESS.md`'s "Required Before The First Real Clinic Go-Live" and
+`P4_9_1_COMMERCIAL_READINESS_CORRECTIONS_REPORT.md` for why: as of P4.9/P4.9.1, the actual
+`prisma migrate deploy` command has never been executed end-to-end against a real hosted database
+(only against local Postgres) — this rehearsal is where that gets proven, not skipped.
 
 - [ ] Confirm Supabase's own backup/PITR settings for this project (plan-dependent) are enabled.
-- [ ] Perform one real backup using this project's own tooling (`scripts/db/backup.ts` locally
-      against a Supabase-shaped connection, or Supabase's dashboard/CLI backup for the hosted
-      copy) and confirm the artifact exists.
-- [ ] Know your restore procedure before you need it — `docs/BACKUP_DISASTER_RECOVERY.md`.
+- [ ] Perform one real backup using this project's own tooling (`scripts/db/backup.ts` against a
+      Supabase-shaped connection, or Supabase's dashboard/CLI backup for the hosted copy) and
+      confirm the artifact exists.
+- [ ] Restore that backup into an isolated Supabase branch/project — never the live clinic
+      database.
+- [ ] Against that isolated restore target, run the real `npx prisma migrate deploy` (and
+      `npx prisma migrate status`) — the first genuine end-to-end proof of this exact production
+      command against a hosted database.
+- [ ] Run `npm run db:security:apply` then `npm run db:security:check` against the same restored
+      target and confirm clean.
+- [ ] Confirm the runtime role can connect and perform normal DML against the restored target.
+- [ ] Re-run the reconciliation checks (no unbalanced journals, no overpaid invoices, no negative
+      stock) against the restored data.
+- [ ] Know your restore procedure before you need it against the real clinic database —
+      `docs/BACKUP_DISASTER_RECOVERY.md`.
 
-## Monitoring
+## Monitoring — REQUIRED BEFORE GO-LIVE
 
 - [ ] Configure an external error monitor (Sentry or equivalent) and verify one safe test error
       reaches it — confirm the payload carries no clinical note text, diagnoses, prescription
@@ -152,7 +169,7 @@ direct/session-mode port 5432 for the runtime connection).
       skipped / invalid / duplicate) before considering the import "done" — don't just check that
       it "completed."
 
-## UAT
+## UAT — REQUIRED BEFORE GO-LIVE
 
 - [ ] Run the full synthetic first-clinic workflow once, end to end, with the clinic's own newly
       created users (not just Super Admin): Patient → Appointment → Check-in → Encounter →
@@ -160,7 +177,9 @@ direct/session-mode port 5432 for the runtime connection).
       Invoice → Payment → Journal → Patient Timeline → Reports.
 - [ ] Have each named role actually log in as themselves and confirm their landing page and
       navigation look right (not just Super Admin clicking through everything).
-- [ ] Complete `docs/CLINIC_UAT_SIGNOFF_TEMPLATE.md` and keep it on file.
+- [ ] Complete `docs/CLINIC_UAT_SIGNOFF_TEMPLATE.md`, signed by the clinic administrator and the
+      Release Owner, and keep it on file — the final Go-Live checkbox below must not be checked
+      without this.
 
 ## Release
 
@@ -168,6 +187,17 @@ direct/session-mode port 5432 for the runtime connection).
 - [ ] Follow `docs/RELEASE_RUNBOOK.md`'s Default Release Sequence for the actual deploy.
 
 ## Go-Live
+
+Before checking the final box, confirm every one of these three is actually done, not merely
+planned — they are required, not recommended (see `docs/COMMERCIAL_READINESS.md`):
+
+- [ ] **A. Backup section above is fully complete**, including the isolated restore + real
+      `prisma migrate deploy` rehearsal.
+- [ ] **B. Monitoring section above is fully complete** — external error monitor configured and
+      test-verified.
+- [ ] **C. UAT section above is fully complete** — clinic-specific sign-off on file.
+
+Then:
 
 - [ ] Confirm the deployed release's `/api/health` returns `status: "healthy"`,
       `database: "reachable"`, and a `version` matching the commit you just shipped.

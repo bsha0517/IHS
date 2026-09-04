@@ -10,6 +10,7 @@
 import { readFileSync } from "node:fs"
 import path from "node:path"
 import { waitForReachable, runSql, runStep, assertNotRemoteHost } from "./lib"
+import { applySecurity } from "./security"
 
 const GRANT_SQL_PATH = path.resolve(import.meta.dirname, "../../prisma/db-setup/local-grant-runtime-role.sql")
 
@@ -53,6 +54,15 @@ export async function setupDatabase({
   console.log(`[${label}] Applying the restricted runtime role's table grants...`)
   const grantSql = readFileSync(GRANT_SQL_PATH, "utf8")
   await runSql(directUrl, grantSql)
+
+  // P4.9.1 §28's documented provisioning order: migrations, then role
+  // grants, then RLS — applied locally too (not just against Supabase) so
+  // db:dev:setup/db:test:setup continuously exercise the exact same
+  // security posture production runs under, not a divergent, easier local
+  // configuration (section 12: "do not weaken local test DB security just
+  // to make tests easier").
+  console.log(`[${label}] Applying Row Level Security (db:security:apply)...`)
+  await applySecurity({ directUrl, runtimeUrl, label })
 
   if (seed) {
     console.log(`[${label}] Seeding (tsx prisma/seed.ts)...`)

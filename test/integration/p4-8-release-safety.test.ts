@@ -49,6 +49,7 @@ describe("P4.8 §11/§12: release:check's gate list — the required checks, in 
     expect(names).toEqual([
       "Prisma schema validation",
       "Migration status (drift check)",
+      "DB security check (RLS)", // P4.9.1 §11 — added right after the migration-drift check
       "TypeScript",
       "Lint",
       "Component tests",

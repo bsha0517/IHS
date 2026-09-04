@@ -9,8 +9,16 @@
 // already-existing output (this script doesn't re-implement or duplicate
 // any check's own logic — it only sequences the same commands a developer
 // would otherwise run by hand: `npx prisma validate`, `npx prisma migrate
-// status`, `npm run typecheck`, `npm run lint`, `npm run test:components`,
-// `npm run test`, `npm run build`).
+// status`, `npm run db:security:check`, `npm run typecheck`, `npm run lint`,
+// `npm run test:components`, `npm run test`, `npm run build`).
+//
+// P4.9.1 §11: `db:security:check` runs right after the migration-drift
+// check — both are read-only checks of the same target database's current
+// state before anything deploys against it. It is deliberately a *check*
+// here, not an *apply* — this gate must never write to the database it's
+// verifying; if it fails, the fix is to run `npm run db:security:apply`
+// (see DATABASE.md's "Row Level Security" section) and re-run this gate,
+// not to have this gate silently apply it.
 //
 // E2E (`npm run test:e2e`) is deliberately NOT included here — it needs a
 // running `next dev`/`next start` server (playwright.config.ts's own
@@ -44,6 +52,7 @@ export type Gate = { name: string; command: string; args: string[] }
 export const GATES: Gate[] = [
   { name: "Prisma schema validation", command: "npx", args: ["prisma", "validate"] },
   { name: "Migration status (drift check)", command: "npx", args: ["prisma", "migrate", "status"] },
+  { name: "DB security check (RLS)", command: "npm", args: ["run", "db:security:check"] },
   { name: "TypeScript", command: "npm", args: ["run", "typecheck"] },
   { name: "Lint", command: "npm", args: ["run", "lint"] },
   { name: "Component tests", command: "npm", args: ["run", "test:components"] },

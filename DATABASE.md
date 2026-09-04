@@ -704,6 +704,54 @@ Why two roles were necessary, not optional: PostgreSQL does not let a table owne
 
 **Live-verified** (`test/integration/audit-log-immutability.test.ts`, run through `db` — the exact same client every domain service imports, connected via `DATABASE_URL`): the application can INSERT and SELECT `audit_log` rows, cannot UPDATE or DELETE them (PostgreSQL rejects it, not application-level logic), and retains full read/write access to a normal table (`branch`) through the identical connection. The full 84-test suite and a live browser session (login → dashboard → complete an encounter, exercising INSERT/UPDATE/SELECT across session, login_history, encounter, charge, and outbox_event) were both run against this same restricted connection with no regressions. See SECURITY.md §5 for the authorization-architecture writeup and DEPLOYMENT.md for the per-environment setup procedure.
 
+## Row Level Security (P4.9.1 — source-controlled, closes a P4.9 hosted-only fix)
+
+P4.9's acceptance pass found Row Level Security **disabled** on every table of the hosted
+Supabase database — meaning anyone holding that project's public anon key could read or write
+every row via Supabase's own Data API (PostgREST), entirely independent of this application's own
+Prisma-based session/RBAC layer, which never uses that API and was therefore not itself
+vulnerable. It was fixed by hand, live, against the hosted database during P4.9. P4.9.1 makes that
+fix reproducible from source control instead of depending on someone remembering a 100+ table
+manual procedure the next time a new clinic's database is provisioned.
+
+**Setup script:** `prisma/db-setup/apply-rls.sql`, run via `npm run db:security:apply`
+(`scripts/db/security-apply.ts`) — connects with the owner/direct connection
+(`DIRECT_DATABASE_URL`), refuses a pooled connection, substitutes the actual runtime role name
+(read from `DATABASE_URL`'s own username — never hardcoded) into the script, and dynamically
+enumerates every ordinary table currently in the `public` schema rather than a hardcoded list, so
+a table a *future* migration adds is automatically covered the next time this script is re-run —
+no table can quietly enter production with RLS disabled just because nobody remembered to update a
+list. Idempotent (`ALTER TABLE ... ENABLE ROW LEVEL SECURITY` is a no-op if already enabled;
+the one named policy this script owns, `app_runtime_full_access`, is dropped and recreated each
+run).
+
+**What the policy does and does not do:** each table gets RLS enabled plus exactly one policy,
+scoped `TO <runtime role>` (never `TO public`), `FOR ALL USING (true) WITH CHECK (true)` — fully
+permissive **for the application's own restricted runtime role only**. Supabase's `anon` and
+`authenticated` client roles get no policy at all, so RLS's own default-deny applies to them:
+zero access via the Data API. The runtime role's own actual restrictions (no `UPDATE`/`DELETE` on
+`audit_log`/`clinical_access_log`) are governed entirely by the `GRANT`/`REVOKE` layer this
+section's Connection Roles table already describes and are **unaffected** by RLS — a role with a
+permissive RLS policy but no `UPDATE` grant still cannot `UPDATE`, because Postgres checks both
+layers independently. **This is not a second authorization system and does not implement
+per-organization row isolation** — the application's own server-side tenant/branch scoping
+(`src/lib/platform/branch-scope.ts` and every domain service) remains the only thing enforcing
+multi-tenancy; RLS here exists purely to deny the Data API/anon-key exposure path that the
+application itself never uses.
+
+**Verification:** `npm run db:security:check` (`scripts/db/security-check.ts`) — read-only,
+safe to run in production, exits nonzero if any `public` table has RLS disabled or is missing the
+expected runtime-role policy. Both scripts and their target role name derivation are exercised by
+`test/integration/p4-9-1-db-security-rls.test.ts` against the local `his_test` database, including
+idempotency, a simulated unprivileged role standing in for Supabase's `anon` (correctly denied all
+access), and a re-confirmation that `audit_log`/`clinical_access_log` remain immutable to the
+runtime role under RLS.
+
+**Release integration:** `db:security:apply` is idempotent and safe to run as part of any fresh
+database provisioning; `db:security:check` is a fast, read-only step suitable for the release gate
+— see `docs/RELEASE_RUNBOOK.md`'s Default Release Sequence for exactly where each fits for a
+schema-changing release.
+
 ## P1 Remediation Schema Changes, Batch 3 (2026-08-27 — POS/inventory/cost accounting, §9-§13)
 
 **`20260826234516_p1_batch3_charge_product_link`**: one nullable column — `charge.product_id` (FK → `product`, `ON DELETE SET NULL`) — plus its covering index. Closes the gap P1_FINANCIAL_INTEGRITY_FINDINGS.md's B1 named: a POS charge sourced from a physical product previously had no field identifying *which* product, so `insertCharge` (billing/charges.ts) had no way to consume real inventory for it. Set only for a genuine retail product sale (`sourceType: "product"` with a real `productId` picked from the catalog) — every existing charge keeps `product_id NULL`, unaffected. No account-mapping schema change was needed for the new `cogs`/`inventory_write_off`/`inventory_adjustment_gain` posting intents — `account_mapping.intent` is a plain string column (not a DB enum), so these are seed-data additions (`prisma/seed.ts`'s `DEFAULT_ACCOUNTS`/`DEFAULT_MAPPINGS` — new Chart of Accounts rows `4100 Inventory Adjustment Gain`, `5100 Cost of Goods Sold`, `5200 Inventory Write-off Expense`), not a migration.

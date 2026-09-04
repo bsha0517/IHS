@@ -54,17 +54,41 @@ configuration) and has not yet been measured against a real hosted deployment un
 quote a specific concurrent-user number as a production guarantee until real hosted load evidence
 exists — see the P4.9 report's Production-Unproven Items.
 
-## Current Limitations
+## Required Before The First Real Clinic Go-Live
 
-- **No dedicated staging environment** distinct from production exists yet for this deployment —
-  see the P4.9 report for how this phase worked around that.
-- **Production-scale load testing** has not been performed against real hosted infrastructure.
-- **External error monitoring** is not yet configured (a pre-go-live condition, not a defect).
-- **Hosted backup execution** has been reasoned about but not exercised end-to-end against a real
-  hosted restore target within this engagement.
-- **Self-service password reset email delivery** depends on a transactional email provider being
-  configured — the workflow itself is implemented and tested, but real delivery is
-  environment-dependent.
+Under the current commercial-readiness acceptance plan (P4.9/P4.9.1), these three are **required**,
+not optional, before a real clinic's data goes live — consistent everywhere this is stated (this
+document, `docs/FIRST_CLINIC_GO_LIVE_CHECKLIST.md`, and
+`P4_9_1_COMMERCIAL_READINESS_CORRECTIONS_REPORT.md`):
+
+- **A. Hosted backup + isolated restore rehearsal**, including a real `prisma migrate deploy`
+  execution against that isolated rehearsal database (the actual production migration command has
+  not yet been executed against any hosted database — see `P4_9_1_COMMERCIAL_READINESS_CORRECTIONS_REPORT.md`
+  for why and what this rehearsal must prove), RLS/security verification, runtime-role
+  connectivity, and financial/inventory reconciliation, all post-restore.
+- **B. External production error monitoring** (Sentry or equivalent), configured and proven with
+  one real test error, with confirmation no sensitive clinical/financial/auth data is sent.
+- **C. Clinic-specific UAT and sign-off**, using `docs/CLINIC_UAT_SIGNOFF_TEMPLATE.md` with the
+  clinic's own real staff in their real roles, not only a Super Admin account.
+
+## Conditional Before Go-Live
+
+- **Transactional email delivery**: required before go-live **only if** the clinic needs
+  self-service password reset at launch — configure a real provider and send one real test reset
+  email. If the clinic accepts admin-assisted password reset instead, this remains conditional and
+  the manual-reset operational procedure should be documented for that clinic instead.
+
+## Required Before The First High-Risk Post-Go-Live Release (Not Blocking Initial Pilot)
+
+- **A real Vercel rollback drill** — exercised before relying on rollback during the first
+  HIGH-risk update after go-live, not required to block a small controlled first-clinic pilot.
+- **A dedicated staging environment**, separate from production — provisioned before the next
+  HIGH-risk release, not required for the initial pilot.
+
+## Other Current Limitations
+
+- **Production-scale load testing** has not been performed against real hosted infrastructure —
+  not required to launch a small controlled first-clinic pilot; see the Capacity Caveat above.
 - **Sub-daily scheduled job processing** (outbox retry sweeps at 5-minute cadence) requires a
   Vercel plan above Hobby; Hobby-plan deployments run this on a daily cadence instead.
 - A small number of low-severity UI/UX items remain open in `BACKLOG.md` — none block core

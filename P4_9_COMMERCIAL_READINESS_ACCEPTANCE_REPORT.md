@@ -12,19 +12,30 @@ This phase set out to answer one question with evidence, not assumption: *can Av
 onboard its first real clinic?* In the course of answering it, this phase also discovered and
 closed a genuine, unrelated-to-the-question security exposure (Row Level Security disabled on
 every table of the hosted database), performed the first-ever real deployment of this engagement's
-entire P2–P4.8 body of work (previously committed nowhere), executed the first real migration run
-and login/financial-integrity verification against the live hosted database, fixed one real
-frontend bug found during print verification, and closed P4.6's most important carried-forward
+entire P2–P4.8 body of work (previously committed nowhere), brought the hosted database's schema
+to the current migration state and verified login/financial-integrity against it live, fixed one
+real frontend bug found during print verification, and closed P4.6's most important carried-forward
 reservation (interrupted batched import + retry) with new tests proving the actual safety property
 rather than merely re-asserting it.
 
+**Correction (P4.9.1):** the paragraph above originally said this phase "executed the first real
+migration run" against the hosted database. That overstated what actually happened — the 7 pending
+migrations were applied via Supabase's own management SQL connection with hand-computed checksums
+and manually inserted `_prisma_migrations` rows (documented accurately in this report's own
+"Database / Migration" section below), not via the `prisma migrate deploy` command that is this
+project's actual production standard. The schema state, data integrity, and reconciliation
+evidence that update produced are all real and stand; the *procedure* used to produce them was not
+the standard one. See `P4_9_1_COMMERCIAL_READINESS_CORRECTIONS_REPORT.md` for the full correction
+and the source-controlled RLS/security work that phase also added.
+
 The honest result: core engineering is fully green, and — unusually for this kind of phase — most
-of P4.8's previously "production-unproven" items (real Vercel deployment, real Supabase migration,
-role-based production login, production financial-integrity reconciliation) are now genuinely
-proven, live, on this engagement's actual deployed environment. What remains unproven is narrower
-and more specific than before: external error monitoring is not configured, transactional email
-delivery is not confirmed, and a dedicated hosted backup/rollback rehearsal was not performed this
-phase (distinct from the DB migration and reconciliation work, which was).
+of P4.8's previously "production-unproven" items (real Vercel deployment, the hosted database
+genuinely brought to the current schema state, role-based production login, production
+financial-integrity reconciliation) are now genuinely proven, live, on this engagement's actual
+deployed environment. What remains unproven is narrower and more specific than before: external
+error monitoring is not configured, transactional email delivery is not confirmed, the actual
+`prisma migrate deploy` command has not been executed against a real hosted database (see the
+correction above), and a dedicated hosted backup/rollback rehearsal was not performed this phase.
 
 ## Final Decision
 
@@ -101,7 +112,7 @@ before higher-risk future changes — see Go-Live Conditions.
 | Area | Requirement | Evidence | Status | Blocker? |
 |---|---|---|---|---|
 | Deployment | Real Vercel production deploy of current codebase | Deployment `dpl_AhpQ6h4r9xyk6qENo91WWKWL5m5f` → `acf9ea4`, state READY, target production | PASS | No |
-| Database | `prisma migrate deploy` against hosted DB, no drift | 7 pending migrations applied to Supabase via its own management connection; `_prisma_migrations` now 40 rows; local `migrate status` shows no drift | PASS | No |
+| Database | Hosted schema brought to current migration state, no drift | 7 pending migrations applied to Supabase via its own management SQL connection (**not** `prisma migrate deploy` — see correction below), with hand-computed checksums and manually inserted `_prisma_migrations` rows; `_prisma_migrations` now 40 rows; local `migrate status` shows no drift against the resulting schema | PASS (schema state) / NOT PROVEN (the `prisma migrate deploy` command itself) | No — see Go-Live Conditions |
 | Backup / Restore | Hosted backup/restore executed this phase | Not executed this phase (local backup/restore/DR remains proven from P4.2/P4.8) | NOT PROVEN | Condition (see below) |
 | Security — RLS | Hosted DB rows not exposed via Supabase's own REST/anon-key layer | Found disabled on all 116 tables; enabled with a runtime-role-scoped policy; verified app still works end to end afterward | PASS (fixed this phase) | No |
 | Authentication | Real login against production | Logged in as a throwaway UAT Super Admin, full dashboard rendered with real DB-backed numbers, credential deleted afterward | PASS | No |
@@ -150,6 +161,16 @@ applied. One migration (`20260901_p3_10_payroll_run_period_unique`) initially fa
 pre-existing duplicate data — see Reconciliation below for how that was resolved. Final state: 40
 migrations applied, `npx prisma migrate status` reports "up to date" against the local schema, no
 drift.
+
+**P4.9.1 correction:** manually inserting rows into `_prisma_migrations` is **not** this project's
+normal production release procedure and must not be treated as standard operating procedure going
+forward. It was used here under the exceptional circumstance of applying migrations through
+Supabase's hosted management connection rather than a direct `DIRECT_DATABASE_URL` Postgres
+connection this session had credentials for. The production standard remains, unchanged:
+`npx prisma migrate deploy` against `DIRECT_DATABASE_URL`, exactly as `docs/RELEASE_RUNBOOK.md`
+prescribes. That exact command has not yet been executed end-to-end against a real hosted
+Supabase database within this engagement — see `P4_9_1_COMMERCIAL_READINESS_CORRECTIONS_REPORT.md`
+for the corrected evidence classification and the resulting go-live condition.
 
 ## Backup / Restore
 
@@ -430,6 +451,12 @@ with no drift against the local schema.
 
 ## Go-Live Conditions
 
+**Superseded by P4.9.1 — see `P4_9_1_COMMERCIAL_READINESS_CORRECTIONS_REPORT.md` and
+`docs/COMMERCIAL_READINESS.md`/`docs/FIRST_CLINIC_GO_LIVE_CHECKLIST.md` for the authoritative,
+currently-consistent version.** The list below is preserved as the historical record of what this
+phase concluded at the time; P4.9.1 reclassified condition 1 as REQUIRED (not merely
+recommended) before go-live and folded the `prisma migrate deploy` correction into it.
+
 Numbered, each with an owner and timing. All are external/operational — none require reopening
 engineering work.
 
@@ -503,7 +530,12 @@ rules.
 
 - **Real Vercel deployment** — **resolved this phase** (two real production deploys).
 - **Real rollback** — still not proven; a Go-Live Condition above.
-- **Real Supabase migration** — **resolved this phase** (7 migrations applied to the hosted DB).
+- **Real Supabase migration** — **partially resolved this phase, corrected by P4.9.1**: the hosted
+  database's schema was genuinely brought to the current 40-migration state, but via Supabase's own
+  management SQL connection with manually inserted `_prisma_migrations` rows, not the actual
+  `prisma migrate deploy` command. See `P4_9_1_COMMERCIAL_READINESS_CORRECTIONS_REPORT.md` — the
+  real `prisma migrate deploy` execution against a hosted database remains a named go-live
+  condition there.
 - **Hosted backup** — still not proven; a Go-Live Condition above.
 - **Production-equivalent staging** — clarified rather than resolved: none exists; production
   served this role carefully this phase; provisioning a real separate one is a Go-Live Condition
@@ -520,9 +552,11 @@ rules.
    clean typecheck/lint/build, `release:check` green — verified twice this phase.
 2. Unlike the P4.8 baseline, most of the previously "production-unproven" items are now genuinely
    proven, live, against this engagement's real deployed environment: a real Vercel production
-   deploy of the entire P2–P4.8 body of work, a real `prisma migrate deploy` against the hosted
-   Supabase database, real role-based production login, and real financial/inventory integrity
-   reconciliation directly against production data.
+   deploy of the entire P2–P4.8 body of work, the hosted Supabase database genuinely brought to
+   the current schema state (via management SQL, not yet the `prisma migrate deploy` command
+   itself — corrected by P4.9.1, which retains that specific gap as a named go-live condition),
+   real role-based production login, and real financial/inventory integrity reconciliation
+   directly against production data.
 3. A genuine, serious security exposure (RLS disabled on all 116 hosted tables) was found and
    closed this phase, along with the self-inflicted access issue that fix briefly caused — both
    handled transparently, with explicit user authorization at every consequential step.

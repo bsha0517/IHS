@@ -35,6 +35,7 @@ import { Client } from "pg"
 import { assertNotRemoteHost, requireEnv, runStep, waitForReachable } from "./lib"
 import { runBackup } from "./backup"
 import { runRestore } from "./restore"
+import { applySecurity, checkSecurity } from "./security"
 
 const DOCKER_CONTAINER = process.env.DOCKER_EXEC_CONTAINER ?? "avant_his_postgres"
 const RESTORE_DB = "his_restore_test_upgrade_drill"
@@ -130,12 +131,12 @@ async function main() {
   await waitForReachable(maintenanceUrl, "Local Postgres")
 
   // --- 1. Real backup of the source (his_dev by default) -----------------
-  console.log(`\n[1/5] Taking a real backup of the source database (pg_dump via docker exec ${DOCKER_CONTAINER})...`)
+  console.log(`\n[1/6] Taking a real backup of the source database (pg_dump via docker exec ${DOCKER_CONTAINER})...`)
   const backupResult = await runBackup({ label: "upgrade_drill_source", directUrl, backupDir: "./backups", dockerExecContainer: DOCKER_CONTAINER })
   console.log(`  Backup complete: ${backupResult.filePath} (${backupResult.sizeBytes} bytes, ${backupResult.migrationCount} migrations applied at source)`)
 
   // --- 2. Restore into an isolated rehearsal database ---------------------
-  console.log(`\n[2/5] Restoring into isolated rehearsal database "${RESTORE_DB}"...`)
+  console.log(`\n[2/6] Restoring into isolated rehearsal database "${RESTORE_DB}"...`)
   const restoreOwnerUrl = withDb(directUrl, RESTORE_DB)
   const restoreResult = await runRestore({ backupFilePath: backupResult.filePath, targetDirectUrl: restoreOwnerUrl, dockerExecContainer: DOCKER_CONTAINER })
   console.log(`  Restore complete: target database "${restoreResult.targetDatabase}"`)
@@ -145,13 +146,13 @@ async function main() {
   // cleanly against a real, populated copy of the source database? If a new
   // migration hasn't been applied to the source yet, this is exactly where
   // it gets exercised against real data before it ever touches production.
-  console.log(`\n[3/5] Checking migration status against the rehearsal copy...`)
+  console.log(`\n[3/6] Checking migration status against the rehearsal copy...`)
   await runStep("npx", ["prisma", "migrate", "status"], { ...process.env, DIRECT_DATABASE_URL: restoreOwnerUrl })
-  console.log(`\n[3/5] Applying migrations (prisma migrate deploy) against the rehearsal copy...`)
+  console.log(`\n[3/6] Applying migrations (prisma migrate deploy) against the rehearsal copy...`)
   await runStep("npx", ["prisma", "migrate", "deploy"], { ...process.env, DIRECT_DATABASE_URL: restoreOwnerUrl })
 
   // --- 4. Schema/runtime-grant verification -------------------------------
-  console.log(`\n[4/5] Verifying schema and runtime-role grants on the rehearsal copy...`)
+  console.log(`\n[4/6] Verifying schema and runtime-role grants on the rehearsal copy...`)
   const ownerClient = new Client({ connectionString: restoreOwnerUrl })
   await ownerClient.connect()
   const extResult = await ownerClient.query("SELECT extname FROM pg_extension")
@@ -161,16 +162,34 @@ async function main() {
   console.log(`  Extensions OK (${extensions.join(", ")}). Applied migrations: ${migrationCountResult.rows[0].n}.`)
   await ownerClient.end()
 
-  // Reconciliation runs through the RESTRICTED RUNTIME connection — proves
-  // the runtime role's grants were genuinely re-established by the restore
-  // (reused from restore.ts, not re-implemented here) and that the app's
-  // own connection can actually read the data it needs to.
+  // Reconciliation (and the RLS step below) run through the RESTRICTED
+  // RUNTIME connection — proves the runtime role's grants were genuinely
+  // re-established by the restore (reused from restore.ts, not
+  // re-implemented here) and that the app's own connection can actually
+  // read the data it needs to.
   const runtimeUser = new URL(runtimeTemplateUrl).username
   const runtimePassword = decodeURIComponent(new URL(runtimeTemplateUrl).password)
   const restoreRuntimeUrl = withCredentials(withDb(runtimeTemplateUrl, RESTORE_DB), runtimeUser, runtimePassword)
 
-  // --- 5. Reconciliation / representative checks --------------------------
-  console.log(`\n[5/5] Running reconciliation checks against the rehearsal copy (via the restricted runtime connection)...`)
+  // --- 5. Row Level Security provisioning + verification ------------------
+  // P4.9.1: the local half of what a real hosted rehearsal must also prove
+  // (see P4_9_1_COMMERCIAL_READINESS_CORRECTIONS_REPORT.md's "Required
+  // Hosted Migration Rehearsal") — a restored/migrated database is not
+  // actually production-equivalent until RLS is confirmed applied on it
+  // too, not just schema and grants.
+  console.log(`\n[5/6] Applying and verifying Row Level Security on the rehearsal copy...`)
+  await applySecurity({ directUrl: restoreOwnerUrl, runtimeUrl: restoreRuntimeUrl, label: "upgrade-drill rehearsal DB" })
+  const securityResult = await checkSecurity({ directUrl: restoreOwnerUrl, runtimeUrl: restoreRuntimeUrl, label: "upgrade-drill rehearsal DB" })
+  if (!securityResult.ok) {
+    throw new Error(
+      `Rehearsal database failed the post-migration security check — tables without RLS: ${securityResult.tablesWithoutRls.join(", ") || "(none)"}; ` +
+        `tables without the expected policy: ${securityResult.tablesWithoutPolicy.join(", ") || "(none)"}`
+    )
+  }
+  console.log(`  RLS OK — ${securityResult.tablesChecked} table(s) protected.`)
+
+  // --- 6. Reconciliation / representative checks --------------------------
+  console.log(`\n[6/6] Running reconciliation checks against the rehearsal copy (via the restricted runtime connection)...`)
   const results = await reconcile(restoreRuntimeUrl)
   for (const r of results) console.log(`  [${r.ok ? "OK" : "FAIL"}] ${r.label} — ${r.detail}`)
   const failed = results.filter((r) => !r.ok)

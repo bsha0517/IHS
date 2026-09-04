@@ -28,6 +28,8 @@
     "db:dr:drill": "tsx scripts/db/dr-drill.ts",
     "db:load-test:setup": "tsx scripts/db/load-test-setup.ts",
     "db:upgrade:drill": "tsx scripts/db/upgrade-drill.ts",
+    "db:security:apply": "tsx scripts/db/security-apply.ts",
+    "db:security:check": "tsx scripts/db/security-check.ts",
     "release:check": "tsx scripts/release/check.ts"
   },
   "dependencies": {

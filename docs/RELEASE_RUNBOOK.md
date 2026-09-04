@@ -11,11 +11,12 @@ The safe default — for a migration classified Additive/backwards-compatible pe
 3. Verify a recent backup exists (per this release's risk level — see RELEASE_CHECKLIST.md)
 4. Deploy the migration (`prisma migrate deploy`)
 5. Confirm migration success (`prisma migrate status`)
-6. Deploy the compatible application build
-7. Run health/readiness checks (`/api/health`)
-8. Run release smoke tests
-9. Inspect logs/errors/outbox/accounting exceptions
-10. Close the change window
+6. If the migration added tables, apply/re-verify database security (`npm run db:security:apply` if new tables were added, then `npm run db:security:check` regardless — see [DATABASE.md](../DATABASE.md)'s "Row Level Security" section; §11 below explains why this is a check-then-apply-if-needed step, not folded silently into the migration itself)
+7. Deploy the compatible application build
+8. Run health/readiness checks (`/api/health`)
+9. Run release smoke tests
+10. Inspect logs/errors/outbox/accounting exceptions
+11. Close the change window
 
 ## Prepare
 
@@ -27,7 +28,7 @@ npx prisma generate
 npm run release:check
 ```
 
-`release:check` runs, in order, and stops at the first failure: `prisma validate` → `prisma migrate status` → typecheck → lint → component tests → integration tests → production build. A required gate failing means **do not proceed** — fix it, re-run.
+`release:check` runs, in order, and stops at the first failure: `prisma validate` → `prisma migrate status` → `db:security:check` (P4.9.1 — RLS, read-only) → typecheck → lint → component tests → integration tests → production build. A required gate failing means **do not proceed** — fix it, re-run.
 
 Then, separately (needs a running server — not part of `release:check`, see [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)'s Post-Deploy Smoke):
 
@@ -74,7 +75,15 @@ If a new table was added, re-apply the runtime role's grants (idempotent, safe t
 psql "<owner connection>" -f prisma/db-setup/p0-06-regrant-new-tables.sql
 ```
 
-**On failure**: see [DATABASE_MIGRATION_SAFETY.md](DATABASE_MIGRATION_SAFETY.md)'s Failure Handling section — stop, inspect `migrate status`, do not blindly rerun, do not hand-edit migration history.
+Then verify — and, if the migration added a table, apply — Row Level Security (P4.9.1; idempotent, safe to run every time):
+
+```bash
+npm run db:security:check   # read-only; exits nonzero and names any unprotected table
+npm run db:security:apply   # only needed if the check above reports a problem — safe to run unconditionally too
+npm run db:security:check   # confirm clean
+```
+
+**On failure**: see [DATABASE_MIGRATION_SAFETY.md](DATABASE_MIGRATION_SAFETY.md)'s Failure Handling section — stop, inspect `migrate status`, do not blindly rerun, do not hand-edit migration history. A `db:security:check` failure means **do not deploy the application build** until `db:security:apply` closes it and the check passes clean — an application deploy against a database with a newly-unprotected table would ship with that exposure live.
 
 ## Application Deployment
 

@@ -60,6 +60,14 @@ export function NewAppointmentDialog({
   const [duration, setDuration] = useState(30)
   const [branchId, setBranchId] = useState(defaultBranchId ?? "")
   const [providerId, setProviderId] = useState("")
+  // P4.9 §41 (carried from BACKLOG.md, noticed during P4.7A.1): both selects
+  // were previously uncontrolled — only branchId had a `value` prop — so a
+  // rejected submission's `setState(result)` re-render visually cleared
+  // Provider/Service back to their placeholders even though the underlying
+  // form fields (and every plain Input) kept what the user entered. Made
+  // controlled the same way branchId already was, plus serviceId now has
+  // its own state at all (it previously had none).
+  const [serviceId, setServiceId] = useState("")
   const [startTime, setStartTime] = useState(walkIn ? nowRoundedLocal() : "")
 
   return (
@@ -119,6 +127,7 @@ export function NewAppointmentDialog({
             <Select
               name="providerId"
               required
+              value={providerId || undefined}
               onValueChange={(id) => {
                 setProviderId(id)
                 const provider = providers.find((p) => p.id === id)
@@ -142,7 +151,9 @@ export function NewAppointmentDialog({
             <Label htmlFor="serviceId">Service</Label>
             <Select
               name="serviceId"
+              value={serviceId || undefined}
               onValueChange={(id) => {
+                setServiceId(id)
                 const service = services.find((s) => s.id === id)
                 if (service) setDuration(service.durationMinutes)
               }}

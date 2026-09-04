@@ -314,6 +314,78 @@ describe("P4.6: clinic onboarding & data import", () => {
       createdPatientIds.push(...created.map((p) => p.id))
     }, TIMEOUT)
 
+    it("P4.9 §31: a 250-row import genuinely crosses the engine's 200-row COMMIT_BATCH_SIZE boundary — both batches commit, no data loss", async () => {
+      // Prior coverage only exercised 55 rows (a single batch). This is the
+      // first test to actually cross COMMIT_BATCH_SIZE (engine.ts, 200),
+      // proving runCommit's batch-loop really does span multiple
+      // `db.$transaction` calls for one job and that every row from both
+      // batches lands, not just the first.
+      const rows = Array.from({ length: 250 }, (_, i) => [`P49Batch${i}`, "Patient", "1990-01-01", "unknown", `P49-BATCH-${i}`, "MAIN"])
+      const csv = toCsv(["firstName", "lastName", "dob", "gender", "mobile", "branchCode"], rows)
+      const importer = await getImporter(adminSession(), "patients")
+      const { jobId, summary } = await runDryRun(adminSession(), importer, { fileText: csv, fileName: "patients-p49-250.csv" })
+      createdImportJobIds.push(jobId)
+      expect(summary.totalRows).toBe(250)
+      expect(summary.validRows).toBe(250)
+      const result = await runCommit(adminSession(), importer, { jobId, fileText: csv })
+      expect(result.totalBatches).toBe(2) // 200 + 50
+      expect(result.failedAtBatch).toBeUndefined()
+      expect(result.importedRows).toBe(250)
+      const created = await db.patient.findMany({ where: { organizationId: orgAId, mobile: { startsWith: "P49-BATCH-" } } })
+      expect(created).toHaveLength(250)
+      createdPatientIds.push(...created.map((p) => p.id))
+      const job = await db.importJob.findUniqueOrThrow({ where: { id: jobId } })
+      expect(job.status).toBe("completed")
+      expect(job.importedRows).toBe(250)
+    }, TIMEOUT)
+
+    it("P4.9 §31: a fresh retry submission after a job already has committed rows never re-creates them — duplicate detection spans jobs, not just within one file", async () => {
+      // Simulates the operationally-relevant half of "interrupted batch +
+      // retry": rather than fabricating a mid-transaction crash (there is no
+      // safe way to do that without modifying engine.ts itself — see
+      // P4_9_COMMERCIAL_READINESS_ACCEPTANCE_REPORT.md's Import/Retry
+      // section for the full reasoning), this proves the actual safety
+      // property end to end: once ANY rows are genuinely committed (job A,
+      // below), a completely separate, later import job (job B — the
+      // "retry," a fresh dry-run + commit, exactly what an operator does
+      // after engine.ts marks a failed job un-recommittable) that includes
+      // some of the same people is correctly detected as duplicate and
+      // skipped, never re-inserted. Composed with the batch-boundary test
+      // above (multi-batch commits work) and the existing "double-submit
+      // rejected outright" test (the same job can't be re-committed), this
+      // covers the full interrupted-import-then-retry guarantee without
+      // needing an artificial crash injection point in production code.
+      const firstRows = Array.from({ length: 5 }, (_, i) => [`P49Retry${i}`, "First", "1985-05-05", "unknown", `P49-RETRY-${i}`, "MAIN"])
+      const firstCsv = toCsv(["firstName", "lastName", "dob", "gender", "mobile", "branchCode"], firstRows)
+      const importer = await getImporter(adminSession(), "patients")
+      const jobA = await runDryRun(adminSession(), importer, { fileText: firstCsv, fileName: "patients-p49-retry-a.csv" })
+      createdImportJobIds.push(jobA.jobId)
+      const resultA = await runCommit(adminSession(), importer, { jobId: jobA.jobId, fileText: firstCsv })
+      expect(resultA.importedRows).toBe(5)
+      const committedA = await db.patient.findMany({ where: { organizationId: orgAId, mobile: { startsWith: "P49-RETRY-" } } })
+      createdPatientIds.push(...committedA.map((p) => p.id))
+
+      // Job B: a "retry" file with the same 5 rows (as if re-exported from
+      // whatever source system produced job A) plus 2 genuinely new rows.
+      const retryRows = [...firstRows, ["P49RetryNew0", "Second", "1986-06-06", "unknown", "P49-RETRY-NEW-0", "MAIN"], ["P49RetryNew1", "Second", "1986-06-06", "unknown", "P49-RETRY-NEW-1", "MAIN"]]
+      const retryCsv = toCsv(["firstName", "lastName", "dob", "gender", "mobile", "branchCode"], retryRows)
+      const jobB = await runDryRun(adminSession(), importer, { fileText: retryCsv, fileName: "patients-p49-retry-b.csv" })
+      createdImportJobIds.push(jobB.jobId)
+      expect(jobB.summary.duplicateRows).toBe(5) // the 5 already-committed rows, detected against the DB job A just wrote
+      expect(jobB.summary.validRows).toBe(2)
+      const resultB = await runCommit(adminSession(), importer, { jobId: jobB.jobId, fileText: retryCsv })
+      expect(resultB.importedRows).toBe(2)
+      expect(resultB.skippedRows).toBe(5)
+      // No duplicates were created: still exactly 1 patient per original mobile.
+      for (const p of committedA) {
+        const count = await db.patient.count({ where: { organizationId: orgAId, mobile: p.mobile! } })
+        expect(count).toBe(1)
+      }
+      const newOnes = await db.patient.findMany({ where: { organizationId: orgAId, mobile: { startsWith: "P49-RETRY-NEW-" } } })
+      expect(newOnes).toHaveLength(2)
+      createdPatientIds.push(...newOnes.map((p) => p.id))
+    }, TIMEOUT)
+
     it("a repeated commit of the same file (double-submit/retry) is rejected outright — no duplicate rows", async () => {
       const csv = toCsv(["firstName", "lastName", "dob", "gender", "mobile", "branchCode"], [["Idem", "Potent", "1991-01-01", "other", "P46-M-IDEM", "MAIN"]])
       const importer = await getImporter(adminSession(), "patients")

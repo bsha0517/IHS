@@ -541,7 +541,9 @@ Also identified and left unfixed for the same reason: a **partial** return of a 
 
 ---
 
-## `NewAppointmentDialog`'s Provider/Service selection visually clears itself after a rejected submission (e.g. a real overlap conflict)
+## ~~`NewAppointmentDialog`'s Provider/Service selection visually clears itself after a rejected submission (e.g. a real overlap conflict)~~ — RESOLVED in P4.9
+
+**Resolved:** P4.9 (Commercial Readiness Acceptance, 2026-09-04), §41 ("reproduce it; if low-severity and easy, retain backlog — otherwise fix now"). Took the suggested fix exactly as written below: `providerId` and `serviceId` are now controlled the same way `branchId` already was (`value={providerId || undefined}` / `value={serviceId || undefined}`), and `serviceId` — which previously had no state at all, not even an uncontrolled one — got its own `useState`. `src/app/(dashboard)/appointments/new-appointment-dialog.tsx`. Typecheck clean. Reproduced live in the browser against local dev: submitted a real overlap-rejected booking (Walkthrough Provider, an already-booked slot) and confirmed Provider correctly retains its selection across the `setState(result)` re-render (previously reset to "Select a provider"). Service's retention across the same rejection was not conclusively re-confirmed live — the browser tool's viewport/coordinate resolution became unreliable mid-verification for this dialog — but the change is mechanically identical to the now-confirmed-working Provider fix (same pattern, same component, same re-render trigger), so it is fixed with high confidence rather than merely believed correct by inspection alone. Original reproduction notes retained below for context.
 
 **Noticed during:** P4.7A.1 (Critical Workspace & UI Adoption Completion, 2026-09-04), while browser-automating the booking dialog for the new Doctor Consultation E2E test — reproduced repeatedly and deterministically, not a test flake.
 
@@ -552,3 +554,31 @@ Also identified and left unfixed for the same reason: a **partial** return of a 
 **Suggested fix, when picked up:** make `providerId`/`serviceId` controlled the same way `branchId` already is (`value={providerId || undefined}` / `value={serviceId || undefined}`) so React — not just the DOM — is the source of truth and a sibling state update (like `setState(result)` on rejection) can no longer visually diverge from it.
 
 **Severity:** Low — a real UX papercut on an error-retry path, not a data-integrity or access-control issue; the booking itself, and its overlap validation, work correctly either way.
+
+---
+
+## Detail/print pages built on `findFirstOrThrow` show a raw "Something went wrong" crash screen instead of a clean not-found page for an invalid/stale id
+
+**Noticed during:** P4.9 (Commercial Readiness Acceptance, 2026-09-04), §39 live print verification against the hosted production deployment — navigated to `/radiology/orders/<imaging_order.id>/report` (an easy id mix-up: the route actually takes the *ClinicalOrder* id, not the ImagingOrder id) and got Next's generic global error boundary ("Something went wrong. The application failed to load. This has been logged.") instead of a 404. Confirmed via Vercel's runtime error log: `PrismaClientKnownRequestError` / `P2025` from `clinicalOrder.findFirstOrThrow()` — an ordinary "no record found," not a real defect in the query or the data.
+
+**What:** `getRadiologyOrder`/`getLabOrder` and likely every sibling `get<X>Order`-style loader in this codebase use `db.<model>.findFirstOrThrow(...)` directly in a Server Component with no try/catch and no `notFound()` call. Any request for an id that doesn't exist (mistyped, stale bookmark, cross-org, or — as here — the wrong id field entirely) throws an uncaught `PrismaClientKnownRequestError`, which Next's root error boundary catches and renders as a generic crash page. No stack trace or query detail is leaked to the browser (the boundary is the generic one), so this is a UX/operability gap, not an information-disclosure issue.
+
+**Why not fixed in P4.9:** the correct fix is systemic (convert every such loader to either catch `P2025` and call Next's `notFound()`, or add a shared helper other detail/print pages can reuse) rather than a one-line patch to the single page that happened to be hit — that shape of change is a small-but-broad refactor across many files, which is exactly the kind of "another UI/quality cycle" P4.9 was explicitly told not to open. The underlying data/authorization logic is correct in every case observed; only the failure presentation is poor.
+
+**Suggested fix, when picked up:** a small shared helper (e.g. `findOrNotFound(promise)`) that wraps a Prisma `findFirstOrThrow` and calls `notFound()` on a caught `P2025`, adopted across the `get<X>Order`/`get<X>` detail-page loaders (radiology, laboratory, encounters, invoices, payroll/payslip, etc.) as a single small, mechanical pass — genuinely low-risk since it only changes the failure path, never the success path.
+
+**Severity:** Low-Medium — never blocks a legitimate, correctly-permissioned request; only degrades the experience of an invalid/stale link from "clean 404" to "generic crash screen." Worth closing before broad staff rollout so a bookmarked/mistyped link doesn't look like the system is broken, but not a correctness or security defect.
+
+---
+
+## Onboarding Readiness Review doesn't surface that Opening Inventory stock has no corresponding GL journal until one is posted manually
+
+**Noticed during:** P4.9 (Commercial Readiness Acceptance, 2026-09-04), §33 (Opening Inventory vs GL reservation, carried from P4.6).
+
+**What:** `docs/CLINIC_ONBOARDING.md`'s own "Opening Inventory Reconciliation" section and Fresh-Clinic Go-Live Checklist (step 7) correctly document that an Opening Inventory import creates real `StockLedgerEntry`/`ProductBatch` rows but posts **no** accounting journal automatically — the operator must separately post a Manual Journal (Dr Inventory Asset / Cr Opening Balance Equity or similar) if they want the balance sheet to reflect that stock immediately. This is a deliberate, correct design (avoids guessing a chart-of-accounts mapping or posting on the operator's behalf), and it is not silently wrong — the stock ledger and the GL are each internally consistent, just not yet reconciled with each other until that manual step happens. The gap: `src/lib/domains/onboarding/readiness.ts` (the Readiness Review page's data source) never checks for or surfaces this — a clinic admin can import Opening Inventory, see every Readiness Review item green, and have no in-app signal that the balance sheet doesn't yet include it unless they've read the documentation.
+
+**Why not fixed in P4.9:** the underlying behavior is correct (no data corruption, no false reconciliation being *presented* as true — there simply isn't a reconciliation view that combines the two yet), and building the actual UI surfacing (a Readiness Review line item, or a banner on `/accounting` when unposted opening-inventory stock is detected) is a small but real feature addition, not a defect fix — out of P4.9's "evidence collection, not feature building" scope per its own §3.
+
+**Suggested fix, when picked up:** add one Readiness Review check: if any `StockLedgerEntry` rows exist with `referenceType = 'opening_balance'` and no Journal has ever referenced that same `ImportJob` id (or a simpler heuristic: Inventory Asset account balance vs. sum of opening-balance stock cost), show a non-blocking "Opening Inventory imported — post the corresponding GL journal before relying on the Balance Sheet" reminder.
+
+**Severity:** Low — documented, non-corrupting, and only relevant for clinics that both use Opening Inventory import and expect the balance sheet to reflect it before manually posting; does not block first-clinic go-live for a clinic starting with genuinely zero prior stock.

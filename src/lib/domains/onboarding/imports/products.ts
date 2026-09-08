@@ -17,6 +17,7 @@ export type ProductRow = {
 export function createProductsImporter(): ImporterDefinition<ProductRow> {
   return {
     type: "products",
+    group: "Inventory",
     templateVersion: "products-v1",
     label: "Products",
     requiredHeaders: ["sku", "name", "category", "unit", "purchaseCost"],

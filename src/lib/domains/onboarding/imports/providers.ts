@@ -20,6 +20,7 @@ export type ProviderRow = {
 export function createProvidersImporter(branchByCode: Map<string, string>): ImporterDefinition<ProviderRow> {
   return {
     type: "providers",
+    group: "Operations",
     templateVersion: "providers-v1",
     label: "Providers",
     requiredHeaders: ["providerType", "firstName", "lastName", "consultationFee", "defaultAppointmentDurationMinutes", "branchCodes"],

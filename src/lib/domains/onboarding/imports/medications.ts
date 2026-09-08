@@ -1,6 +1,6 @@
 import "server-only"
 import { db } from "@/lib/db"
-import { requiredString, optionalString, requiredNumber, optionalNumber } from "@/lib/platform/import/parsers"
+import { requiredString, optionalString, requiredNumber, optionalNumber, optionalBoolean } from "@/lib/platform/import/parsers"
 import type { ImporterDefinition, RowIssue } from "@/lib/platform/import/types"
 
 /**
@@ -19,18 +19,33 @@ export type MedicationRow = {
   dosageForm: string
   genericName: string | null
   strength: string | null
+  route: string | null
+  controlledSubstance: boolean
+  requiresPrescription: boolean
 }
 
 export function createMedicationsImporter(): ImporterDefinition<MedicationRow> {
   return {
     type: "medications",
-    templateVersion: "medications-v1",
+    group: "Clinical Catalogues",
+    templateVersion: "medications-v2",
     label: "Medications",
     requiredHeaders: ["sku", "name", "unit", "purchaseCost", "dosageForm"],
-    optionalHeaders: ["sellingPrice", "genericName", "strength"],
+    // P4.9.2 §6: route/controlledSubstance/requiresPrescription added —
+    // every other schema-backed Medication field (genericName, strength)
+    // was already covered; sku doubles as the deterministic Product/
+    // Medication link this section requires (no fuzzy name matching), and
+    // there is no separate "medication code" or "brand name" field on
+    // either model to import. requiresPrescription now defaults true only
+    // when the column is blank/omitted (previously hardcoded true always),
+    // preserving existing template compatibility.
+    optionalHeaders: ["sellingPrice", "genericName", "strength", "route", "controlledSubstance", "requiresPrescription"],
     helpText: [
       "sku must be unique within your organization — creates a linked catalog Product automatically, one per row.",
       "dosageForm: e.g. tablet, capsule, syrup, injection (free text, matches the existing Medication catalog).",
+      "route (optional): e.g. oral, IV, IM, topical (free text).",
+      "controlledSubstance (optional, default false): true or false.",
+      "requiresPrescription (optional, default true): true or false.",
     ],
     async parseRow(raw) {
       const issues: RowIssue[] = []
@@ -48,6 +63,10 @@ export function createMedicationsImporter(): ImporterDefinition<MedicationRow> {
       push(dosageForm.error)
       const sellingPrice = optionalNumber(raw.sellingPrice, "sellingPrice", { min: 0, max: 9999999 })
       push(sellingPrice.error)
+      const controlledSubstance = optionalBoolean(raw.controlledSubstance, "controlledSubstance", false)
+      push(controlledSubstance.error)
+      const requiresPrescription = optionalBoolean(raw.requiresPrescription, "requiresPrescription", true)
+      push(requiresPrescription.error)
 
       if (issues.length > 0) return { normalized: null, issues }
       return {
@@ -56,6 +75,9 @@ export function createMedicationsImporter(): ImporterDefinition<MedicationRow> {
           name: name.value!,
           unit: unit.value!,
           purchaseCost: purchaseCost.value!,
+          route: optionalString(raw.route, "route", 100).value,
+          controlledSubstance: controlledSubstance.value!,
+          requiresPrescription: requiresPrescription.value!,
           sellingPrice: sellingPrice.value,
           dosageForm: dosageForm.value!,
           genericName: optionalString(raw.genericName, "genericName", 200).value,
@@ -107,7 +129,9 @@ export function createMedicationsImporter(): ImporterDefinition<MedicationRow> {
             genericName: n.genericName,
             strength: n.strength,
             dosageForm: n.dosageForm,
-            requiresPrescription: true,
+            route: n.route,
+            controlledSubstance: n.controlledSubstance,
+            requiresPrescription: n.requiresPrescription,
           },
         })
         imported++

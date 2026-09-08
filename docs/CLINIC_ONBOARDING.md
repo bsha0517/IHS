@@ -242,7 +242,11 @@ matches an existing record, or an earlier row in the same file, is marked
 
 ## Supported Import Types
 
-All eight named in P4.6 §18 are implemented — none deferred.
+All eight named in P4.6 §18 are implemented — none deferred. P4.9.2 (Extended
+Clinic Data Import Coverage) added nine more — see "P4.9.2 — Extended Import
+Catalogue" below for those, and
+`P4_9_2_EXTENDED_CLINIC_DATA_IMPORT_REPORT.md`'s Import Catalogue Matrix for
+the full before/after classification of every requested import type.
 
 ### Patients (§19-21)
 
@@ -318,6 +322,108 @@ architecture, not a bypass of it.
   which import produced it.
 - **Deliberately posts no accounting journal.** See Accounting Setup below
   for the recommended manual step instead.
+- Since P4.9.2, importing opening stock also adds a persistent Readiness
+  Review reminder ("Opening inventory GL confirmation") until the
+  corresponding journal is posted — visibility only, never automatic.
+
+## P4.9.2 — Extended Import Catalogue
+
+Nine more importers, reusing the identical Template → Dry Run → Duplicate
+Analysis → Explicit Commit → Result → Audit engine — no second import
+framework was built. Master data only, same as every P4.6 importer — none
+of these create an operational transaction (an order, a result, an
+invoice, a journal, a purchased package).
+
+- **Laboratory Test Catalogue** (`lab_tests`) — `code`, `name`, `category`,
+  `specimenType`, `resultType` (numeric/text), `price`, optional `unit`/
+  reference range/`turnaroundHours`. Catalogue only — never creates a lab
+  order or result.
+- **Laboratory Panels** (`lab_panels`) — a panel plus its member test codes
+  in one `;`-separated column. Every referenced test code must already
+  exist (import Lab Tests first) — an unresolved code invalidates the
+  whole row, never silently drops the missing member.
+- **Imaging Service Catalogue** (`imaging_services`) — `code`, `name`,
+  `category` (the modality — X-Ray, CT, MRI, ...), `price`, optional
+  `bodyPart`/`turnaroundHours`. Catalogue only — never creates an imaging
+  order.
+- **Packages** (`packages`) — a package plus its included services as
+  `serviceCode:sessions` pairs in one column (e.g.
+  `"PHYSIO01:10;CONSULT01:1"`). Every referenced service must already exist
+  (import Services first). Never creates a patient's purchased package.
+- **Payors** (`payors`) — `code`, `name`, `payorType`, optional contact
+  fields. Internal payor master data only — not an insurance eligibility/
+  claims integration (no NPHIES, no clearinghouse).
+- **Assets** (`assets`) — `assetCode`, `name`, `category`, `branchCode`,
+  optional serial/manufacturer/model/department/employee link/purchase
+  date/cost/warranty. **Deliberately bypasses the interactive `createAsset`
+  function's own acquisition-journal posting** — `cost` is recorded as
+  informational metadata only, the same restraint Opening Inventory already
+  applies to its own financial consequence. Post a manual journal
+  separately if migrated asset cost should appear on the books. No
+  depreciation schedule is created (nothing in the current architecture
+  reads those fields yet).
+- **Chart of Accounts** (`chart_of_accounts`, **HIGH RISK**) — `code`,
+  `name`, `type`, optional `parentAccountCode`. A parent must **already
+  exist** in the database before the child row referencing it — import
+  root accounts first, then children in a separate, later file. This also
+  makes a genuinely circular hierarchy impossible to construct through this
+  importer. **Never creates or infers an Account Mapping** — "Accounts
+  Receivable" as a name does not become the AR posting intent; map it
+  explicitly afterward on the Accounting page (Readiness Review shows
+  what's still missing).
+- **Payroll Runs** (`payroll_runs`, **HIGH RISK, DRAFT-ONLY**) — one row is
+  one employee's line for one branch+period; rows sharing the same
+  branch+period become one `PayrollRun`. **Creates `draft` runs only** —
+  approving/paying a run posts real accounting journals through the normal
+  posting service, which a bulk historical import cannot safely reproduce
+  without either fabricating journals outside that service or leaving a
+  "paid" run with no journal at all. Review, approve, and mark paid through
+  the normal Payroll screens afterward. If a run already exists for a
+  branch+period (any status, including an existing draft), the whole group
+  is skipped — never appended to or overwritten. No commission accrual is
+  attached (that's live, current-state data).
+- **Users** (`users`, **HIGH RISK, SECURITY SENSITIVE**) — `email`,
+  `firstName`, `lastName`, `roleNames` (`;`-separated), `branchCodes`
+  (`;`-separated), optional `username`/`status`/`employeeNumber`. **No
+  password is ever accepted, generated as a default, or persisted
+  anywhere retrievable** — each created account gets a random,
+  immediately-discarded password hash, making it genuinely unusable until
+  activated. Activation reuses the existing self-service "Forgot password"
+  flow at `/login` — real email delivery for that flow still depends on a
+  configured transactional email provider (see
+  `docs/COMMERCIAL_READINESS.md`); this import does not change that.
+  **Bulk-creating a "Super Admin" account is refused outright**, regardless
+  of the importing actor's own role.
+
+Every high-risk importer above requires the same domain permission the
+equivalent interactive screen already requires (`chart_of_account.manage`,
+`payroll.process`, `users.manage`, `asset.manage`/`inventory.adjust`), in
+addition to `data_import.manage` — and requires an explicit on-screen
+confirmation checkbox before Commit, not just Dry Run.
+
+## Recommended Import Order
+
+Only as restrictive as real dependencies require — most of these can run in
+parallel; the ordering below only matters where one importer's rows
+reference another's:
+
+1. Organization / Branch (interactive setup, not an import)
+2. Chart of Accounts
+3. Services
+4. Imaging Services
+5. Laboratory Tests
+6. Laboratory Panels (needs Laboratory Tests)
+7. Products
+8. Medications (creates its own linked Product — no separate Products step needed for medications specifically)
+9. Suppliers
+10. Providers
+11. Employees
+12. Users (needs Employees only if linking logins to them)
+13. Payors
+14. Packages (needs Services)
+15. Patients
+16. Opening Inventory (needs Products/Medications, Suppliers if referenced)
+17. Payroll Runs (needs Employees; draft-only — see above)
 
 ## CSV Templates
 

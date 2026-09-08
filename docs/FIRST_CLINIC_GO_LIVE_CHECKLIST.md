@@ -158,16 +158,33 @@ This entire section is a required prerequisite, not a recommendation — see
       Batches (via Opening Inventory import or manual receiving) with real expiry dates.
 - [ ] If Opening Inventory was imported: post the corresponding Manual Journal so the Balance
       Sheet reflects it — the import itself does not do this automatically (see
-      `docs/CLINIC_ONBOARDING.md`'s Opening Inventory Reconciliation section, and the known
-      backlog item about this not yet being surfaced in-app).
+      `docs/CLINIC_ONBOARDING.md`'s Opening Inventory Reconciliation section). The Readiness
+      Review page now reminds you of this automatically (P4.9.2) — it does not post anything for
+      you, only surfaces that the step is outstanding.
 
 ## Initial Data Import
 
-- [ ] If migrating from an existing system: import Suppliers, Products/Medications, Services,
-      then Patients, in that order (later imports may reference earlier ones).
+As of P4.9.2, the import catalogue covers Chart of Accounts, Services, Imaging Services,
+Laboratory Tests/Panels, Products, Medications, Suppliers, Providers, Employees, Users, Payors,
+Packages, Patients, Opening Inventory, and Payroll Runs (draft-only) — see
+`docs/CLINIC_ONBOARDING.md`'s "Recommended Import Order" for the full dependency-aware sequence.
+Only import what this clinic actually uses (e.g. skip Laboratory Tests entirely if this clinic
+runs no in-house lab).
+
+- [ ] If migrating from an existing system: follow `docs/CLINIC_ONBOARDING.md`'s Recommended
+      Import Order — later imports may reference earlier ones by code (e.g. Opening Inventory
+      needs Products/Medications already imported; Laboratory Panels need Laboratory Tests).
 - [ ] For any import over a few hundred rows, review the ImportJob summary counts (imported /
       skipped / invalid / duplicate) before considering the import "done" — don't just check that
       it "completed."
+- [ ] High-risk imports (Chart of Accounts, Payroll Runs, Users) each require an explicit
+      on-screen confirmation before Commit, and the domain permission the equivalent interactive
+      screen already requires (not just `data_import.manage`) — if a role can't see one of these
+      importers, grant it that specific permission, not broader access than needed.
+- [ ] If Users were imported: each account has no usable password until activated via "Forgot
+      password" at the login page — see the Email section above for what that requires.
+- [ ] If Payroll Runs were imported: they are Draft only — review, approve, and mark paid through
+      the normal Payroll screens; no accounting journal exists until that happens.
 
 ## UAT — REQUIRED BEFORE GO-LIVE
 

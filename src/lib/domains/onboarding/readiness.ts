@@ -39,22 +39,44 @@ export async function getOnboardingStatus(session: SessionContext): Promise<Onbo
   assertCan(session, "data_import.manage")
   const organizationId = session.user.organizationId
 
-  const [organization, branches, adminCount, operationalUserCount, providerCount, serviceCount, mappings, pharmacyEnabled, productCount, medicationCount, stockBatchCount, patientCount, recentImportCount] =
-    await Promise.all([
-      db.organization.findUniqueOrThrow({ where: { id: organizationId } }),
-      db.branch.findMany({ where: { organizationId }, select: { id: true, status: true } }),
-      db.user.count({ where: { organizationId, status: "active", roles: { some: { role: { permissions: { some: { permission: { code: "users.manage" } } } } } } } }),
-      db.user.count({ where: { organizationId, status: "active" } }),
-      db.provider.count({ where: { organizationId } }),
-      db.service.count({ where: { organizationId, isActive: true } }),
-      db.accountMapping.findMany({ where: { organizationId }, select: { intent: true } }),
-      isPharmacyEnabled(organizationId),
-      db.product.count({ where: { organizationId } }),
-      db.medication.count({ where: { organizationId } }),
-      db.stockLedgerEntry.count({ where: { organizationId } }),
-      db.patient.count({ where: { organizationId } }),
-      db.importJob.count({ where: { organizationId, status: "completed" } }),
-    ])
+  const [
+    organization,
+    branches,
+    adminCount,
+    operationalUserCount,
+    providerCount,
+    serviceCount,
+    mappings,
+    pharmacyEnabled,
+    productCount,
+    medicationCount,
+    stockBatchCount,
+    openingBalanceCount,
+    patientCount,
+    recentImportCount,
+    labTestCount,
+    imagingServiceCount,
+  ] = await Promise.all([
+    db.organization.findUniqueOrThrow({ where: { id: organizationId } }),
+    db.branch.findMany({ where: { organizationId }, select: { id: true, status: true } }),
+    db.user.count({ where: { organizationId, status: "active", roles: { some: { role: { permissions: { some: { permission: { code: "users.manage" } } } } } } } }),
+    db.user.count({ where: { organizationId, status: "active" } }),
+    db.provider.count({ where: { organizationId } }),
+    db.service.count({ where: { organizationId, isActive: true } }),
+    db.accountMapping.findMany({ where: { organizationId }, select: { intent: true } }),
+    isPharmacyEnabled(organizationId),
+    db.product.count({ where: { organizationId } }),
+    db.medication.count({ where: { organizationId } }),
+    db.stockLedgerEntry.count({ where: { organizationId } }),
+    // P4.9.2 §17 — distinct from the "opening inventory exists" check below:
+    // specifically the rows an Opening Inventory import produces (never an
+    // auto-posted journal — see opening-inventory.ts's own doc comment).
+    db.stockLedgerEntry.count({ where: { organizationId, referenceType: "opening_balance" } }),
+    db.patient.count({ where: { organizationId } }),
+    db.importJob.count({ where: { organizationId, status: "completed" } }),
+    db.labTest.count({ where: { organizationId, isActive: true } }),
+    db.imagingService.count({ where: { organizationId, isActive: true } }),
+  ])
 
   const activeBranches = branches.filter((b) => b.status === "active")
   const mappedIntents = new Set<$Enums.PostingIntent>(mappings.map((m) => m.intent))
@@ -179,6 +201,48 @@ export async function getOnboardingStatus(session: SessionContext): Promise<Onbo
     destination: "/admin/onboarding",
     reason: stockBatchCount > 0 ? `${stockBatchCount} stock ledger entries recorded.` : "No opening stock recorded yet — optional; stock can also be received operationally after go-live.",
     count: stockBatchCount,
+  })
+
+  if (openingBalanceCount > 0) {
+    // P4.9.2 §17 — closes the narrow P4.9/BACKLOG.md finding: previously
+    // nothing here told an administrator that imported opening stock has
+    // no corresponding GL journal until one is posted manually. Never
+    // auto-posts anything (see opening-inventory.ts) — this is a visibility
+    // fix only. Not `required` (a clinic can legitimately choose to post
+    // the opening journal later, or never, if it doesn't need the Balance
+    // Sheet to reflect it) — it exists to be seen, not to block readiness.
+    items.push({
+      area: "inventory",
+      label: "Opening inventory GL confirmation",
+      required: false,
+      completed: false,
+      status: "attention_required",
+      destination: "/accounting",
+      reason: "Opening inventory has been imported. Confirm/post the corresponding opening GL journal before relying on the Balance Sheet.",
+      count: openingBalanceCount,
+    })
+  }
+
+  items.push({
+    area: "clinical",
+    label: "Laboratory test catalogue",
+    required: false,
+    completed: labTestCount > 0,
+    status: labTestCount > 0 ? "ready" : "optional",
+    destination: "/admin/onboarding",
+    reason: labTestCount > 0 ? `${labTestCount} active lab test(s) configured.` : "No lab tests configured yet — optional; only needed if this clinic runs laboratory services.",
+    count: labTestCount,
+  })
+
+  items.push({
+    area: "clinical",
+    label: "Imaging service catalogue",
+    required: false,
+    completed: imagingServiceCount > 0,
+    status: imagingServiceCount > 0 ? "ready" : "optional",
+    destination: "/admin/onboarding",
+    reason: imagingServiceCount > 0 ? `${imagingServiceCount} active imaging service(s) configured.` : "No imaging services configured yet — optional; only needed if this clinic runs radiology services.",
+    count: imagingServiceCount,
   })
 
   items.push({

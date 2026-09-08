@@ -20,12 +20,26 @@ import type { ImportType } from "@/lib/domains/onboarding/imports/registry"
  * flow, where the dialog must stay open across two separate server-action
  * calls that share the same selected file.
  */
-export function ImportDialog({ type, label, helpText, templateUrl }: { type: ImportType; label: string; helpText: string[]; templateUrl: string }) {
+export function ImportDialog({
+  type,
+  label,
+  helpText,
+  templateUrl,
+  confirmationText,
+}: {
+  type: ImportType
+  label: string
+  helpText: string[]
+  templateUrl: string
+  /** P4.9.2 §25/§55 — set only for high-risk importers; Commit stays disabled until this exact statement is acknowledged. */
+  confirmationText?: string
+}) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [pending, startTransition] = useTransition()
   const [dryRun, setDryRun] = useState<DryRunActionState | null>(null)
   const [commitResult, setCommitResult] = useState<CommitActionState | null>(null)
+  const [confirmed, setConfirmed] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   // The <input type="file"> unmounts once the dry-run summary renders (its
   // wrapping <form> is conditionally removed below), which resets
@@ -37,6 +51,7 @@ export function ImportDialog({ type, label, helpText, templateUrl }: { type: Imp
     setDryRun(null)
     setCommitResult(null)
     setSelectedFile(null)
+    setConfirmed(false)
     if (fileInputRef.current) fileInputRef.current.value = ""
   }
 
@@ -139,6 +154,17 @@ export function ImportDialog({ type, label, helpText, templateUrl }: { type: Imp
                 </div>
               </div>
 
+              {summary.domainSummary && summary.domainSummary.length > 0 && (
+                <div className="grid grid-cols-2 gap-2 rounded-md border border-border bg-muted/30 p-3 text-sm sm:grid-cols-3">
+                  {summary.domainSummary.map((d) => (
+                    <div key={d.label}>
+                      <p className="font-semibold">{d.value}</p>
+                      <p className="text-xs text-muted-foreground">{d.label}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {summary.invalidRows > 0 && dryRun.jobId && (
                 <a href={`/api/onboarding/errors/${dryRun.jobId}`} download className="text-sm text-primary hover:underline">
                   Download full error report (CSV)
@@ -174,13 +200,21 @@ export function ImportDialog({ type, label, helpText, templateUrl }: { type: Imp
               </div>
 
               {!commitResult && (
-                <div className="flex items-center justify-between">
-                  <Button variant="outline" size="sm" onClick={reset} disabled={pending}>
-                    Start over
-                  </Button>
-                  <Button size="sm" onClick={handleCommit} disabled={pending || summary.validRows === 0}>
-                    {pending ? "Importing..." : `Commit ${summary.validRows} row(s)`}
-                  </Button>
+                <div className="grid gap-3">
+                  {confirmationText && (
+                    <label className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">
+                      <input type="checkbox" className="mt-0.5" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
+                      <span>{confirmationText}</span>
+                    </label>
+                  )}
+                  <div className="flex items-center justify-between">
+                    <Button variant="outline" size="sm" onClick={reset} disabled={pending}>
+                      Start over
+                    </Button>
+                    <Button size="sm" onClick={handleCommit} disabled={pending || summary.validRows === 0 || (Boolean(confirmationText) && !confirmed)}>
+                      {pending ? "Importing..." : `Commit ${summary.validRows} row(s)`}
+                    </Button>
+                  </div>
                 </div>
               )}
             </div>

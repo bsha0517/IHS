@@ -594,3 +594,17 @@ Also identified and left unfixed for the same reason: a **partial** return of a 
 **Fix:** `isIdempotencyKeyConflict()` now matches on `error.code === "P2002" && error.meta?.modelName === "IdempotencyKey"` instead — `modelName` is present on every P2002 regardless of driver adapter or RLS state (verified the same way), and is exactly as precise: `claimIdempotencyKey()`'s own doc comment already guarantees it runs as the very first statement in its caller's transaction, so a P2002 against the `IdempotencyKey` model in that transaction can only ever be the one unique constraint this table has. Verified via all 6 originally-failing tests passing again, plus a new direct regression test (`test/integration/p4-9-1-db-security-rls.test.ts`) that reproduces the exact duplicate-insert with RLS enabled and asserts `isIdempotencyKeyConflict()` still returns `true`.
 
 **Severity at discovery:** would have been High (real financial/inventory double-processing risk) had it shipped; caught and fixed within the same batch that introduced the regression, before any deployment.
+
+---
+
+## Large Users imports are slow — argon2id hashing cost scales linearly with row count
+
+**Noticed during:** P4.9.2 (Extended Clinic Data Import Coverage, 2026-09-04/08), the required ~1,000-row performance benchmark for the new Users importer.
+
+**What:** A 1,000-row Users import (each row creating one throwaway-password account, per `src/lib/domains/onboarding/imports/users.ts`'s own security design — see its own doc comment) takes on the order of two minutes end to end in this local test environment, almost entirely `argon2id` hashing cost (deliberately slow — that is the whole point of the algorithm) rather than database time. A genuine transaction-timeout defect this same investigation found (200 sequential hashes inside one open DB transaction exceeding Prisma's interactive-transaction timeout outright) **was fixed** this phase — see `src/lib/platform/import/types.ts`'s new `prepareBatch` hook, which now runs all of a batch's hashing in parallel, before that batch's transaction ever opens. What remains is the honest, expected residual: hashing itself is inherently CPU-bound and slow by design, and 1,000 rows is a large benchmark size, not a realistic one — a real clinic importing its initial staff roster is far more likely to import tens of users, not a thousand, in one file.
+
+**Why not "fixed" further:** per this phase's own instruction ("do not obsess over micro-optimization; record obvious pathological behavior"), and because further optimization would mean weakening `argon2id`'s own cost parameters — a security regression, not a performance one worth making.
+
+**If ever revisited:** if a clinic genuinely needs a very large one-time Users import, splitting it into several smaller files (a few hundred rows each) works today with no code change, and gets the same duplicate-detection/audit guarantees per file.
+
+**Severity:** Low — no correctness or safety issue; purely a "this will take a couple of minutes for an unusually large file" expectation-setting note.

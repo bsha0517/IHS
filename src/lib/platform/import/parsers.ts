@@ -86,3 +86,14 @@ export function optionalEmail(raw: string | undefined, field: string): { value: 
 export function optionalPhone(raw: string | undefined, field: string, maxLength = 30): { value: string | null; error: RowIssue | null } {
   return optionalString(raw, field, maxLength)
 }
+
+/** P4.9.2 — accepts true/false/yes/no/1/0 case-insensitively; blank uses `defaultValue`. Anything else is INVALID_ENUM rather than guessed (same "never cast arbitrary strings" discipline as `requiredEnum`). */
+const TRUE_VALUES = new Set(["true", "yes", "1"])
+const FALSE_VALUES = new Set(["false", "no", "0"])
+export function optionalBoolean(raw: string | undefined, field: string, defaultValue: boolean): { value: boolean | null; error: RowIssue | null } {
+  const v = raw?.trim().toLowerCase() ?? ""
+  if (!v) return { value: defaultValue, error: null }
+  if (TRUE_VALUES.has(v)) return { value: true, error: null }
+  if (FALSE_VALUES.has(v)) return { value: false, error: null }
+  return { value: null, error: { field, code: "INVALID_ENUM", message: `${field}: "${raw}" is not one of: true, false, yes, no, 1, 0.` } }
+}

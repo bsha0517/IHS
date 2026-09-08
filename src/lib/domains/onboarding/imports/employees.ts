@@ -29,6 +29,7 @@ export type EmployeeRow = {
 export function createEmployeesImporter(branchByCode: Map<string, string>, departmentByName: Map<string, string>): ImporterDefinition<EmployeeRow> {
   return {
     type: "employees",
+    group: "Operations",
     templateVersion: "employees-v1",
     label: "Employees",
     requiredHeaders: ["firstName", "lastName", "designation", "joiningDate", "employmentType", "branchCode"],

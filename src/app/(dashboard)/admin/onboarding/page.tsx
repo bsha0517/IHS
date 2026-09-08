@@ -8,11 +8,13 @@ import { getImporterCatalog } from "@/lib/domains/onboarding/imports/registry"
 import { db } from "@/lib/db"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { StatusBadge } from "@/components/ui/status-badge"
+import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { formatDateTime } from "@/lib/utils/dates"
 import { PageHeader } from "@/components/ui/page-header"
 import { ImportDialog } from "@/app/(dashboard)/admin/onboarding/import-dialog"
 import { CancelImportButton } from "@/app/(dashboard)/admin/onboarding/cancel-button"
+import { IMPORTER_GROUPS } from "@/lib/platform/import/types"
 
 const STATE_ICON: Record<ReadinessState, typeof CheckCircle2> = {
   ready: CheckCircle2,
@@ -120,16 +122,46 @@ export default async function OnboardingPage() {
             Template → Upload → Dry Run → Review → Explicit Commit. Every import is validated before anything is written — no partial or silent import.
           </CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-3 sm:grid-cols-2">
-          {importers.map((imp) => (
-            <div key={imp.type} className="flex items-center justify-between rounded-md border border-border p-3">
-              <div>
-                <p className="font-medium">{imp.label}</p>
-                <p className="text-xs text-muted-foreground">{imp.templateVersion}</p>
+        <CardContent className="grid gap-5">
+          {/* P4.9.2 §54 — grouped by logical section (not one flat grid of
+              16+ cards), same order as IMPORTER_GROUPS. §55 — Opening
+              Inventory/Payroll/Chart of Accounts/Users each carry
+              riskLevel: "high" and render a distinct badge + require an
+              explicit confirmation checkbox before Commit (see
+              ImportDialog). */}
+          {IMPORTER_GROUPS.map((group) => {
+            const inGroup = importers.filter((imp) => imp.group === group)
+            if (inGroup.length === 0) return null
+            return (
+              <div key={group} className="grid gap-3">
+                <p className="text-sm font-medium text-muted-foreground">{group}</p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {inGroup.map((imp) => (
+                    <div key={imp.type} className="flex items-center justify-between rounded-md border border-border p-3">
+                      <div>
+                        <p className="flex items-center gap-1.5 font-medium">
+                          {imp.label}
+                          {imp.riskLevel === "high" && (
+                            <Badge variant="destructive" className="text-[10px]">
+                              High risk
+                            </Badge>
+                          )}
+                        </p>
+                        <p className="text-xs text-muted-foreground">{imp.templateVersion}</p>
+                      </div>
+                      <ImportDialog
+                        type={imp.type}
+                        label={imp.label}
+                        helpText={imp.helpText}
+                        templateUrl={`/api/onboarding/template/${imp.type}`}
+                        confirmationText={imp.confirmationText}
+                      />
+                    </div>
+                  ))}
+                </div>
               </div>
-              <ImportDialog type={imp.type} label={imp.label} helpText={imp.helpText} templateUrl={`/api/onboarding/template/${imp.type}`} />
-            </div>
-          ))}
+            )
+          })}
         </CardContent>
       </Card>
 

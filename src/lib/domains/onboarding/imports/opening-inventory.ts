@@ -51,6 +51,9 @@ export type OpeningInventoryRow = {
 export function createOpeningInventoryImporter(branchByCode: Map<string, string>, productBySku: Map<string, string>, supplierByCode: Map<string, string>): ImporterDefinition<OpeningInventoryRow> {
   return {
     type: "opening_inventory",
+    group: "Inventory",
+    riskLevel: "high",
+    confirmationText: "I understand this import creates real stock and batch records that affect inventory availability immediately — it does not post any accounting journal by itself.",
     templateVersion: "opening-inventory-v1",
     label: "Opening Inventory",
     requiredHeaders: ["sku", "branchCode", "batchNumber", "quantity", "unitCost"],
@@ -157,6 +160,23 @@ export function createOpeningInventoryImporter(branchByCode: Map<string, string>
         imported++
       }
       return { imported, skipped: 0 }
+    },
+
+    // P4.9.2 §41 — total quantity and total opening stock value (quantity ×
+    // unitCost, summed) over committable rows only.
+    computeDomainSummary(rows) {
+      const committable = rows.filter((r) => r.issues.length === 0 && !r.duplicate && r.normalized)
+      let totalQuantity = 0
+      let totalValue = 0
+      for (const r of committable) {
+        totalQuantity += r.normalized!.quantity
+        totalValue += r.normalized!.quantity * r.normalized!.unitCost
+      }
+      return [
+        { label: "Batches to create", value: String(committable.length) },
+        { label: "Total quantity", value: totalQuantity.toLocaleString() },
+        { label: "Total opening stock value", value: totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) },
+      ]
     },
   }
 }

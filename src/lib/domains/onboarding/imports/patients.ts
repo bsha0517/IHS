@@ -34,6 +34,7 @@ const GENDERS = ["male", "female", "other", "unknown"] as const
 export function createPatientsImporter(branchByCode: Map<string, string>): ImporterDefinition<PatientRow> {
   return {
     type: "patients",
+    group: "Patients",
     templateVersion: "patients-v1",
     label: "Patients",
     requiredHeaders: ["firstName", "lastName", "dob", "gender", "mobile", "branchCode"],

@@ -136,6 +136,11 @@ export async function runDryRun<T>(
 
   const counts = summarize(rows)
   const preview = buildPreview(rows)
+  // P4.9.2 §41 — computed over the full row set (the function itself
+  // filters to committable rows), never stored on the ImportJob (it's
+  // derivable from the same rows the preview/error report already are, not
+  // new sensitive data), only returned in this response.
+  const domainSummary = definition.computeDomainSummary?.(rows)
 
   const job = await db.$transaction(async (tx) => {
     const created = await tx.importJob.create({
@@ -170,7 +175,7 @@ export async function runDryRun<T>(
 
   return {
     jobId: job.id,
-    summary: { type: definition.type, templateVersion: definition.templateVersion, fileName: input.fileName, totalRows: rows.length, ...counts, preview },
+    summary: { type: definition.type, templateVersion: definition.templateVersion, fileName: input.fileName, totalRows: rows.length, ...counts, preview, domainSummary },
   }
 }
 
@@ -227,8 +232,13 @@ export async function runCommit<T>(
   let failedAtBatch: number | undefined
   for (let b = 0; b < batches.length; b++) {
     try {
+      // P4.9.2 — CPU-bound per-row prep (e.g. password hashing) happens
+      // here, before the transaction opens, never inside it — see
+      // ImporterDefinition.prepareBatch's own doc comment for the real
+      // timeout this closes.
+      const prepared = await definition.prepareBatch?.(batches[b], ctx)
       const result = await db.$transaction(
-        (tx) => definition.commitBatch(tx, batches[b], ctx, job.id),
+        (tx) => definition.commitBatch(tx, batches[b], ctx, job.id, prepared),
         { timeout: 20_000, maxWait: 10_000 }
       )
       imported += result.imported

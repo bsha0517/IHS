@@ -16,6 +16,7 @@ export type ServiceRow = {
 export function createServicesImporter(departmentByName: Map<string, string>): ImporterDefinition<ServiceRow> {
   return {
     type: "services",
+    group: "Clinical Catalogues",
     templateVersion: "services-v1",
     label: "Services",
     requiredHeaders: ["code", "name", "category", "durationMinutes", "price"],

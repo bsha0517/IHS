@@ -18,6 +18,7 @@ export type SupplierRow = {
 export function createSuppliersImporter(): ImporterDefinition<SupplierRow> {
   return {
     type: "suppliers",
+    group: "Commercial",
     templateVersion: "suppliers-v1",
     label: "Suppliers",
     requiredHeaders: ["code", "companyName"],

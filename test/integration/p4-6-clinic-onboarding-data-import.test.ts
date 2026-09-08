@@ -576,6 +576,46 @@ describe("P4.6: clinic onboarding & data import", () => {
       const balance = await db.stockLedgerEntry.aggregate({ where: { organizationId: orgAId, productId: (await db.product.findFirstOrThrow({ where: { sku: "P46-OI-1", organizationId: orgAId } })).id }, _sum: { quantity: true } })
       expect(Number(balance._sum.quantity)).toBeLessThan(100) // sanity bound — not doubled across every test above
     }, TIMEOUT)
+
+    it("P4.9.2 §52/§73: a fresh retry file mixing an already-committed batch with genuinely new batches only imports the new ones — no duplicated quantity, no duplicated ledger entries", async () => {
+      const importer = await getImporter(adminSession(), "opening_inventory")
+      const firstCsv = toCsv(["sku", "branchCode", "batchNumber", "quantity", "unitCost"], [["P46-OI-1", "MAIN", "P492-RETRY-A", "15", "5"]])
+      const { jobId: firstJobId } = await runDryRun(adminSession(), importer, { fileText: firstCsv, fileName: "opening-retry-a.csv" })
+      createdImportJobIds.push(firstJobId)
+      await runCommit(adminSession(), importer, { jobId: firstJobId, fileText: firstCsv })
+
+      // "Retry" file: the same already-committed batch (P492-RETRY-A) plus
+      // two genuinely new ones — simulating an operator re-submitting a
+      // superset file after an earlier partial/interrupted run, exactly the
+      // scenario P4.9's own interrupted-import test proved safe generically;
+      // this proves it specifically for Opening Inventory's own stock/ledger
+      // consequences, not just row-level duplicate detection.
+      const retryImporter = await getImporter(adminSession(), "opening_inventory")
+      const retryCsv = toCsv(
+        ["sku", "branchCode", "batchNumber", "quantity", "unitCost"],
+        [
+          ["P46-OI-1", "MAIN", "P492-RETRY-A", "15", "5"],
+          ["P46-OI-1", "MAIN", "P492-RETRY-B", "8", "6"],
+          ["P46-OI-1", "MAIN", "P492-RETRY-C", "12", "7"],
+        ]
+      )
+      const { jobId: retryJobId, summary } = await runDryRun(adminSession(), retryImporter, { fileText: retryCsv, fileName: "opening-retry-mixed.csv" })
+      createdImportJobIds.push(retryJobId)
+      expect(summary.duplicateRows).toBe(1)
+      expect(summary.validRows).toBe(2)
+      const result = await runCommit(adminSession(), retryImporter, { jobId: retryJobId, fileText: retryCsv })
+      expect(result.importedRows).toBe(2)
+
+      const product = await db.product.findFirstOrThrow({ where: { sku: "P46-OI-1", organizationId: orgAId } })
+      const batchA = await db.productBatch.findMany({ where: { organizationId: orgAId, productId: product.id, batchNumber: "P492-RETRY-A" } })
+      expect(batchA).toHaveLength(1) // never duplicated
+      const ledgerForA = await db.stockLedgerEntry.count({ where: { organizationId: orgAId, batchId: batchA[0]!.id } })
+      expect(ledgerForA).toBe(1) // exactly one ledger entry — the original commit's, not a second from the retry
+      const batchB = await db.productBatch.findFirstOrThrow({ where: { organizationId: orgAId, productId: product.id, batchNumber: "P492-RETRY-B" } })
+      expect(batchB.receivedQuantity).toBe(8) // genuinely created, correct quantity
+      const batchC = await db.productBatch.findFirstOrThrow({ where: { organizationId: orgAId, productId: product.id, batchNumber: "P492-RETRY-C" } })
+      expect(batchC.receivedQuantity).toBe(12)
+    }, TIMEOUT)
   })
 
   describe("§66 accounting readiness", () => {

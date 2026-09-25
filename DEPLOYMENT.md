@@ -68,7 +68,30 @@ TEST_DIRECT_DATABASE_URL=  # (staging/production) environment. The integration
                       # `his_test` database — substituted in automatically by
                       # test/setup-test-database.ts, never read by application
                       # code. See LOCAL_DATABASE_SETUP.md.
+
+ZATCA_SANDBOX_BASE_URL=      # Optional (P5.5-Z). ZATCA Integration Sandbox base
+                      # URL from a registered account at sandbox.zatca.gov.sa.
+                      # Unset -> /einvoicing shows "not configured"; XML/hash/QR
+                      # generation and the submission-record table still work,
+                      # nothing is actually sent to ZATCA. See
+                      # docs/P5_5_Z_ZATCA_SANDBOX.md.
+ZATCA_COMPLIANCE_CSID=       # Optional. Issued by the Compliance CSID API after
+ZATCA_COMPLIANCE_SECRET=     # submitting a CSR + OTP — used only during onboarding
+                      # compliance checks, not for real invoice submission.
+ZATCA_PRODUCTION_CSID=       # Optional. Issued once the Compliance CSID passes
+ZATCA_PRODUCTION_SECRET=     # compliance checks — Basic Auth credentials (CSID as
+                      # username, Secret as password) for every real Reporting/
+                      # Clearance call.
+ZATCA_PRIVATE_KEY_PEM=       # Optional. PEM EC private key generated alongside the
+                      # CSR — signs the XAdES cryptographic stamp and the QR
+                      # code's ECDSA tags. Never persisted to the database.
+ZATCA_REPORTING_PATH=        # Optional override for the Reporting API's path —
+                      # see src/lib/domains/einvoicing/adapters/zatca-provider.ts's
+                      # doc comment for why the default is an inference, not a
+                      # confirmed literal.
 ```
+
+This build supports exactly one ZATCA-enabled organization per deployment (single global credential set above) — see docs/P5_5_Z_ZATCA_SANDBOX.md for why, and what a true multi-tenant rollout would need instead.
 
 `SESSION_SECRET` was named in Phase 0's speculative env var list but is never read anywhere — session/reset tokens are 256-bit `crypto.randomBytes` values (`src/lib/auth/tokens.ts`), hashed with SHA-256 before storage; the token's own randomness is what makes it unguessable, not an HMAC secret, so there was never a code path that needed one. `STORAGE_DRIVER`/`S3_*` were likewise speculative and are unused for the reason above.
 

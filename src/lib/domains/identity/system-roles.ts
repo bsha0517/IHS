@@ -86,6 +86,7 @@ export const SYSTEM_ROLES: { name: string; permissions: string[] | "ALL" }[] = [
       "expense.create", "supplier_invoice.manage", "reports.export",
       "payor.manage", "coverage.manage", "claim.create", "claim.adjudicate",
       "invoice.view", "payment.view",
+      "einvoicing.configure", "einvoicing.view", "einvoicing.submit",
     ],
   },
   {

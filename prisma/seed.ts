@@ -119,6 +119,9 @@ const PERMISSIONS: { code: string; category: string; description: string }[] = [
   { code: "chart_of_account.manage", category: "finance", description: "Manage the chart of accounts" },
   { code: "account_mapping.manage", category: "finance", description: "Configure account mappings" },
   { code: "expense.create", category: "finance", description: "Record expenses" },
+  { code: "einvoicing.configure", category: "finance", description: "Configure e-invoicing provider settings" },
+  { code: "einvoicing.view", category: "finance", description: "View e-invoicing submission status" },
+  { code: "einvoicing.submit", category: "finance", description: "Manually retry an e-invoicing submission" },
 
   // Workforce
   { code: "payroll.view", category: "workforce", description: "View payroll" },

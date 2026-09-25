@@ -18,6 +18,7 @@ import {
   postPayrollPaid,
 } from "@/lib/domains/accounting/posting-service"
 import { accrueInvoiceBasisCommissions, accruePaymentBasisCommissions, reverseCommissionsForRefund } from "@/lib/domains/payroll/commissions"
+import { submitInvoiceToZatca } from "@/lib/domains/einvoicing/service"
 import { sendMessage } from "@/lib/domains/communications/service"
 import { createNotificationOnce, createNotificationsOnce } from "@/lib/domains/notifications/create"
 import { formatDate, formatTime } from "@/lib/utils/dates"
@@ -150,6 +151,18 @@ registerOutboxHandler("InvoiceIssued", async (payload) => {
   const invoiceId = payload.invoiceId as string
   await postInvoiceIssued(invoiceId)
   await db.$transaction((tx) => accrueInvoiceBasisCommissions(tx, invoiceId), COMMISSION_TRANSACTION_OPTIONS)
+})
+
+/**
+ * P5.5-Z: a second, independent "InvoiceIssued" handler (registerOutboxHandler
+ * stores handlers per event type in an array — see outbox.ts — so this is
+ * additive, not a replacement of the posting/commission handler above).
+ * Always writes an EInvoiceSubmission attempt record; only ever calls the
+ * real ZATCA API when an org has both a seller profile configured and real
+ * sandbox/production credentials — see einvoicing/service.ts.
+ */
+registerOutboxHandler("InvoiceIssued", async (payload) => {
+  await submitInvoiceToZatca(payload.invoiceId as string)
 })
 
 /** P1 §24: reverses postInvoiceIssued's own posting — see voidInvoice (billing/invoices.ts) and postInvoiceVoided's doc comment. */

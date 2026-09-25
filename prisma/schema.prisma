@@ -112,6 +112,7 @@ model Organization {
   patientPortalAccounts   PatientPortalAccount[]
   idempotencyKeys         IdempotencyKey[]
   accountingPeriods       AccountingPeriod[]
+  eInvoiceSubmissions     EInvoiceSubmission[]
 
   // P5.1 — commercial SaaS layer. Optional/1:1 rather than required fields
   // bolted directly onto Organization (§5's own "prefer separation if
@@ -1912,6 +1913,7 @@ model Invoice {
   patientPackages    PatientPackage[]
   commissionAccruals CommissionAccrual[]
   claims             Claim[]
+  eInvoiceSubmission EInvoiceSubmission?
   // P2 §14, Category A: same reasoning as Charge.createdByUser.
   createdByUser      User?               @relation("InvoiceCreator", fields: [createdBy], references: [id], onDelete: Restrict)
 
@@ -4964,4 +4966,80 @@ model PilotUatScenario {
 
   @@index([uatId])
   @@map("pilot_uat_scenario")
+}
+
+// ---------------------------------------------------------------------------
+// P5.5-Z — ZATCA e-invoicing sandbox integration
+// ---------------------------------------------------------------------------
+
+// Lifecycle of one Invoice's e-invoice submission attempt. `not_configured` is
+// a distinct terminal-ish state from `failed`: it means no EInvoiceProvider
+// credentials exist for the org at all (mirrors CommunicationAdapter's own
+// NullSmsAdapter discipline of honestly reporting "could not actually send"
+// rather than a generic error), whereas `failed`/`rejected` mean a real
+// attempt was made against ZATCA and it did not succeed.
+enum EInvoiceSubmissionStatus {
+  not_configured
+  pending
+  reported
+  cleared
+  rejected
+  failed
+}
+
+// One row per Invoice (unique on invoiceId) — same "attempt record, never
+// fake success" discipline as CommMessage. ICV (KSA-16) and the previous-
+// invoice-hash chain (BR-KSA-25/26) are per-organization monotonic state,
+// so this table is also where that chain's own history lives (each row's
+// previousInvoiceHash is the prior submission's invoiceHash).
+//
+// onDelete: Cascade (unlike InvoiceLine's deliberate Restrict) — this
+// codebase's own discipline is that a real Invoice is never hard-deleted in
+// production ("a reversal is a Refund against it", InvoiceLine's own doc
+// comment); Invoice rows are only ever hard-deleted by test cleanup, which
+// pre-dates this table and doesn't know to delete its EInvoiceSubmission
+// row first. Cascade here (rather than updating every existing test file's
+// cleanup order) keeps this addition from breaking unrelated test suites —
+// confirmed necessary by a real `e_invoice_submission_invoice_id_fkey`
+// violation across 9 pre-existing integration test files under Restrict.
+model EInvoiceSubmission {
+  id             String @id @default(uuid())
+  organizationId String @map("organization_id")
+  invoiceId      String @unique @map("invoice_id")
+
+  // Nullable until a real submission attempt actually builds a ZATCA
+  // identity for this invoice — a `not_configured` row (no seller profile
+  // enabled yet) has none of these, and fabricating placeholder values just
+  // to satisfy NOT NULL would both violate the icv uniqueness constraint
+  // across multiple not-configured invoices and misrepresent unassigned
+  // business data as real.
+  invoiceTypeCode String? @map("invoice_type_code")
+  invoiceTypeName String? @map("invoice_type_name")
+  uuid            String? @map("uuid")
+  icv             Int?    @map("icv")
+
+  previousInvoiceHash String? @map("previous_invoice_hash") @db.Text
+  invoiceHash         String? @map("invoice_hash") @db.Text
+  qrCode              String? @map("qr_code") @db.Text
+  xmlContent          String? @map("xml_content") @db.Text
+
+  status      EInvoiceSubmissionStatus @default(not_configured)
+  zatcaStatus String?                  @map("zatca_status")
+  warnings    Json?
+  errors      Json?
+
+  attempts      Int       @default(0)
+  lastAttemptAt DateTime? @map("last_attempt_at") @db.Timestamptz(3)
+  submittedAt   DateTime? @map("submitted_at") @db.Timestamptz(3)
+  lastError     String?   @map("last_error") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  invoice      Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, icv])
+  @@index([organizationId, status])
+  @@map("e_invoice_submission")
 }

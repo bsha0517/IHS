@@ -27,6 +27,7 @@ import {
   Receipt,
   Landmark,
   CreditCard,
+  QrCode,
   Megaphone,
   MessageSquare,
   BarChart3,
@@ -152,6 +153,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: "Expenses", href: "/expenses", icon: Receipt, permission: "accounting.view", moduleKey: "finance" },
       { label: "Receivables", href: "/receivables", icon: Landmark, permission: "accounting.view", moduleKey: "finance" },
       { label: "Payables", href: "/payables", icon: CreditCard, permission: "accounting.view", moduleKey: "finance" },
+      { label: "ZATCA e-Invoicing", href: "/einvoicing", icon: QrCode, permission: "einvoicing.view", moduleKey: "finance" },
     ],
   },
   {

@@ -23,6 +23,7 @@ export type SequenceType =
   | "QUEUE"
   | "DISP"
   | "RAD"
+  | "ICV"
 
 export type SequenceResetPeriod = "never" | "daily"
 

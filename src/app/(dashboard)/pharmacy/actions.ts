@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
+import { assertModuleEnabled } from "@/lib/platform/entitlements"
 import { createMedication, updateMedication } from "@/lib/domains/pharmacy/medications"
 import { createDispensingRecord, verifyDispensingRecord, dispenseRecord, returnDispensingRecord } from "@/lib/domains/pharmacy/dispensing"
 import { medicationSchema, createDispensingRecordSchema, returnDispensingSchema } from "@/lib/domains/pharmacy/schemas"
@@ -12,6 +13,7 @@ export type ActionState = { error?: string; success?: boolean }
 async function requireSession() {
   const session = await getCurrentSession()
   if (!session) throw new Error("Not authenticated.")
+  await assertModuleEnabled(session.user.organizationId, "pharmacy")
   return session
 }
 
@@ -38,10 +40,10 @@ function readMedicationForm(formData: FormData) {
 }
 
 export async function createMedicationAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = readMedicationForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await createMedication(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to create medication." }
@@ -51,11 +53,11 @@ export async function createMedicationAction(_prev: ActionState, formData: FormD
 }
 
 export async function updateMedicationAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const id = String(formData.get("medicationId") ?? "")
   const parsed = readMedicationForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await updateMedication(session, id, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to update medication." }
@@ -65,7 +67,6 @@ export async function updateMedicationAction(_prev: ActionState, formData: FormD
 }
 
 export async function createDispensingRecordAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const prescriptionId = String(formData.get("prescriptionId") ?? "")
   const parsed = createDispensingRecordSchema.safeParse({
     prescriptionItemId: formData.get("prescriptionItemId"),
@@ -76,6 +77,7 @@ export async function createDispensingRecordAction(_prev: ActionState, formData:
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await createDispensingRecord(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to create dispensing record." }
@@ -86,8 +88,8 @@ export async function createDispensingRecordAction(_prev: ActionState, formData:
 }
 
 export async function verifyDispensingRecordAction(id: string, prescriptionId: string): Promise<ActionState> {
-  const session = await requireSession()
   try {
+    const session = await requireSession()
     await verifyDispensingRecord(session, id)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to verify dispensing record." }
@@ -97,8 +99,8 @@ export async function verifyDispensingRecordAction(id: string, prescriptionId: s
 }
 
 export async function dispenseRecordAction(id: string, prescriptionId: string): Promise<ActionState> {
-  const session = await requireSession()
   try {
+    const session = await requireSession()
     await dispenseRecord(session, id)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to dispense." }
@@ -118,7 +120,6 @@ export type ReturnActionState = ActionState & { financialReversal?: "reversed" |
  * three possible outcomes and why.
  */
 export async function returnDispensingRecordAction(_prev: ReturnActionState, formData: FormData): Promise<ReturnActionState> {
-  const session = await requireSession()
   const id = String(formData.get("dispensingRecordId") ?? "")
   const prescriptionId = String(formData.get("prescriptionId") ?? "")
   const parsed = returnDispensingSchema.safeParse({
@@ -128,6 +129,7 @@ export async function returnDispensingRecordAction(_prev: ReturnActionState, for
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   let financialReversal: ReturnActionState["financialReversal"]
   try {
+    const session = await requireSession()
     const result = await returnDispensingRecord(session, id, parsed.data)
     financialReversal = result.financialReversal
   } catch (e) {

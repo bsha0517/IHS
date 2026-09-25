@@ -46,7 +46,7 @@ export default async function SettingsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Settings" description="Organization, branches, departments, and rooms." />
+      <PageHeader title="Settings" module="admin" description="Organization, branches, departments, and rooms." />
 
       {/* P3.12 §37: a coherent list of every configuration area this
           session actually has permission to manage — linking to each

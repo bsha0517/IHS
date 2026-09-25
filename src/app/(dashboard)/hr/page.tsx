@@ -35,7 +35,7 @@ export default async function HrWorkspacePage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="HR Workspace" description="Today's operational snapshot." />
+      <PageHeader title="HR Workspace" module="hr" description="Today's operational snapshot." />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Link href="/employees">

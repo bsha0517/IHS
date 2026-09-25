@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
+import { assertModuleEnabled } from "@/lib/platform/entitlements"
 import { createPayor, updatePayor, createInsurancePlan, createPolicy } from "@/lib/domains/claims/payors"
 import { payorSchema, insurancePlanSchema, policySchema } from "@/lib/domains/claims/schemas"
 
@@ -10,6 +11,7 @@ export type ActionState = { error?: string; success?: boolean }
 async function requireSession() {
   const session = await getCurrentSession()
   if (!session) throw new Error("Not authenticated.")
+  await assertModuleEnabled(session.user.organizationId, "pos_billing")
   return session
 }
 
@@ -26,10 +28,10 @@ function readPayorForm(formData: FormData) {
 }
 
 export async function createPayorAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = readPayorForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await createPayor(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to create payor." }
@@ -39,11 +41,11 @@ export async function createPayorAction(_prev: ActionState, formData: FormData):
 }
 
 export async function updatePayorAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const id = String(formData.get("payorId") ?? "")
   const parsed = readPayorForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await updatePayor(session, id, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to update payor." }
@@ -53,7 +55,6 @@ export async function updatePayorAction(_prev: ActionState, formData: FormData):
 }
 
 export async function createInsurancePlanAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = insurancePlanSchema.safeParse({
     payorId: formData.get("payorId"),
     code: formData.get("code"),
@@ -61,6 +62,7 @@ export async function createInsurancePlanAction(_prev: ActionState, formData: Fo
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await createInsurancePlan(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to create insurance plan." }
@@ -70,7 +72,6 @@ export async function createInsurancePlanAction(_prev: ActionState, formData: Fo
 }
 
 export async function createPolicyAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = policySchema.safeParse({
     insurancePlanId: formData.get("insurancePlanId"),
     policyNumber: formData.get("policyNumber"),
@@ -78,6 +79,7 @@ export async function createPolicyAction(_prev: ActionState, formData: FormData)
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await createPolicy(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to create policy." }

@@ -4,6 +4,7 @@ import { listNotifications, getNotificationTypesForUser, getOperationalAwareness
 import { formatDateTime } from "@/lib/utils/dates"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { PageHeader } from "@/components/ui/page-header"
 import Link from "next/link"
 import { NotificationFilters } from "@/app/(dashboard)/notifications/notification-filters"
 import { MarkReadButton } from "@/app/(dashboard)/notifications/mark-read-button"
@@ -39,15 +40,12 @@ export default async function NotificationsPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Notifications</h1>
-          <p className="text-sm text-muted-foreground">
-            {unreadCount > 0 ? `${unreadCount} unread notification(s).` : "You're all caught up."}
-          </p>
-        </div>
-        <MarkAllReadButton disabled={unreadCount === 0} />
-      </div>
+      <PageHeader
+        title="Notifications"
+        module="notifications"
+        description={unreadCount > 0 ? `${unreadCount} unread notification(s).` : "You're all caught up."}
+        primaryAction={<MarkAllReadButton disabled={unreadCount === 0} />}
+      />
 
       {/* §53: links/counts into existing operational queues — never a copy of their records. */}
       {awarenessLinks.length > 0 && (

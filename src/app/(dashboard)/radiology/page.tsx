@@ -43,7 +43,7 @@ export default async function RadiologyPage({ searchParams }: { searchParams: Pr
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Radiology" />
+      <PageHeader title="Radiology" module="radiology" />
 
       <Tabs defaultValue="queue">
         <TabsList>

@@ -26,7 +26,7 @@ export default async function ReceivablesPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Receivables" description={`${total} outstanding invoice(s) — ${totalOutstanding.toFixed(2)} owed`} />
+      <PageHeader title="Receivables" module="finance" description={`${total} outstanding invoice(s) — ${totalOutstanding.toFixed(2)} owed`} />
 
       {/* P3.9 §26: basic aging buckets — a small extension of the same outstanding-invoice
           population/total this page already shows, not a separate aging engine. */}

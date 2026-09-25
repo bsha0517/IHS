@@ -57,6 +57,7 @@ export default async function OnboardingPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Clinic Onboarding"
+        module="onboarding"
         description={
           <>
             Operational setup checklist and data import workspace.{" "}

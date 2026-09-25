@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
+import { assertModuleEnabled } from "@/lib/platform/entitlements"
 import { createEmployee, updateEmployee, updateEmployeeStatus, addEmployeeDocument } from "@/lib/domains/hr/employees"
 import { linkEmployeeUser, unlinkEmployeeUser } from "@/lib/domains/identity/users"
 import { employeeSchema, employeeDocumentSchema, updateEmployeeStatusSchema } from "@/lib/domains/hr/schemas"
@@ -11,6 +12,7 @@ export type ActionState = { error?: string; success?: boolean }
 async function requireSession() {
   const session = await getCurrentSession()
   if (!session) throw new Error("Not authenticated.")
+  await assertModuleEnabled(session.user.organizationId, "hr")
   return session
 }
 
@@ -31,11 +33,11 @@ function readEmployeeForm(formData: FormData) {
 }
 
 export async function createEmployeeAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = readEmployeeForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await createEmployee(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to create employee." }
@@ -45,12 +47,12 @@ export async function createEmployeeAction(_prev: ActionState, formData: FormDat
 }
 
 export async function updateEmployeeAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const employeeId = String(formData.get("employeeId") ?? "")
   const parsed = readEmployeeForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await updateEmployee(session, employeeId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to update employee." }
@@ -70,12 +72,12 @@ export async function updateEmployeeAction(_prev: ActionState, formData: FormDat
  * the existing action; no new lifecycle states, no settlement workflow.
  */
 export async function updateEmployeeStatusAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const employeeId = String(formData.get("employeeId") ?? "")
   const parsed = updateEmployeeStatusSchema.safeParse({ status: formData.get("status") })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await updateEmployeeStatus(session, employeeId, parsed.data.status)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to update employee status." }
@@ -87,12 +89,12 @@ export async function updateEmployeeStatusAction(_prev: ActionState, formData: F
 
 /** P3.12 §14: resolves the P3.10 backlog item — Admin-only (`users.manage`, checked in the domain function, not merely by the button being hidden). */
 export async function linkEmployeeUserAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const employeeId = String(formData.get("employeeId") ?? "")
   const userId = String(formData.get("userId") ?? "")
   if (!userId) return { error: "Select a user to link." }
 
   try {
+    const session = await requireSession()
     await linkEmployeeUser(session, employeeId, userId)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to link user." }
@@ -108,7 +110,6 @@ export async function unlinkEmployeeUserAction(employeeId: string) {
 }
 
 export async function addEmployeeDocumentAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const employeeId = String(formData.get("employeeId") ?? "")
   const parsed = employeeDocumentSchema.safeParse({
     documentType: formData.get("documentType"),
@@ -120,6 +121,7 @@ export async function addEmployeeDocumentAction(_prev: ActionState, formData: Fo
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await addEmployeeDocument(session, employeeId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to add document." }

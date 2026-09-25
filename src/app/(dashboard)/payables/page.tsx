@@ -26,7 +26,7 @@ export default async function PayablesPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Payables" description={`${total} outstanding supplier invoice(s) — ${totalOutstanding.toFixed(2)} owed`} />
+      <PageHeader title="Payables" module="finance" description={`${total} outstanding supplier invoice(s) — ${totalOutstanding.toFixed(2)} owed`} />
 
       <Card>
         <CardContent className="pt-6">

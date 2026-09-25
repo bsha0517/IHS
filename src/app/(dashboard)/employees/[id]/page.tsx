@@ -10,7 +10,9 @@ import { listUnlinkedUsers } from "@/lib/domains/identity/users"
 import { formatDate } from "@/lib/utils/dates"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
 import { Button } from "@/components/ui/button"
+import { DetailHeader } from "@/components/ui/page-header"
 import { DocumentDialog } from "@/app/(dashboard)/employees/[id]/document-dialog"
 import { EmployeeStatusDialog } from "@/app/(dashboard)/employees/[id]/status-dialog"
 import { UserLinkDialog, UnlinkUserButton } from "@/app/(dashboard)/employees/[id]/user-link-dialog"
@@ -43,17 +45,18 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            {employee.firstName} {employee.lastName}
-          </h1>
-          <p className="text-sm text-muted-foreground">
+      <DetailHeader
+        module="hr"
+        title={`${employee.firstName} ${employee.lastName}`}
+        meta={
+          <>
             {employee.employeeNumber} · {employee.designation}
-          </p>
-        </div>
-        {canManage && <EmployeeStatusDialog employeeId={employee.id} currentStatus={employee.status} />}
-      </div>
+            {employee.department && <> · {employee.department.name}</>}
+          </>
+        }
+        badge={<StatusBadge status={employee.status} />}
+        actions={canManage && <EmployeeStatusDialog employeeId={employee.id} currentStatus={employee.status} />}
+      />
 
       <div className="grid gap-4 sm:grid-cols-2">
         <Card>

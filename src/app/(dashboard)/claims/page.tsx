@@ -32,7 +32,7 @@ export default async function ClaimsPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Claims" description={`${total} claim(s)`} />
+      <PageHeader title="Claims" module="billing" description={`${total} claim(s)`} />
 
       <Card>
         <CardContent className="pt-6">

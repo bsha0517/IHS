@@ -2,7 +2,7 @@ import "server-only"
 import { Decimal } from "@prisma/client/runtime/client"
 import { Prisma } from "@/generated/prisma/client"
 import { db } from "@/lib/db"
-import { assertCan } from "@/lib/platform/permissions-core"
+import { assertCan, can, ForbiddenError } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { generateSystemCharge } from "@/lib/domains/billing/charges"
 import { writeOutboxEvent, dispatchPendingOutboxEvents } from "@/lib/platform/outbox"
@@ -100,7 +100,12 @@ export async function purchasePackage(session: SessionContext, input: PurchasePa
 }
 
 export async function listPatientPackages(session: SessionContext, patientId: string) {
-  assertCan(session, "service.view")
+  // Doctor/Nurse hold package.consume but not service.view (system-roles.ts)
+  // — they still need to see a patient's package balances to pick which one
+  // to consume a session from (the only UI path to package.consume).
+  if (!can(session, "service.view") && !can(session, "package.consume")) {
+    throw new ForbiddenError("service.view")
+  }
   const scope = getAuthorizedBranchScope(session)
   const patientPackages = await db.patientPackage.findMany({
     where: { organizationId: session.user.organizationId, patientId, branchId: narrowBranchFilter(scope) },

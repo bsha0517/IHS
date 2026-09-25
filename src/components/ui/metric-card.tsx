@@ -9,6 +9,14 @@ import { cn } from "@/lib/utils"
  * ever a real computed delta (e.g. this month vs. last) — never rendered
  * unless the caller actually has one; this component never fabricates a
  * trend arrow.
+ *
+ * P4.10 §24 — visual refresh only, same props/behavior: an icon container
+ * tinted to the card's own tone (instead of a flat gray icon with no
+ * container) and a left accent stripe that only appears for a *meaningful*
+ * tone (success/warning/destructive) — a plain "neutral" tile (most tiles
+ * on Dashboard) stays quiet with no stripe, so the stripe reads as a real
+ * signal ("this number needs attention") rather than decoration repeated
+ * on every tile.
  */
 export function MetricCard({
   label,
@@ -27,20 +35,25 @@ export function MetricCard({
   tone?: "neutral" | "success" | "warning" | "destructive"
   className?: string
 }) {
-  const toneClass = {
-    neutral: "text-foreground",
-    success: "text-success",
-    warning: "text-warning",
-    destructive: "text-destructive",
+  const toneStyles = {
+    neutral: { value: "text-foreground", iconBg: "bg-muted", iconText: "text-muted-foreground", stripe: "" },
+    success: { value: "text-success", iconBg: "bg-success-surface", iconText: "text-success", stripe: "bg-success" },
+    warning: { value: "text-warning", iconBg: "bg-warning-surface", iconText: "text-warning", stripe: "bg-warning" },
+    destructive: { value: "text-destructive", iconBg: "bg-destructive-surface", iconText: "text-destructive", stripe: "bg-destructive" },
   }[tone]
 
   return (
-    <div className={cn("rounded-lg border border-border bg-card p-4", className)}>
+    <div className={cn("relative overflow-hidden rounded-lg border border-border bg-card p-4 shadow-sm", className)}>
+      {toneStyles.stripe && <div className={cn("absolute inset-y-0 left-0 w-1", toneStyles.stripe)} aria-hidden="true" />}
       <div className="flex items-start justify-between gap-2">
         <p className="text-xs font-medium text-muted-foreground">{label}</p>
-        {Icon && <Icon className="size-4 shrink-0 text-muted-foreground/70" aria-hidden="true" />}
+        {Icon && (
+          <span className={cn("flex size-7 shrink-0 items-center justify-center rounded-md", toneStyles.iconBg)}>
+            <Icon className={cn("size-4", toneStyles.iconText)} aria-hidden="true" />
+          </span>
+        )}
       </div>
-      <p className={cn("mt-1.5 text-2xl font-semibold tabular-nums tracking-tight", toneClass)}>{value}</p>
+      <p className={cn("mt-1.5 text-2xl font-semibold tabular-nums tracking-tight", toneStyles.value)}>{value}</p>
       {(helper || trend) && (
         <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
           {trend && (

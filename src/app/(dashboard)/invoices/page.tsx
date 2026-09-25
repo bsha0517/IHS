@@ -30,7 +30,7 @@ export default async function InvoicesPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Invoices" description={`${total} invoice(s)`} />
+      <PageHeader title="Invoices" module="billing" description={`${total} invoice(s)`} />
 
       <Card>
         <CardContent>

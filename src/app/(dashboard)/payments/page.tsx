@@ -23,7 +23,7 @@ export default async function PaymentsPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Payments" description={`${total} payment(s)`} />
+      <PageHeader title="Payments" module="billing" description={`${total} payment(s)`} />
 
       <Card>
         <CardContent>

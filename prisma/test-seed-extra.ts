@@ -28,6 +28,7 @@
 
 import "dotenv/config"
 import { db } from "../src/lib/db"
+import { hashPassword } from "../src/lib/auth/password"
 
 async function main() {
   const organization = await db.organization.findFirstOrThrow()
@@ -105,11 +106,58 @@ async function main() {
     })
   }
 
+  // A Patient — required by appointment-double-booking.test.ts (and others)
+  // via `db.patient.findFirstOrThrow()`. `prisma/seed.ts` never creates one
+  // (verified directly, same reasoning as every other fixture in this file).
+  let patient = await db.patient.findFirst({ where: { organizationId: organization.id } })
+  if (!patient) {
+    console.log("Creating baseline patient (his_test only)...")
+    patient = await db.patient.create({
+      data: {
+        organizationId: organization.id,
+        registrationBranchId: primaryBranch.id,
+        mrn: "TEST-MRN-0001",
+        firstName: "Test",
+        lastName: "Patient",
+        dob: new Date("1990-01-01"),
+        gender: "unknown",
+        mobile: "0000000000",
+      },
+    })
+  }
+
+  // A SECOND User — found during P5.4's regression pass:
+  // test/integration/p3-11-notifications-operational-awareness.test.ts
+  // (and any other file assuming ≥2 distinct
+  // users exist) does `db.user.findMany({ take: 2 })` then
+  // `userBId = users[1]?.id ?? users[0].id` — with only one seeded user
+  // present, that fallback silently makes "user B" the SAME person as
+  // "user A", turning an ownership-isolation test into a false failure
+  // (it correctly finds its own notification "leaking" into its own list,
+  // because there was only ever one real recipient). `prisma/seed.ts`
+  // creates exactly one clinic user (the bootstrap Super Admin) — this adds
+  // a second, real, distinct one so that assumption holds.
+  let secondUser = await db.user.findFirst({ where: { organizationId: organization.id, email: "test-second-user@test.local" } })
+  if (!secondUser) {
+    console.log("Creating second baseline user (his_test only — tests assuming 2 distinct users need one)...")
+    secondUser = await db.user.create({
+      data: {
+        organizationId: organization.id,
+        email: "test-second-user@test.local",
+        passwordHash: await hashPassword("not-a-real-login-throwaway"),
+        firstName: "Test",
+        lastName: "SecondUser",
+      },
+    })
+  }
+
   console.log("Extra test fixtures ready:", {
     secondBranchId: secondBranch.id,
     providerId: provider.id,
     serviceId: service.id,
     productId: product.id,
+    patientId: patient.id,
+    secondUserId: secondUser.id,
   })
 }
 

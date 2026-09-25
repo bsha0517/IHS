@@ -134,3 +134,47 @@ export async function nextNumber(params: {
   }
   throw lastError
 }
+
+export type PlatformSequenceType = "SUP"
+
+/**
+ * P5.2 §7: the platform-wide counterpart to `nextNumber()` — identical
+ * atomic-UPDATE-then-create-on-first-use/retry-on-race strategy, against
+ * `PlatformNumberSequence` (no organizationId) instead of `NumberSequence`.
+ * See that model's own doc comment for why a separate table exists rather
+ * than reusing `NumberSequence` with some sentinel organization id.
+ */
+export async function nextPlatformNumber(params: { sequenceType: PlatformSequenceType; prefix: string; padding?: number }): Promise<string> {
+  const padding = params.padding ?? DEFAULT_PADDING
+
+  const MAX_ATTEMPTS = 5
+  let lastError: unknown
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const value = await db.$transaction(async (tx) => {
+        const updated = await tx.$queryRaw<{ current_value: number }[]>(Prisma.sql`
+          UPDATE "platform_number_sequence"
+          SET "current_value" = "current_value" + 1
+          WHERE "sequence_type" = ${params.sequenceType}
+          RETURNING "current_value"
+        `)
+
+        if (updated.length > 0) {
+          return updated[0].current_value
+        }
+
+        const created = await tx.platformNumberSequence.create({
+          data: { sequenceType: params.sequenceType, currentValue: 1 },
+        })
+        return created.currentValue
+      }, { timeout: 20_000, maxWait: 10_000 })
+
+      return `${params.prefix}-${String(value).padStart(padding, "0")}`
+    } catch (error) {
+      lastError = error
+      const isRowCreationRace = error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002"
+      if (!isRowCreationRace || attempt === MAX_ATTEMPTS) throw error
+    }
+  }
+  throw lastError
+}

@@ -23,7 +23,11 @@ function TableHeader({ className, ...props }: React.ComponentProps<"thead">) {
   return (
     <thead
       data-slot="table-header"
-      className={cn("[&_tr]:border-b", className)}
+      // P4.10 §11 — a real, if subtle, background difference from the body
+      // rows below it (previously identical `bg-card`, distinguished only
+      // by a 1px border) — a concrete gap named in this phase's own
+      // inspection pass.
+      className={cn("bg-muted/40 [&_tr]:border-b [&_tr]:hover:bg-muted/40", className)}
       {...props}
     />
   )
@@ -70,7 +74,11 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
     <th
       data-slot="table-head"
       className={cn(
-        "h-10 px-2 text-left align-middle font-medium whitespace-nowrap text-foreground [&:has([role=checkbox])]:pr-0",
+        // P4.10 §11 — headers now read as labels (muted, semibold) rather
+        // than data (full-foreground, medium-weight) — the same visual
+        // distinction the rest of the app already uses between a field
+        // label and its value.
+        "h-10 px-2 text-left align-middle font-semibold whitespace-nowrap text-muted-foreground [&:has([role=checkbox])]:pr-0",
         className
       )}
       {...props}

@@ -122,7 +122,7 @@ export default async function AccountingPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Accounting" primaryAction={canPost && <ManualJournalDialog accounts={accountOptions} branches={branchOptions} />} />
+      <PageHeader title="Accounting" module="finance" primaryAction={canPost && <ManualJournalDialog accounts={accountOptions} branches={branchOptions} />} />
 
       <Tabs defaultValue={sp.tab || "overview"}>
         <TabsList className="flex-wrap">
@@ -548,14 +548,14 @@ export default async function AccountingPage({
                     <TableRow key={l.accountId}>
                       <TableCell className="font-medium">{l.code}</TableCell>
                       <TableCell>{l.name}</TableCell>
-                      <TableCell className="text-right">{l.debit > 0 ? l.debit.toFixed(2) : ""}</TableCell>
-                      <TableCell className="text-right">{l.credit > 0 ? l.credit.toFixed(2) : ""}</TableCell>
+                      <TableCell className="text-right tabular-nums">{l.debit > 0 ? l.debit.toFixed(2) : ""}</TableCell>
+                      <TableCell className="text-right tabular-nums">{l.credit > 0 ? l.credit.toFixed(2) : ""}</TableCell>
                     </TableRow>
                   ))}
                   <TableRow className="font-medium">
                     <TableCell colSpan={2}>Total</TableCell>
-                    <TableCell className="text-right">{trial.totalDebit.toFixed(2)}</TableCell>
-                    <TableCell className="text-right">{trial.totalCredit.toFixed(2)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{trial.totalDebit.toFixed(2)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{trial.totalCredit.toFixed(2)}</TableCell>
                   </TableRow>
                 </TableBody>
               </Table>
@@ -578,12 +578,12 @@ export default async function AccountingPage({
                         <TableCell>
                           {l.code} — {l.name}
                         </TableCell>
-                        <TableCell className="text-right">{l.amount.toFixed(2)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{l.amount.toFixed(2)}</TableCell>
                       </TableRow>
                     ))}
                     <TableRow className="font-medium">
                       <TableCell>Total Revenue</TableCell>
-                      <TableCell className="text-right">{income.totalRevenue.toFixed(2)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{income.totalRevenue.toFixed(2)}</TableCell>
                     </TableRow>
                   </TableBody>
                 </Table>
@@ -597,17 +597,19 @@ export default async function AccountingPage({
                         <TableCell>
                           {l.code} — {l.name}
                         </TableCell>
-                        <TableCell className="text-right">{l.amount.toFixed(2)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{l.amount.toFixed(2)}</TableCell>
                       </TableRow>
                     ))}
                     <TableRow className="font-medium">
                       <TableCell>Total Expenses</TableCell>
-                      <TableCell className="text-right">{income.totalExpense.toFixed(2)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{income.totalExpense.toFixed(2)}</TableCell>
                     </TableRow>
                   </TableBody>
                 </Table>
               </div>
-              <div className="border-t pt-4 text-right text-base font-semibold">Net Income: {income.netIncome.toFixed(2)}</div>
+              <div className="border-t border-border pt-4 text-right text-base font-semibold">
+                Net Income: <span className="tabular-nums">{income.netIncome.toFixed(2)}</span>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>
@@ -624,12 +626,12 @@ export default async function AccountingPage({
                         <TableCell>
                           {l.code} — {l.name}
                         </TableCell>
-                        <TableCell className="text-right">{l.amount.toFixed(2)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{l.amount.toFixed(2)}</TableCell>
                       </TableRow>
                     ))}
                     <TableRow className="font-medium">
                       <TableCell>Total Assets</TableCell>
-                      <TableCell className="text-right">{sheet.totalAssets.toFixed(2)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{sheet.totalAssets.toFixed(2)}</TableCell>
                     </TableRow>
                   </TableBody>
                 </Table>
@@ -643,12 +645,12 @@ export default async function AccountingPage({
                         <TableCell>
                           {l.code} — {l.name}
                         </TableCell>
-                        <TableCell className="text-right">{l.amount.toFixed(2)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{l.amount.toFixed(2)}</TableCell>
                       </TableRow>
                     ))}
                     <TableRow className="font-medium">
                       <TableCell>Total Liabilities</TableCell>
-                      <TableCell className="text-right">{sheet.totalLiabilities.toFixed(2)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{sheet.totalLiabilities.toFixed(2)}</TableCell>
                     </TableRow>
                   </TableBody>
                 </Table>
@@ -660,12 +662,12 @@ export default async function AccountingPage({
                     {sheet.equityLines.map((l) => (
                       <TableRow key={l.code}>
                         <TableCell>{l.name}</TableCell>
-                        <TableCell className="text-right">{l.amount.toFixed(2)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{l.amount.toFixed(2)}</TableCell>
                       </TableRow>
                     ))}
                     <TableRow className="font-medium">
                       <TableCell>Total Equity</TableCell>
-                      <TableCell className="text-right">{sheet.totalEquity.toFixed(2)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{sheet.totalEquity.toFixed(2)}</TableCell>
                     </TableRow>
                   </TableBody>
                 </Table>
@@ -694,7 +696,7 @@ export default async function AccountingPage({
                       <TableRow key={i}>
                         <TableCell>{formatDate(l.date)}</TableCell>
                         <TableCell>{l.description}</TableCell>
-                        <TableCell className="text-right">{l.amount.toFixed(2)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{l.amount.toFixed(2)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -713,13 +715,15 @@ export default async function AccountingPage({
                       <TableRow key={i}>
                         <TableCell>{formatDate(l.date)}</TableCell>
                         <TableCell>{l.description}</TableCell>
-                        <TableCell className="text-right">{l.amount.toFixed(2)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{l.amount.toFixed(2)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
               </div>
-              <div className="border-t pt-4 text-right text-base font-semibold">Net Change in Cash: {flow.netChange.toFixed(2)}</div>
+              <div className="border-t border-border pt-4 text-right text-base font-semibold">
+                Net Change in Cash: <span className="tabular-nums">{flow.netChange.toFixed(2)}</span>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>

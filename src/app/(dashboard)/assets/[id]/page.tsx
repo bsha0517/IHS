@@ -5,6 +5,8 @@ import { getAsset } from "@/lib/domains/assets/assets"
 import { formatDate } from "@/lib/utils/dates"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
+import { DetailHeader } from "@/components/ui/page-header"
 import { MaintenanceDialog } from "@/app/(dashboard)/assets/[id]/maintenance-dialog"
 import { CalibrationDialog } from "@/app/(dashboard)/assets/[id]/calibration-dialog"
 
@@ -24,12 +26,16 @@ export default async function AssetDetailPage({ params }: { params: Promise<{ id
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{asset.name}</h1>
-        <p className="text-sm text-muted-foreground">
-          {asset.assetNumber} · {asset.category}
-        </p>
-      </div>
+      <DetailHeader
+        module="assets"
+        title={asset.name}
+        meta={
+          <>
+            {asset.assetNumber} · {asset.category} · {asset.branch.name}
+          </>
+        }
+        badge={<StatusBadge status={asset.status} />}
+      />
 
       <div className="grid gap-4 sm:grid-cols-2">
         <Card>

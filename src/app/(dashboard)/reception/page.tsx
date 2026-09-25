@@ -89,6 +89,7 @@ export default async function ReceptionPage() {
     <div className="flex flex-col gap-6">
       <WorkspaceHeader
         title="Reception"
+        module="reception"
         meta={`${branchName} — today`}
         actions={
           <>

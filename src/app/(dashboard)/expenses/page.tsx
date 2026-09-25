@@ -31,6 +31,7 @@ export default async function ExpensesPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Expenses"
+        module="finance"
         description={`${expenses.length} expense(s) — ${total.toFixed(2)} total`}
         primaryAction={canCreate && <ExpenseDialog branches={branchOptions} expenseAccounts={expenseAccounts} />}
       />

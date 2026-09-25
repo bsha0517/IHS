@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
 import { getCurrentSession } from "@/lib/auth/session"
+import { assertModuleEnabled } from "@/lib/platform/entitlements"
 import { createAdHocCharge, voidCharge } from "@/lib/domains/billing/charges"
 import { generateInvoice } from "@/lib/domains/billing/invoices"
 import { recordPayment } from "@/lib/domains/billing/payments"
@@ -21,11 +22,11 @@ export type ActionState = { error?: string; success?: boolean }
 async function requireSession() {
   const session = await getCurrentSession()
   if (!session) throw new Error("Not authenticated.")
+  await assertModuleEnabled(session.user.organizationId, "pos_billing")
   return session
 }
 
 export async function openCashierSessionAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = openCashierSessionSchema.safeParse({
     branchId: formData.get("branchId"),
     openingCash: formData.get("openingCash"),
@@ -33,6 +34,7 @@ export async function openCashierSessionAction(_prev: ActionState, formData: For
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await openSession(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to open register." }
@@ -42,7 +44,6 @@ export async function openCashierSessionAction(_prev: ActionState, formData: For
 }
 
 export async function recordCashMovementAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const cashierSessionId = String(formData.get("cashierSessionId") ?? "")
   const parsed = cashMovementSchema.safeParse({
     direction: formData.get("direction"),
@@ -52,6 +53,7 @@ export async function recordCashMovementAction(_prev: ActionState, formData: For
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await recordCashMovement(session, cashierSessionId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to record cash movement." }
@@ -61,7 +63,6 @@ export async function recordCashMovementAction(_prev: ActionState, formData: For
 }
 
 export async function closeCashierSessionAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const cashierSessionId = String(formData.get("cashierSessionId") ?? "")
   const parsed = closeCashierSessionSchema.safeParse({
     actualCash: formData.get("actualCash"),
@@ -71,6 +72,7 @@ export async function closeCashierSessionAction(_prev: ActionState, formData: Fo
 
   let closed
   try {
+    const session = await requireSession()
     closed = await closeSession(session, cashierSessionId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to close register." }
@@ -79,7 +81,6 @@ export async function closeCashierSessionAction(_prev: ActionState, formData: Fo
 }
 
 export async function createAdHocChargeAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = adHocChargeSchema.safeParse({
     patientId: formData.get("patientId"),
     branchId: formData.get("branchId"),
@@ -99,6 +100,7 @@ export async function createAdHocChargeAction(_prev: ActionState, formData: Form
   const idempotencyKey = String(formData.get("idempotencyKey") ?? "") || undefined
 
   try {
+    const session = await requireSession()
     await createAdHocCharge(session, { ...parsed.data, idempotencyKey })
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to add charge." }
@@ -108,8 +110,8 @@ export async function createAdHocChargeAction(_prev: ActionState, formData: Form
 }
 
 export async function voidChargeAction(chargeId: string, reason: string): Promise<ActionState> {
-  const session = await requireSession()
   try {
+    const session = await requireSession()
     await voidCharge(session, chargeId, reason)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to void charge." }
@@ -119,7 +121,6 @@ export async function voidChargeAction(chargeId: string, reason: string): Promis
 }
 
 export async function generateInvoiceAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const chargeIds = formData.getAll("chargeIds").map(String)
   const parsed = generateInvoiceSchema.safeParse({
     patientId: formData.get("patientId"),
@@ -133,6 +134,7 @@ export async function generateInvoiceAction(_prev: ActionState, formData: FormDa
 
   let invoice
   try {
+    const session = await requireSession()
     invoice = await generateInvoice(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to generate invoice." }
@@ -141,7 +143,6 @@ export async function generateInvoiceAction(_prev: ActionState, formData: FormDa
 }
 
 export async function recordPaymentAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const invoiceId = String(formData.get("invoiceId") ?? "")
   let rawTenders: unknown
   try {
@@ -162,6 +163,7 @@ export async function recordPaymentAction(_prev: ActionState, formData: FormData
   const idempotencyKey = String(formData.get("idempotencyKey") ?? "") || undefined
 
   try {
+    const session = await requireSession()
     await recordPayment(session, { ...parsed.data, idempotencyKey })
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to record payment." }

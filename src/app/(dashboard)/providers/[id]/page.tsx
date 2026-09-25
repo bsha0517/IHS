@@ -6,6 +6,7 @@ import { listBranches } from "@/lib/domains/identity/org-structure"
 import { listEmployeeDirectory } from "@/lib/domains/hr/employees"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { DetailHeader } from "@/components/ui/page-header"
 import { formatDate, formatDateTime } from "@/lib/utils/dates"
 import {
   AddScheduleDialog,
@@ -26,14 +27,15 @@ export default async function ProviderDetailPage({ params }: { params: Promise<{
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          {provider.firstName} {provider.lastName}
-        </h1>
-        <p className="text-sm text-muted-foreground capitalize">
-          {provider.providerType} {provider.specialty ? `· ${provider.specialty}` : ""}
-        </p>
-      </div>
+      <DetailHeader
+        module="clinical"
+        title={`${provider.firstName} ${provider.lastName}`}
+        meta={
+          <span className="capitalize">
+            {provider.providerType} {provider.specialty ? `· ${provider.specialty}` : ""}
+          </span>
+        }
+      />
 
       <div className="grid gap-4 sm:grid-cols-2">
         <Card>

@@ -19,6 +19,7 @@ export default async function SuppliersPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Suppliers"
+        module="procurement"
         description={`${suppliers.length} supplier(s)`}
         primaryAction={canManage && <SupplierDialog />}
       />

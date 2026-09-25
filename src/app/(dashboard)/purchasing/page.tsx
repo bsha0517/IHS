@@ -72,7 +72,7 @@ export default async function PurchasingPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Purchasing" />
+      <PageHeader title="Purchasing" module="procurement" />
 
       <Tabs defaultValue={sp.page ? "invoices" : sp.ordersPage ? "orders" : "requests"}>
         <TabsList>

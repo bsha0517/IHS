@@ -56,6 +56,7 @@ export default async function AssetsPage({
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Assets"
+        module="assets"
         description={`${total} asset(s)`}
         primaryAction={canManage && <AssetDialog branches={branchOptions} departments={departmentOptions} employees={employeeOptions} suppliers={supplierOptions} />}
       />

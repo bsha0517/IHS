@@ -28,6 +28,7 @@ export default async function UsersPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Users"
+        module="admin"
         description="Staff accounts, roles, and branch access."
         primaryAction={<NewUserDialog roles={roles} branches={branches} />}
       />

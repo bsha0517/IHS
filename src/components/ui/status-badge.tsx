@@ -26,9 +26,12 @@ const EXPLICIT_TONE: Record<string, StatusTone> = {
   reversed: "info",
   issued: "info",
   completed: "success",
-  // Appointments / queue
+  // Appointments / queue — P4.10 Stage 2 §15: "waiting" reads as an
+  // attention/amber state (the front desk should feel a mild urge to act on
+  // it), distinct from "checked_in"/"in_consultation" which are current,
+  // in-progress activity and stay blue/info.
   checked_in: "info",
-  waiting: "info",
+  waiting: "warning",
   in_consultation: "info",
   arrived: "info",
   scheduled: "info",
@@ -80,6 +83,32 @@ const EXPLICIT_TONE: Record<string, StatusTone> = {
   // Refund/authorization lifecycle
   requested: "warning",
   authorized: "info",
+  // P4.10 Stage 2 §48 — claim/payroll-run lifecycle: previously each detail
+  // page hand-picked its own Badge variant for these exact words (e.g.
+  // claims/[id] rendered "remitted" as the plain default/primary tone,
+  // Payroll's own run status fell back to a bare outline) — added here so
+  // "the same word means the same color everywhere" instead of only where
+  // StatusBadge already happened to be used.
+  submitted: "info",
+  adjudicated: "info",
+  remitted: "success",
+  review: "warning",
+  // Purchase order lifecycle — "received" is the PO's own terminal success
+  // state (goods received in full), same semantic slot "paid"/"completed"
+  // fill elsewhere; "partially_received" already resolves via the
+  // "partial" keyword below.
+  received: "success",
+  // P4.10 Stage 2 §41 — /admin/operations' own health-check vocabulary
+  // (healthy/warning/critical/unknown). Previously that page defined a
+  // *second*, shadowing `StatusBadge` with its own crude variant map where
+  // healthy/warning/unknown all rendered the exact same gray badge —
+  // "critical" was the only status visually distinguishable from the rest,
+  // exactly the ambiguity this phase's own §41 warns against. Added here so
+  // that page (and anything else using this exact vocabulary) resolves
+  // through the one shared tone system instead of a local duplicate.
+  healthy: "success",
+  warning: "warning",
+  unknown: "neutral",
 }
 
 const KEYWORD_TONE: [RegExp, StatusTone][] = [

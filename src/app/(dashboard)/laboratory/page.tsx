@@ -52,7 +52,7 @@ export default async function LaboratoryPage({ searchParams }: { searchParams: P
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Laboratory" />
+      <PageHeader title="Laboratory" module="laboratory" />
 
       <Tabs defaultValue="queue">
         <TabsList>

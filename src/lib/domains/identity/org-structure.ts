@@ -3,6 +3,7 @@ import { db } from "@/lib/db"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { getAuthorizedBranchScope, narrowBranchFilter, assertBranchAccess } from "@/lib/platform/branch-scope"
+import { assertWithinBranchLimit } from "@/lib/domains/commercial/organizations"
 import type { SessionContext } from "@/lib/auth/session"
 import type { BranchInput, DepartmentInput, RoomInput, OrganizationInput } from "@/lib/domains/identity/schemas"
 
@@ -60,6 +61,9 @@ export async function listBranches(session: SessionContext) {
 
 export async function createBranch(session: SessionContext, input: BranchInput) {
   assertCan(session, "branch.manage")
+  // P5.1 §17: centralized subscription branch-limit enforcement — a no-op
+  // for the pre-P5.1 seed/bootstrap organization (no subscription at all).
+  await assertWithinBranchLimit(session.user.organizationId)
   const branch = await db.branch.create({
     data: { ...input, organizationId: session.user.organizationId },
   })
@@ -90,6 +94,13 @@ export async function updateBranch(
 ) {
   assertCan(session, "branch.manage")
   const before = await db.branch.findFirstOrThrow({ where: { id: branchId, organizationId: session.user.organizationId } })
+  // P5.1 §17/§65: reactivating a branch grows the active-branch count exactly
+  // like creating one — same limit check, only when this update actually
+  // transitions inactive -> active (an update that leaves it active, or
+  // deactivates it, never needs to check).
+  if (input.status === "active" && before.status !== "active") {
+    await assertWithinBranchLimit(session.user.organizationId)
+  }
   const updated = await db.branch.update({ where: { id: branchId }, data: input })
   await auditFromSession(session, "update", "branch", branchId, { old: before, new: updated })
   return updated

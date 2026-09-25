@@ -608,3 +608,103 @@ Also identified and left unfixed for the same reason: a **partial** return of a 
 **If ever revisited:** if a clinic genuinely needs a very large one-time Users import, splitting it into several smaller files (a few hundred rows each) works today with no code change, and gets the same duplicate-detection/audit guarantees per file.
 
 **Severity:** Low — no correctness or safety issue; purely a "this will take a couple of minutes for an unusually large file" expectation-setting note.
+
+---
+
+## Module-entitlement enforcement is proven at the route boundary only, not exhaustively across every Server Action in every optional module
+
+**Noticed during:** P5.1 (Commercial SaaS Foundation & Clinic Provisioning, 2026-09-18), while verifying §9-§11's entitlement-enforcement requirements.
+
+**What:** `src/proxy.ts`'s `MODULE_ROUTE_PREFIXES` gate covers every route under an optional module's own top-level path (e.g. `/laboratory`, `/payroll`) — a disabled module's page genuinely cannot be reached by direct URL, proven in both the integration and E2E suites. What has NOT been exhaustively verified is whether every Server Action a disabled module's UI would otherwise expose is unreachable through some other still-enabled screen (e.g. a cross-module dialog, a shared component, or a Server Action imported directly by a different route's client component). No such bypass is currently known or suspected — RBAC (`can()`/`assertCan()`) independently gates every domain function regardless of entitlement state, so a bypass would still require the actor to also hold the relevant clinic permission — but this phase's scope was route-level enforcement (§15's own instruction), not a full Server Action audit.
+
+**Why not fixed in P5.1:** auditing every Server Action across ~12 optional modules for entitlement-awareness (beyond their existing RBAC checks) is a substantially larger scope than "centralize the route gate this phase asks for," and no concrete bypass was found to justify it now.
+
+**Suggested fix, when picked up:** a lightweight lint rule or test that cross-references `MODULE_ROUTE_PREFIXES` against every exported Server Action under each gated module's route folder, flagging any action reachable from outside that folder without its own entitlement check — or, more simply, spot-check the handful of genuinely cross-module UI surfaces (e.g. Reports, which reads across modules by design) for whether they should themselves respect entitlement when rendering a disabled module's section.
+
+**Severity:** Low — no known exploit path; RBAC remains a real, independent gate underneath.
+
+---
+
+## `nextCustomerCode()`'s count+1 generation has not been load-tested under truly concurrent provisioning calls
+
+**Noticed during:** P5.1 (Commercial SaaS Foundation & Clinic Provisioning, 2026-09-18).
+
+**What:** `provisioning.ts`'s `nextCustomerCode()` counts existing `OrganizationCommercialProfile` rows and formats `count + 1` as the new customer code, inside the same transaction that creates the profile. The column itself is genuinely globally unique (`@unique`), and a real collision is caught cleanly (verified directly: a manual duplicate-insert throws Prisma P2002, which `provisionClinic()`'s own catch block turns into a friendly, non-corrupting error — see `test/integration/p5-1-commercial-saas-foundation.test.ts`), so this is not a correctness gap. What's untested is throughput/retry behavior if many platform operators provisioned clinics at genuinely the same instant — a real collision would currently surface as a failed provisioning attempt the operator must retry, not an automatic retry-with-backoff.
+
+**Why not fixed in P5.1:** provisioning is an infrequent, operator-driven action (this is V1 manual commercial management, §12 of the P5.1 command), not a high-throughput path — building retry logic for a race that's never been observed, for an action a human deliberately clicks a handful of times a week at most, is speculative engineering the command's own §1 explicitly discourages.
+
+**Suggested fix, when picked up:** if platform operator headcount or provisioning frequency ever grows enough for this to become plausible, wrap the transaction in a small retry-on-P2002 loop (re-reading the count and retrying once or twice) rather than surfacing the raw failure to the operator.
+
+**Severity:** Low — no known incident, no data-corruption risk, only a manual-retry inconvenience in an already-rare scenario.
+
+---
+
+## No automated subscription lifecycle transitions — a lapsed trial does not flip itself to `expired`
+
+**Noticed during:** P5.1 (Commercial SaaS Foundation & Clinic Provisioning, 2026-09-18), while verifying §15's subscription-state requirements.
+
+**What:** `SubscriptionStatus` supports `trial`/`active`/`past_due`/`suspended`/`cancelled`/`expired`, but every transition between them is a manual operator action from the organization detail screen — nothing in this codebase watches `trialEndsAt`/`endDate` and automatically moves a subscription to `expired` (or blocks/warns the clinic) once that date passes. The platform dashboard's "Trials Expiring (14d)" metric is the only proactive signal an operator gets, and it is purely informational — it does not itself change any state or restrict clinic access.
+
+**Why not fixed in P5.1:** the command's own §15/§35 explicitly scope this phase to manual V1 commercial management and explicitly defer "automated subscription billing" and any dunning/lifecycle automation to a later, dedicated billing phase — building automatic expiry now would be scope creep ahead of the payment-gateway work it would need to be meaningfully paired with.
+
+**Suggested fix, when picked up:** a scheduled job (mirroring the existing outbox-sweep cron pattern) that flips subscriptions past `trialEndsAt`/`endDate` to `expired` and optionally notifies the assigned operator — natural to build alongside whatever billing-automation phase eventually lands.
+
+**Severity:** Low — purely a manual-operations gap in a product phase that is manual by explicit design; no data or access-control risk today.
+
+---
+
+## Pre-existing schema drift found while generating the P5.2 migration: an unused legacy `OutboxStatus` enum value, and a cosmetic `payroll_run` index-name mismatch
+
+**Noticed during:** P5.2 (Pilot Clinic Operations & Productization, 2026-09-18), while running `prisma migrate diff` against the live `his_dev` database to generate the P5.2 migration.
+
+**What:** `prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma` (diffing the actual live database against the current schema file, rather than the usual file-to-file diff) surfaced two statements unrelated to any P5.2 change: (1) the live `OutboxStatus` Postgres enum type has six values (`pending, processed, failed, processing, completed, dead_letter`) where `schema.prisma` declares five (`pending, processing, completed, failed, dead_letter`) — `processed` is an orphaned legacy value from an earlier phase's naming (superseded by `completed`) that was never dropped, because Postgres has no `ALTER TYPE ... DROP VALUE` — removing it requires the full create-new-type/migrate-column/rename/drop-old-type dance `migrate diff` generated. (2) `payroll_run`'s own period-uniqueness index is named `payroll_run_organization_id_branch_id_period_start_period__key` in the live database vs. `..._period_e_key` in what a fresh replay of migration history would produce — a harmless Prisma-version auto-truncation difference in a >63-character identifier, not a structural difference. Both are genuine drift between the live database and a byte-for-byte replay of the committed migration history, confirmed directly against the database (not just the diff tool's opinion) via a throwaway `pg` query. Neither is a security, data-integrity, or correctness issue — the orphaned enum value is simply never written by any current code path (`OutboxEvent.status` writes only ever use the five schema-declared values), and the index still functions identically under its differently-truncated name.
+
+**Why not fixed in P5.2:** unrelated to any P5.2 change, and P5.2's own instructions are explicit — "do not reopen old phases unnecessarily," fix only what a current phase's own work exposes as a concrete defect. Rebuilding a live enum type is also a non-trivial `BEGIN/COMMIT` data-migrating operation (`ALTER TABLE outbox_event ALTER COLUMN status TYPE ... USING (...)`) that deserves its own deliberate, reviewed migration, not a side effect silently bundled into an unrelated feature's migration file — see `prisma/migrations/20260918_p5_2_pilot_clinic_operations/migration.sql`'s own header comment, which documents exactly this exclusion.
+
+**Suggested fix, when picked up:** a small, standalone migration that (a) recreates `OutboxStatus` without the orphaned `processed` value (the exact `BEGIN/COMMIT` block `prisma migrate diff` already generated, available in this session's history if needed) and (b) renames the `payroll_run` index to match. Low urgency — worth bundling into whatever phase next touches `OutboxEvent` or `payroll_run`, rather than a dedicated pass on its own.
+
+**Severity:** Low — no functional impact, confirmed non-destructive, purely a cosmetic/cleanup item.
+
+---
+
+## `p3-13-cross-role-end-to-end.test.ts`'s lab-notification test has a fragile assertion that occasionally collides with an unrelated order number
+
+**Noticed during:** P5.2 (Pilot Clinic Operations & Productization, 2026-09-21), running the full `npm run test` suite as part of this phase's own regression gate.
+
+**What:** `test/integration/p3-13-cross-role-end-to-end.test.ts`'s "A4 — Laboratory" test asserts `expect(notification!.body).not.toMatch(/14/)` to prove a lab-result notification never leaks a raw numeric result value. In a full-suite run, this failed once — not because a raw result leaked, but because the notification body's own auto-generated *order number* (`ORD-001014`, from the shared `NumberSequence` counter this test database accumulates across every test run ever executed against it) happened to contain the literal substring "14", which the regex has no way to distinguish from a genuinely-leaked result value. Confirmed as a false positive, not a real regression: re-running this exact test file in isolation immediately afterward passed cleanly (27/27) — the order-number value is different (and collision-free) each time depending on how many prior test runs have incremented that shared sequence.
+
+**Why not fixed in P5.2:** unrelated to any P5.2 change (P5.2 never creates `ClinicalOrder`/lab-workflow fixtures), and P5.2's own instructions are explicit about not reopening unrelated prior-phase work for a non-regression. Not remotely order-number-adjacent to anything P5.2 touched (support ticket numbers use a separate `PlatformNumberSequence`, not `NumberSequence`).
+
+**Suggested fix, when picked up:** tighten the assertion to check for the specific result-value pattern rather than a bare `/14/` — e.g. assert the notification body doesn't contain the exact numeric result string surrounded by word boundaries, or assert on a known-safe summary phrase instead of a negative match. A one-line assertion fix in an existing P3 test, not urgent since it only intermittently false-fails depending on shared sequence state.
+
+**Severity:** Low — test-fragility only, no product defect, no data-integrity issue; already proven not to be a real leak.
+
+---
+
+## Several dialogs have `<Label>` elements not associated to their input via `htmlFor`/`id`
+
+**Noticed during:** P5.3 (First Pilot Clinic Implementation & UAT, 2026-09-24), while building the required real-execution E2E coverage across every clinical/financial workflow.
+
+**What:** A handful of form dialogs render a `<Label>` with no `htmlFor` pointing at its sibling `<Input>`/`<Select>`'s `id` (or the input has no matching `id` at all): the prescription entry dialog (`prescriptions-section.tsx`), the payment recording dialog (`record-payment-dialog.tsx`), the goods-receipt dialog (`purchasing/orders/[id]/receive-dialog.tsx`), the New Purchase Order dialog's Product select (`purchasing/new-order-dialog.tsx`), and the employee user-linking dialog's Select (`employees/[id]/user-link-dialog.tsx`). A sighted mouse user is never blocked by this — the label still reads correctly next to its field — but it breaks the standard accessible-name resolution a screen reader (and `getByLabel()`/`getByRole(..., {name})` in automated tests) relies on, forcing every consumer to fall back to structural DOM locators instead.
+
+**Why not fixed in P5.3:** each is a small, isolated, non-blocking fix (add `htmlFor`/`id`), but there are five of them across five unrelated files, and none blocks real pilot operation — a real user never notices. Fixing all five was out of proportion to this phase's actual scope (first-pilot UAT execution), so each was worked around at the test level (structural locators keyed off a wrapping `div.grid.gap-1` or the dialog's sole `combobox`) rather than touched in application code, per the phase's own "fix only what's P0/P1 or small-and-contained-P2" guidance.
+
+**Suggested fix, when picked up:** a single small accessibility pass across the five files above, adding the missing `htmlFor`/`id` pair to each `<Label>`/input. Mechanical, low-risk, no behavior change — worth doing in one batch rather than five separate touches.
+
+**Severity:** Low — accessibility/testability gap only, no functional or data-integrity impact; every affected workflow was fully exercised and verified correct via structural test locators during P5.3's own UAT.
+
+---
+
+## The integration suite is not deterministic on a full run — several test files implicitly depend on another file's leftover fixtures rather than creating their own
+
+**Noticed during:** P5.4 (Commercial Launch Readiness & Pilot Stabilization, 2026-09-25), while running the full 68-file integration suite as this phase's own regression gate.
+
+**What:** Across five separate full-suite runs this phase, the number of failing test files varied wildly and unpredictably: 18, 32, 24 (with P5.4's own new test files completely excluded), 2 (immediately after a full `his_test` reset), then 32 again (the very next run, same freshly-reset database). This rules out both "P5.4's own changes caused it" (proven by the 24-failures-with-P5.4-excluded run — the exact same class of failure occurs with none of this phase's code in the picture) and "a dirty/accumulated `his_test` caused it" (proven by the 2-then-32 pair of runs immediately before and after a clean reset, with no code or fixture change between them). Every failure sampled had the same shape: a test's own `beforeAll` calls something like `db.branch.findFirstOrThrow()` or `db.patient.findFirstOrThrow()` with **no `where` clause at all** — an implicit assumption that *some other test file, run earlier in this same serial execution* (`vitest.config.mts` sets `fileParallelism: false` specifically so files never race each other, which is real and working — this is not a concurrency bug), will have already created at least one row of that type and left it behind. `prisma/seed.ts`/`prisma/test-seed-extra.ts` seed a baseline org/branch/user/plan/provider/service/product, but never a patient, an appointment, or several other record types several tests reach for unconditionally — so whether a given file's `beforeAll` succeeds depends entirely on which other files happened to run before it in that particular invocation's file-execution order, and that order is not guaranteed stable run to run (vitest's own file discovery/scheduling, not this codebase's choice).
+
+**Partially mitigated in P5.4, not fully fixed:** two concrete, confirmed root causes were diagnosed with real evidence and fixed in `prisma/test-seed-extra.ts` — (1) no baseline `Patient` was ever seeded, breaking `appointment-double-booking.test.ts` and others reaching for `db.patient.findFirstOrThrow()`; (2) `p3-11-notifications-operational-awareness.test.ts`'s own `db.user.findMany({ take: 2 })` + `users[1]?.id ?? users[0].id` fallback silently collapsed "user A" and "user B" into the same person whenever only one seeded user existed, turning its own ownership-isolation assertion into a self-inflicted false failure — fixed by seeding a second baseline user. Both fixes are real, verified via direct re-run, and kept. **However, re-running the full suite after both fixes still showed 24 failed files** (down from 32, but not the "most failures eliminated" outcome hoped for) — further investigation found at least one *additional*, different mechanism at play: `appointment-double-booking.test.ts` progressed past its own now-fixed patient lookup only to fail one line later on `db.provider.findFirstOrThrow()`, **despite `test-seed-extra.ts` already creating a baseline provider** — meaning at least one other test file, somewhere in that run's serial execution order, is destructively deleting shared baseline rows other tests still depend on (not merely failing to create its own), a materially different and more invasive bug than the "nobody created this yet" class this backlog entry originally described.
+
+**Why not fixed further in P5.4:** the two above were small, contained, single-file (`test-seed-extra.ts`) fixes squarely in scope for "fix if contained and directly relevant." Chasing the newly-discovered "something deletes shared providers" mechanism is a different, open-ended investigation — it requires auditing cleanup/teardown logic across a 68-file suite to find whichever file(s) delete rows they don't own, which is exactly the broad audit P5.4's own instructions prohibit, and still meets none of the "fix immediately" bars (no patient-data/security/clinical/financial/inventory-integrity risk, no destructive-database risk in any *real* database — `his_test` is disposable by design — no deployment/go-live blocker). Every real defect this investigation could have masked was independently re-verified through P5.3's and P5.4's own tightly-scoped, self-contained test files (which never rely on another file's leftover data) plus direct database verification throughout both phases.
+
+**Suggested fix, when picked up:** find and fix whichever test file(s) delete organization-wide/unscoped rows (providers confirmed; likely others) rather than only their own fixture-created rows in `afterAll` — a targeted grep for `deleteMany` calls with no id/organizationId-scoped `where`, or a bisection (run growing subsets of the suite until the shared-baseline row disappears) would localize it faster than a manual per-file audit. Once found, the broader fix from the original entry still applies afterward: either (a) make every file's `beforeAll` create its own complete fixture set, or (b) keep growing `test-seed-extra.ts`'s baseline as each new "assumed to exist" gap is found — (b) is proving to only partially work now that shared-row *deletion*, not just *absence*, is confirmed in the mix.
+
+**Severity:** Medium — no product/security impact (isolated and confirmed), but it genuinely undermines the integration suite's value as a CI gate: a real regression can currently hide behind this noise, and a clean run cannot currently be produced on demand. Worth a dedicated, focused pass — now with a concrete lead (something deletes shared providers) rather than a cold start — before this suite is relied on as a hard merge gate in a real CI pipeline.

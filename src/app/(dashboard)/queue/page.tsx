@@ -41,6 +41,7 @@ export default async function QueuePage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Queue"
+        module="reception"
         description={
           <>
             Patients waiting or in consultation today.

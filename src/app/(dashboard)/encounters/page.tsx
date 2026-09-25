@@ -49,7 +49,7 @@ export default async function EncountersPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Encounters" description={`${total} encounter(s)`} />
+      <PageHeader title="Encounters" module="clinical" description={`${total} encounter(s)`} />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <form className="flex max-w-md items-center gap-2">

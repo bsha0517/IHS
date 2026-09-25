@@ -31,7 +31,7 @@ export default async function AttendancePage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Attendance" />
+      <PageHeader title="Attendance" module="hr" />
 
       <Tabs defaultValue="roster">
         <TabsList>

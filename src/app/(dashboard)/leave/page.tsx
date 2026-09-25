@@ -33,7 +33,7 @@ export default async function LeavePage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Leave" />
+      <PageHeader title="Leave" module="hr" />
 
       <Tabs defaultValue="requests">
         <TabsList>

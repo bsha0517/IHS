@@ -29,6 +29,7 @@ export default async function PatientsPage({
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Patients"
+        module="patients"
         description={`${total} registered patient(s)`}
         primaryAction={
           can(session, "patient.create") && (

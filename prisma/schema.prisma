@@ -113,6 +113,21 @@ model Organization {
   idempotencyKeys         IdempotencyKey[]
   accountingPeriods       AccountingPeriod[]
 
+  // P5.1 — commercial SaaS layer. Optional/1:1 rather than required fields
+  // bolted directly onto Organization (§5's own "prefer separation if
+  // commercial fields would pollute the core Organization model") — an
+  // Organization created by the pre-P5.1 seed/bootstrap path has neither,
+  // and that remains a valid, fully operational tenant; the commercial
+  // profile is what a clinic gains by being provisioned through the new
+  // platform workflow, not a property every tenant must always carry.
+  commercialProfile OrganizationCommercialProfile?
+  subscriptions     OrganizationSubscription[]
+
+  // P5.2 — pilot clinic operations layer, same optional-relation reasoning.
+  onboardingChecklistItems OnboardingChecklistItem[]
+  supportTickets           SupportTicket[]
+  pilotUats                PilotUat[]
+
   @@map("organization")
 }
 
@@ -376,6 +391,13 @@ model Session {
 enum LoginChannel {
   staff
   portal
+  // P5.1 §19/§21: the platform-operator login surface — a third, fully
+  // separate identity plane from `staff`/`portal` (see PlatformOperator's
+  // own doc comment). Added here rather than a parallel LoginHistory table
+  // so the existing IP-based brute-force throttle (rate-limit.ts) covers it
+  // for free, the same way P4.3 already unified staff+portal onto this one
+  // table instead of building a second.
+  platform
 }
 
 model LoginHistory {
@@ -654,36 +676,36 @@ enum ImportJobStatus {
 // validated, not a swapped-in different file. `summary` carries the last
 // dry-run's own counts/preview (small, aggregate — never raw row data).
 model ImportJob {
-  id               String          @id @default(uuid())
-  organizationId   String          @map("organization_id")
-  branchId         String?         @map("branch_id")
-  type             String
-  templateVersion  String          @map("template_version")
-  status           ImportJobStatus @default(uploaded)
-  fileName         String          @map("file_name")
+  id              String          @id @default(uuid())
+  organizationId  String          @map("organization_id")
+  branchId        String?         @map("branch_id")
+  type            String
+  templateVersion String          @map("template_version")
+  status          ImportJobStatus @default(uploaded)
+  fileName        String          @map("file_name")
   // SHA-256 of the uploaded file's exact bytes — the commit-freshness token
   // (P4.6 §38): commit re-parses and re-validates the resubmitted file from
   // scratch, then confirms this hash still matches before touching any
   // domain row, so a commit can never silently apply to a different/edited
   // file than the one the dry-run's preview was actually showing.
-  contentHash      String          @map("content_hash")
-  totalRows        Int             @default(0) @map("total_rows")
-  validRows        Int             @default(0) @map("valid_rows")
-  invalidRows      Int             @default(0) @map("invalid_rows")
-  duplicateRows    Int             @default(0) @map("duplicate_rows")
-  importedRows     Int             @default(0) @map("imported_rows")
-  skippedRows      Int             @default(0) @map("skipped_rows")
+  contentHash     String          @map("content_hash")
+  totalRows       Int             @default(0) @map("total_rows")
+  validRows       Int             @default(0) @map("valid_rows")
+  invalidRows     Int             @default(0) @map("invalid_rows")
+  duplicateRows   Int             @default(0) @map("duplicate_rows")
+  importedRows    Int             @default(0) @map("imported_rows")
+  skippedRows     Int             @default(0) @map("skipped_rows")
   // Small, aggregate-only preview/summary data (first ~50 rows' classification,
   // never full source rows) — see engine.ts's own doc comment on why this
   // stays deliberately narrow (P4.6 §12: "avoid storing full source rows
   // containing sensitive patient data").
-  summary          Json?
-  startedBy        String          @map("started_by")
-  startedAt        DateTime        @default(now()) @map("started_at") @db.Timestamptz(3)
-  completedAt      DateTime?       @map("completed_at") @db.Timestamptz(3)
+  summary         Json?
+  startedBy       String          @map("started_by")
+  startedAt       DateTime        @default(now()) @map("started_at") @db.Timestamptz(3)
+  completedAt     DateTime?       @map("completed_at") @db.Timestamptz(3)
 
-  organization Organization      @relation(fields: [organizationId], references: [id])
-  branch       Branch?           @relation(fields: [branchId], references: [id])
+  organization  Organization     @relation(fields: [organizationId], references: [id])
+  branch        Branch?          @relation(fields: [branchId], references: [id])
   // P2 §14, Category A: who ran a bulk import is real operational/audit
   // evidence — must survive that admin's own account being deactivated.
   startedByUser User             @relation("ImportJobStarter", fields: [startedBy], references: [id], onDelete: Restrict)
@@ -3761,30 +3783,30 @@ enum DispensingStatus {
 // non-cancelled records, never a stored counter. dispensingNumber uses the
 // "DISP" sequence.
 model DispensingRecord {
-  id                 String           @id @default(uuid())
-  organizationId     String           @map("organization_id")
-  branchId           String           @map("branch_id")
-  dispensingNumber   String           @map("dispensing_number")
-  prescriptionId     String           @map("prescription_id")
-  prescriptionItemId String           @map("prescription_item_id")
-  medicationId       String           @map("medication_id")
-  patientId          String           @map("patient_id")
-  quantityDispensed  Int              @map("quantity_dispensed")
-  status             DispensingStatus @default(pending)
-  chargeId           String?          @unique @map("charge_id")
-  verifiedBy         String?          @map("verified_by")
-  verifiedAt         DateTime?        @map("verified_at") @db.Timestamptz(3)
-  dispensedBy        String?          @map("dispensed_by")
-  dispensedAt        DateTime?        @map("dispensed_at") @db.Timestamptz(3)
-  notes              String?
+  id                    String           @id @default(uuid())
+  organizationId        String           @map("organization_id")
+  branchId              String           @map("branch_id")
+  dispensingNumber      String           @map("dispensing_number")
+  prescriptionId        String           @map("prescription_id")
+  prescriptionItemId    String           @map("prescription_item_id")
+  medicationId          String           @map("medication_id")
+  patientId             String           @map("patient_id")
+  quantityDispensed     Int              @map("quantity_dispensed")
+  status                DispensingStatus @default(pending)
+  chargeId              String?          @unique @map("charge_id")
+  verifiedBy            String?          @map("verified_by")
+  verifiedAt            DateTime?        @map("verified_at") @db.Timestamptz(3)
+  dispensedBy           String?          @map("dispensed_by")
+  dispensedAt           DateTime?        @map("dispensed_at") @db.Timestamptz(3)
+  notes                 String?
   // Targeted backlog closure, item 8: true only when the selected catalog
   // medication didn't obviously match the prescribed one (see
   // src/lib/utils/medication-match.ts) AND the pharmacist explicitly
   // confirmed the substitution was intentional — never set for an ordinary,
   // obviously-matching dispense. Default false, not "unknown" — a normal
   // dispense against a matching medication never needed confirmation.
-  substitutionConfirmed Boolean       @default(false) @map("substitution_confirmed")
-  createdAt          DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  substitutionConfirmed Boolean          @default(false) @map("substitution_confirmed")
+  createdAt             DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
 
   organization     Organization       @relation(fields: [organizationId], references: [id])
   branch           Branch             @relation(fields: [branchId], references: [id])
@@ -3969,16 +3991,16 @@ model ImagingReportAmendment {
   amendedBy      String   @map("amended_by")
   amendedAt      DateTime @default(now()) @map("amended_at") @db.Timestamptz(3)
 
-  organization Organization @relation(fields: [organizationId], references: [id])
+  organization  Organization @relation(fields: [organizationId], references: [id])
   // Restrict, not Cascade — an ImagingOrder with a real correction history
   // must never disappear with it (same P0-05 discipline as ImagingOrder's
   // own relation to ClinicalOrder).
-  imagingOrder ImagingOrder @relation(fields: [imagingOrderId], references: [id], onDelete: Restrict)
+  imagingOrder  ImagingOrder @relation(fields: [imagingOrderId], references: [id], onDelete: Restrict)
   // P2 §14, Category A: who corrected a finalized clinical report is
   // patient-safety/medico-legal evidence — must survive that staff member's
   // account being deactivated, same reasoning as every other clinical actor
   // FK in this schema.
-  amendedByUser User @relation("ImagingReportAmendmentAmender", fields: [amendedBy], references: [id], onDelete: Restrict)
+  amendedByUser User         @relation("ImagingReportAmendmentAmender", fields: [amendedBy], references: [id], onDelete: Restrict)
 
   @@index([imagingOrderId, amendedAt])
   @@map("imaging_report_amendment")
@@ -4382,4 +4404,564 @@ model PatientPortalSession {
   @@index([portalAccountId])
   @@index([expiresAt])
   @@map("patient_portal_session")
+}
+
+// ---------------------------------------------------------------------------
+// P5.1 — Platform / Commercial SaaS Foundation
+//
+// A THIRD, fully separate identity plane alongside staff (User/Session) and
+// the patient portal (PatientPortalAccount/PatientPortalSession) — see
+// PlatformOperator's own doc comment for why a clinic's own Super Admin can
+// never become one of these. Everything below this line is Avant's own
+// commercial/operational metadata about its clinic customers, never the
+// clinic's own patient/clinical/financial data.
+// ---------------------------------------------------------------------------
+
+enum PlatformOperatorStatus {
+  active
+  suspended
+}
+
+/**
+ * P5.1 §19/§21/§84: the people who operate Avant itself (SaaS admin,
+ * implementation manager, support operator) — deliberately NOT a `User` row.
+ * `User.organizationId` is required and every tenant-scoped query in this
+ * codebase filters by it; giving Avant's own staff a `User` record would
+ * force them into exactly one clinic's tenant boundary (or require special-
+ * casing every tenant query to recognize them, a much larger and riskier
+ * change). A dedicated table with its own password hash and its own session
+ * table (PlatformSession, below — mirroring PatientPortalSession's own
+ * precedent) means a clinic Super Admin — however powerful within their own
+ * organization — has no row here at all and therefore no path to a
+ * PlatformSession cookie. Proven by test, not just by construction: see
+ * test/integration/p5-1-platform-authorization.test.ts.
+ */
+model PlatformOperator {
+  id               String                 @id @default(uuid())
+  email            String                 @unique
+  passwordHash     String                 @map("password_hash")
+  firstName        String                 @map("first_name")
+  lastName         String                 @map("last_name")
+  status           PlatformOperatorStatus @default(active)
+  failedLoginCount Int                    @default(0) @map("failed_login_count")
+  lockedUntil      DateTime?              @map("locked_until") @db.Timestamptz(3)
+  lastLoginAt      DateTime?              @map("last_login_at") @db.Timestamptz(3)
+  createdAt        DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime               @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  sessions        PlatformSession[]
+  idempotencyKeys PlatformIdempotencyKey[]
+
+  @@map("platform_operator")
+}
+
+/**
+ * Mirrors `Session`/`PatientPortalSession` exactly — see PlatformOperator's own doc comment for why this is a separate table rather than a shared one.
+ */
+model PlatformSession {
+  id         String    @id @default(uuid())
+  operatorId String    @map("operator_id")
+  tokenHash  String    @unique @map("token_hash")
+  ip         String?
+  userAgent  String?   @map("user_agent")
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  operator PlatformOperator @relation(fields: [operatorId], references: [id], onDelete: Cascade)
+
+  @@index([operatorId])
+  @@index([expiresAt])
+  @@map("platform_session")
+}
+
+/**
+ * P5.1 §25/§60/§61: mirrors `IdempotencyKey` exactly (same claim/record/
+ * resolve pattern — see platform/idempotency.ts), scoped by `operatorId`
+ * instead of `organizationId`. A genuinely separate table, not a "weaker
+ * parallel mechanism" (§60's own phrase) — `IdempotencyKey.organizationId`
+ * is required and FK-checked, and clinic provisioning is precisely the one
+ * operation that has no organization yet at the moment it must be claimed.
+ */
+model PlatformIdempotencyKey {
+  id         String   @id @default(uuid())
+  operatorId String   @map("operator_id")
+  scope      String
+  key        String
+  resultId   String?  @map("result_id")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  operator PlatformOperator @relation(fields: [operatorId], references: [id])
+
+  @@unique([operatorId, scope, key])
+  @@map("platform_idempotency_key")
+}
+
+// P5.1 §6/§31: deliberately separate from `OrgStatus` (active/suspended —
+// the existing, proven, security-critical runtime-access enforcement,
+// UNCHANGED by this phase). `CommercialLifecycle` is the business/
+// implementation-workflow dimension — "is this customer still onboarding,
+// live, or closed" — answerable independently of whether their staff can
+// currently log in today. A suspended-but-still-commercially-live org and a
+// closed-but-technically-still-active-until-cutover org are both real,
+// distinct states this separation lets the platform represent honestly.
+enum CommercialLifecycle {
+  onboarding
+  live
+  closed
+}
+
+// P5.1 §30/§31: the commercial/implementation workflow state — distinct from
+// `readiness.ts`'s `OnboardingStatus` TYPE (derived live from actual system
+// configuration; deliberately not a DB enum at all, deliberately not
+// renamed here to avoid colliding with that existing name in generated
+// client types). An operator cannot mark this LIVE and thereby override a
+// missing accounting mapping — readiness.ts's derived readiness stays the
+// sole authority on technical readiness (§31); this column only ever
+// records where the human implementation project itself stands.
+enum CommercialOnboardingStatus {
+  not_started
+  in_progress
+  ready_for_uat
+  uat
+  ready_for_go_live
+  live
+}
+
+enum UatStatus {
+  not_started
+  in_progress
+  passed
+  failed
+}
+
+/**
+ * P5.1 §5: commercial/customer metadata, kept off the core `Organization`
+ * model (§5's own explicit preference) — an org created by the original
+ * seed/bootstrap path has none of this and remains a fully valid tenant;
+ * this is what a clinic gains by being provisioned through the platform
+ * workflow. §57 data minimization: only fields with a real operational
+ * purpose (identify the customer, contact them, administer their
+ * subscription, implement their clinic, support their go-live) — no
+ * unnecessary personal data.
+ */
+model OrganizationCommercialProfile {
+  id             String @id @default(uuid())
+  organizationId String @unique @map("organization_id")
+
+  // P5.1 §61: human-readable, support-facing, never derived from patient
+  // information, never secret — e.g. "AVT-000123".
+  customerCode String @unique @map("customer_code")
+
+  legalBusinessName   String? @map("legal_business_name")
+  primaryContactName  String? @map("primary_contact_name")
+  primaryContactEmail String? @map("primary_contact_email")
+  primaryContactPhone String? @map("primary_contact_phone")
+  billingContactName  String? @map("billing_contact_name")
+  billingContactEmail String? @map("billing_contact_email")
+
+  // P5.1 §49: ISO 3166-1 alpha-2 ("PK", "AE", "SA", ...) — a stable
+  // representation for a future P6 regulatory profile to key off of.
+  // Deliberately no country-specific behavior lives anywhere in P5.1 itself.
+  country String
+
+  commercialLifecycle CommercialLifecycle        @default(onboarding) @map("commercial_lifecycle")
+  onboardingStatus    CommercialOnboardingStatus @default(not_started) @map("onboarding_status")
+  uatStatus           UatStatus                  @default(not_started) @map("uat_status")
+  uatNote             String?                    @map("uat_note")
+
+  // Free text — "who at Avant is implementing this clinic," not a foreign
+  // key to PlatformOperator (a named contact may leave Avant without that
+  // needing a schema migration; this is support-facing metadata, not an
+  // access grant).
+  implementationOwner String? @map("implementation_owner")
+  internalNotes       String? @map("internal_notes")
+
+  // P5.2 §4: recorded ONLY by `approveGoLive()` (commercial/organizations.ts)
+  // after its own server-side validation of every required go-live
+  // condition, subscription state, and org-suspension check passes — never
+  // set directly by any other mutation. `goLiveApprovedAt` being non-null is
+  // the durable record that an approval genuinely happened, independent of
+  // `onboardingStatus`/`commercialLifecycle` possibly changing again later.
+  goLiveApprovedByOperatorId String?   @map("go_live_approved_by_operator_id")
+  goLiveApprovedAt           DateTime? @map("go_live_approved_at") @db.Timestamptz(3)
+  goLiveNotes                String?   @map("go_live_notes")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization     Organization               @relation(fields: [organizationId], references: [id])
+  subscriptions    OrganizationSubscription[]
+  goLiveConditions GoLiveCondition[]
+
+  @@map("organization_commercial_profile")
+}
+
+/**
+ * P5.1 §9: the product offering — what a clinic can purchase — distinct from
+ * `OrganizationSubscription` (§10: a specific clinic's commercial
+ * relationship to one of these). `defaultModuleKeys` seeds a new
+ * subscription's module entitlements at provisioning time (§29); it is a
+ * template, not itself an entitlement grant — the actual per-organization
+ * enabled/disabled state lives in `Setting` (see platform/entitlements.ts),
+ * so changing a Plan's own defaults later never silently changes any
+ * already-provisioned clinic's actual entitlements (§41/§42 — a plan change
+ * must never delete/disable data out from under a live clinic).
+ */
+model CommercialPlan {
+  id          String  @id @default(uuid())
+  code        String  @unique
+  name        String
+  description String?
+  active      Boolean @default(true)
+
+  userLimit         Int?     @map("user_limit")
+  branchLimit       Int?     @map("branch_limit")
+  defaultModuleKeys String[] @map("default_module_keys")
+
+  notes     String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  subscriptions OrganizationSubscription[]
+
+  @@map("commercial_plan")
+}
+
+// P5.1 §11/§12: an honest representation of manual V1 commercial operations
+// — no payment gateway, no automated billing. `past_due`/`expired` are
+// recorded by a platform operator's own judgment (§38's own caution against
+// "automatically lock a clinic out... because a date passed" — nothing in
+// this schema or its consuming code transitions a subscription's status on
+// a timer).
+enum SubscriptionStatus {
+  trial
+  active
+  past_due
+  suspended
+  cancelled
+  expired
+}
+
+enum BillingCycle {
+  monthly
+  quarterly
+  annual
+  custom
+}
+
+/**
+ * P5.1 §10/§18: a clinic's actual commercial relationship to a `Plan` —
+ * `agreedUserLimit`/`agreedBranchLimit` are explicit, auditable per-org
+ * overrides (§18: "keep overrides explicit... rather than creating a
+ * one-off Plan") that take precedence over the Plan's own limits when set.
+ * Multiple rows may exist for one organization over time — a plan change or
+ * renewal creates a NEW row rather than mutating history in place (the same
+ * append-friendly convention this codebase already uses for e.g.
+ * ClinicalNote versions); the current subscription is simply the most
+ * recent row, ordered by `createdAt`.
+ */
+model OrganizationSubscription {
+  id                  String @id @default(uuid())
+  organizationId      String @map("organization_id")
+  commercialProfileId String @map("commercial_profile_id")
+  planId              String @map("plan_id")
+
+  status      SubscriptionStatus @default(trial)
+  startDate   DateTime           @map("start_date") @db.Date
+  endDate     DateTime?          @map("end_date") @db.Date
+  trialEndsAt DateTime?          @map("trial_ends_at") @db.Date
+
+  agreedUserLimit   Int? @map("agreed_user_limit")
+  agreedBranchLimit Int? @map("agreed_branch_limit")
+
+  // P5.1 §52: Decimal storage, never floating point — the same money-safe
+  // convention as every clinic-side financial amount in this schema.
+  // Deliberately never posted into the clinic's own `Journal`/Finance module
+  // (§53 — Avant's own SaaS revenue is not the clinic's business
+  // transaction) and deliberately no recurring-billing logic anywhere near
+  // this column — manual invoicing outside Avant records the number here.
+  agreedAmount Decimal?      @map("agreed_amount") @db.Decimal(12, 2)
+  currency     String?
+  billingCycle BillingCycle? @map("billing_cycle")
+
+  notes     String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization      Organization                  @relation(fields: [organizationId], references: [id])
+  commercialProfile OrganizationCommercialProfile @relation(fields: [commercialProfileId], references: [id])
+  plan              CommercialPlan                @relation(fields: [planId], references: [id])
+
+  @@index([organizationId, createdAt])
+  @@map("organization_subscription")
+}
+
+// P5.1 §33/§34: the four external prerequisites P4.9.1 established as
+// authoritative for a real first-clinic go-live — tracked here as
+// operator-recorded EVIDENCE that the external action happened, never the
+// external system itself and never a secret (§34: no credentials, no
+// tokens, no backup files, no patient data).
+enum GoLiveConditionCode {
+  backup_restore_rehearsal
+  error_monitoring
+  clinic_uat_signoff
+  transactional_email
+}
+
+enum GoLiveConditionStatus {
+  pending
+  complete
+  not_applicable
+  // P5.2: added so a condition that is actively obstructed (e.g. a failed
+  // restore rehearsal, not just "not yet attempted") can be represented
+  // distinctly from `pending` — existing `pending`/`complete`/
+  // `not_applicable` values and their meaning are unchanged; this is purely
+  // additive, per P5.2's own "preserve them" instruction for the four
+  // existing go-live conditions.
+  blocked
+}
+
+model GoLiveCondition {
+  id                    String                @id @default(uuid())
+  commercialProfileId   String                @map("commercial_profile_id")
+  code                  GoLiveConditionCode
+  status                GoLiveConditionStatus @default(pending)
+  completedByOperatorId String?               @map("completed_by_operator_id")
+  completedAt           DateTime?             @map("completed_at") @db.Timestamptz(3)
+  note                  String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  commercialProfile OrganizationCommercialProfile @relation(fields: [commercialProfileId], references: [id])
+
+  @@unique([commercialProfileId, code])
+  @@map("go_live_condition")
+}
+
+// ---------------------------------------------------------------------------
+// P5.2 — Pilot Clinic Operations & Productization
+// ---------------------------------------------------------------------------
+
+enum OnboardingChecklistStatus {
+  not_started
+  in_progress
+  blocked
+  completed
+  waived
+}
+
+/**
+ * P5.2 §2: a manually operator-tracked implementation project checklist —
+ * deliberately NOT derived from live system state (that's
+ * `readiness.ts`'s own, untouched job — see its doc comment). This is "has
+ * the human implementation project actually done X," not "does the database
+ * currently contain configuration Y." An item's existence for a given
+ * organization is seeded from a fixed, code-defined catalog
+ * (`ONBOARDING_CHECKLIST_ITEMS` in `onboarding-checklist.ts`), filtered by
+ * that org's real module entitlements at seed time — never an operator
+ * inventing a requirement Avant HIS doesn't actually support.
+ *
+ * `category`/`key` are plain validated strings, not DB enums — the same
+ * "extensible-but-bounded set is cheaper to grow as a validated string"
+ * choice this codebase already made for `NumberSequence.sequenceType` and
+ * `ModuleKey`. `label` is a denormalized snapshot of the catalog's wording
+ * at seed time, so a later catalog copy edit never silently rewrites what
+ * an operator is already looking at.
+ */
+model OnboardingChecklistItem {
+  id             String @id @default(uuid())
+  organizationId String @map("organization_id")
+
+  category String
+  key      String
+  label    String
+  required Boolean @default(true)
+
+  status                OnboardingChecklistStatus @default(not_started)
+  ownerLabel            String?                   @map("owner_label")
+  dueDate               DateTime?                 @map("due_date") @db.Date
+  notes                 String?
+  evidenceReference     String?                   @map("evidence_reference")
+  completedByOperatorId String?                   @map("completed_by_operator_id")
+  completedAt           DateTime?                 @map("completed_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, key])
+  @@index([organizationId, category])
+  @@map("onboarding_checklist_item")
+}
+
+enum SupportTicketStatus {
+  open
+  in_progress
+  waiting_on_customer
+  resolved
+  closed
+}
+
+enum SupportTicketPriority {
+  low
+  normal
+  high
+  critical
+}
+
+/**
+ * P5.2 §7/§8: a lightweight platform support record, not a full helpdesk.
+ * `ticketNumber` is generated via the existing `nextNumber()`/
+ * `NumberSequence` mechanism (`platform/sequences.ts`), never the naive
+ * `count()+1` pattern `nextCustomerCode()` used (P5.1's own flagged
+ * concurrency limitation) — support tickets are a much higher-frequency,
+ * multi-actor-driven path than clinic provisioning, so the race this avoids
+ * is genuinely plausible here.
+ *
+ * `createdByOperatorId`/`createdByUserId` are both nullable and mutually
+ * exclusive by convention (enforced in `support-tickets.ts`, not the
+ * schema) — a ticket is filed either by a platform operator (on the
+ * clinic's behalf, e.g. a phone/email contact) or by a clinic user
+ * (self-service). `category`/`priority`/`status` follow the same
+ * validated-string-or-narrow-enum precedent as the rest of this file.
+ */
+model SupportTicket {
+  id             String @id @default(uuid())
+  organizationId String @map("organization_id")
+  ticketNumber   String @unique @map("ticket_number")
+
+  title       String
+  description String
+  category    String
+  priority    SupportTicketPriority @default(normal)
+  status      SupportTicketStatus   @default(open)
+
+  assignedOperatorId  String? @map("assigned_operator_id")
+  createdByOperatorId String? @map("created_by_operator_id")
+  createdByUserId     String? @map("created_by_user_id")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization        @relation(fields: [organizationId], references: [id])
+  notes        SupportTicketNote[]
+
+  @@index([organizationId, status])
+  @@index([assignedOperatorId])
+  @@map("support_ticket")
+}
+
+enum SupportTicketNoteVisibility {
+  internal
+  customer
+}
+
+/**
+ * P5.2 §8: `visibility` is the ONLY thing that ever decides whether a
+ * clinic user can read a given note — `internal` notes must never reach a
+ * clinic-facing query. `organizationId` is denormalized from the parent
+ * ticket (not just reachable via a join) so every clinic-side read query can
+ * scope directly on this table without trusting the ticket relation alone.
+ */
+model SupportTicketNote {
+  id             String @id @default(uuid())
+  ticketId       String @map("ticket_id")
+  organizationId String @map("organization_id")
+
+  body       String
+  visibility SupportTicketNoteVisibility @default(internal)
+
+  authorOperatorId String? @map("author_operator_id")
+  authorUserId     String? @map("author_user_id")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId])
+  @@index([organizationId])
+  @@map("support_ticket_note")
+}
+
+/**
+ * P5.2 §7: a genuinely platform-wide (no organizationId) counterpart to
+ * `NumberSequence` — needed because `SupportTicket.ticketNumber` is
+ * globally unique (a real support desk references "SUP-000123" standalone,
+ * not "SUP-000123 for this specific organization"), but `NumberSequence`
+ * itself is deliberately always org-scoped (`organizationId` is a required
+ * FK there, correctly so for every existing sequence type: MRN, INV, RX,
+ * ...). Reusing `NumberSequence` for ticket numbers would have every
+ * organization's counter independently start at 1, colliding on the
+ * global unique constraint the moment a second organization's first ticket
+ * is filed — a real bug this phase's own integration test caught directly
+ * (two different organizations' first tickets both generating "SUP-000001").
+ * Mirrors `nextNumber()`'s exact atomic UPDATE...RETURNING pattern —
+ * see `nextPlatformNumber()` in platform/sequences.ts.
+ */
+model PlatformNumberSequence {
+  id           String @id @default(uuid())
+  sequenceType String @unique @map("sequence_type")
+  currentValue Int    @default(0) @map("current_value")
+
+  @@map("platform_number_sequence")
+}
+
+enum PilotUatResultStatus {
+  in_progress
+  passed
+  failed
+}
+
+/**
+ * P5.2 §11/§13: one row per UAT cycle for an organization. `testerName` is
+ * free text (mirrors `implementationOwner`'s own precedent) — a pilot
+ * tester is very often clinic staff, not necessarily a `User` or
+ * `PlatformOperator` row. `signedOffByOperatorId`/`signedOffAt` are the
+ * durable signoff record; per-scenario detail lives in `PilotUatResult`.
+ */
+model PilotUat {
+  id             String @id @default(uuid())
+  organizationId String @map("organization_id")
+
+  cycleLabel  String    @map("cycle_label")
+  testerName  String    @map("tester_name")
+  startedAt   DateTime? @map("started_at") @db.Timestamptz(3)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(3)
+
+  result   PilotUatResultStatus @default(in_progress)
+  blockers String?
+  notes    String?
+
+  signedOffByOperatorId String?   @map("signed_off_by_operator_id")
+  signedOffAt           DateTime? @map("signed_off_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization      @relation(fields: [organizationId], references: [id])
+  scenarios    PilotUatScenario[]
+
+  @@index([organizationId, createdAt])
+  @@map("pilot_uat")
+}
+
+/** One pass/fail row per pilot checklist scenario (§11's Reception/Doctor/Inventory/Billing/Finance/clinical/multi-user/multi-branch/security areas) — `area`/`scenario` are free validated strings, not an enum (the pilot checklist's own scenario list is expected to evolve). */
+model PilotUatScenario {
+  id    String @id @default(uuid())
+  uatId String @map("uat_id")
+
+  area     String
+  scenario String
+  passed   Boolean?
+  notes    String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  uat PilotUat @relation(fields: [uatId], references: [id], onDelete: Cascade)
+
+  @@index([uatId])
+  @@map("pilot_uat_scenario")
 }

@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
+import { assertModuleEnabled } from "@/lib/platform/entitlements"
 import { createAsset, updateAsset, updateAssetStatus, addMaintenanceRecord, addCalibrationRecord } from "@/lib/domains/assets/assets"
 import { assetSchema, maintenanceRecordSchema, calibrationRecordSchema } from "@/lib/domains/assets/schemas"
 
@@ -10,6 +11,7 @@ export type ActionState = { error?: string; success?: boolean }
 async function requireSession() {
   const session = await getCurrentSession()
   if (!session) throw new Error("Not authenticated.")
+  await assertModuleEnabled(session.user.organizationId, "assets")
   return session
 }
 
@@ -34,11 +36,11 @@ function readAssetForm(formData: FormData) {
 }
 
 export async function createAssetAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = readAssetForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await createAsset(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to create asset." }
@@ -48,12 +50,12 @@ export async function createAssetAction(_prev: ActionState, formData: FormData):
 }
 
 export async function updateAssetAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const assetId = String(formData.get("assetId") ?? "")
   const parsed = readAssetForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await updateAsset(session, assetId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to update asset." }
@@ -70,7 +72,6 @@ export async function updateAssetStatusAction(assetId: string, status: string) {
 }
 
 export async function addMaintenanceRecordAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const assetId = String(formData.get("assetId") ?? "")
   const parsed = maintenanceRecordSchema.safeParse({
     maintenanceType: formData.get("maintenanceType"),
@@ -83,6 +84,7 @@ export async function addMaintenanceRecordAction(_prev: ActionState, formData: F
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await addMaintenanceRecord(session, assetId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to add maintenance record." }
@@ -92,7 +94,6 @@ export async function addMaintenanceRecordAction(_prev: ActionState, formData: F
 }
 
 export async function addCalibrationRecordAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const assetId = String(formData.get("assetId") ?? "")
   const parsed = calibrationRecordSchema.safeParse({
     calibrationDate: formData.get("calibrationDate"),
@@ -104,6 +105,7 @@ export async function addCalibrationRecordAction(_prev: ActionState, formData: F
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await addCalibrationRecord(session, assetId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to add calibration record." }

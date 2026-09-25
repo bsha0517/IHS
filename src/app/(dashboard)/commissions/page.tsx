@@ -31,7 +31,7 @@ export default async function CommissionsPage({ searchParams }: { searchParams: 
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Commissions" />
+      <PageHeader title="Commissions" module="hr" />
 
       <Tabs defaultValue="rules">
         <TabsList>

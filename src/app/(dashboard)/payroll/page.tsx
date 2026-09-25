@@ -28,7 +28,7 @@ export default async function PayrollPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Payroll" primaryAction={canProcess && <NewRunDialog branches={branchOptions} />} />
+      <PageHeader title="Payroll" module="hr" primaryAction={canProcess && <NewRunDialog branches={branchOptions} />} />
 
       <Card>
         <CardContent className="pt-6">

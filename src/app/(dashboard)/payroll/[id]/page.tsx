@@ -6,8 +6,9 @@ import { getPayrollRun } from "@/lib/domains/payroll/payroll"
 import { formatDate } from "@/lib/utils/dates"
 import { Card, CardContent } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
 import { Button } from "@/components/ui/button"
+import { DetailHeader } from "@/components/ui/page-header"
 import { LineEditDialog } from "@/app/(dashboard)/payroll/[id]/line-edit-dialog"
 import { MoveToReviewButton, ApproveRunButton, MarkPaidDialog } from "@/app/(dashboard)/payroll/[id]/workflow-actions"
 
@@ -24,22 +25,24 @@ export default async function PayrollRunDetailPage({ params }: { params: Promise
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Payroll — {formatDate(run.periodStart)} to {formatDate(run.periodEnd)}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            {run.branch.name} · {run.lines.length} employee(s) · Total net {totalNet.toFixed(2)}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Badge variant={run.status === "paid" ? "default" : "outline"}>{run.status}</Badge>
-          {canProcess && run.status === "draft" && <MoveToReviewButton payrollRunId={run.id} />}
-          {canProcess && run.status === "review" && <ApproveRunButton payrollRunId={run.id} />}
-          {canProcess && run.status === "approved" && <MarkPaidDialog payrollRunId={run.id} />}
-        </div>
-      </div>
+      <DetailHeader
+        module="hr"
+        title={`Payroll — ${formatDate(run.periodStart)} to ${formatDate(run.periodEnd)}`}
+        meta={
+          <>
+            {run.branch.name} · {run.lines.length} employee(s) · Total net{" "}
+            <span className="tabular-nums font-medium text-foreground">{totalNet.toFixed(2)}</span>
+          </>
+        }
+        badge={<StatusBadge status={run.status} />}
+        actions={
+          <>
+            {canProcess && run.status === "draft" && <MoveToReviewButton payrollRunId={run.id} />}
+            {canProcess && run.status === "review" && <ApproveRunButton payrollRunId={run.id} />}
+            {canProcess && run.status === "approved" && <MarkPaidDialog payrollRunId={run.id} />}
+          </>
+        }
+      />
 
       <Card>
         <CardContent className="pt-6">

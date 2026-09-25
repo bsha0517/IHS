@@ -31,7 +31,7 @@ export default async function PayorsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Payors" />
+      <PageHeader title="Payors" module="billing" />
 
       <Tabs defaultValue="payors">
         <TabsList>

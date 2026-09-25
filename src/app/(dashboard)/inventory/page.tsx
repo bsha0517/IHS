@@ -8,6 +8,7 @@ import { formatDate, formatDateTime, parseLocalDateParam } from "@/lib/utils/dat
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { PageHeader } from "@/components/ui/page-header"
 import { ProductDialog } from "@/app/(dashboard)/inventory/product-dialog"
@@ -96,6 +97,7 @@ export default async function InventoryPage({
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Inventory"
+        module="inventory"
         description={`${stock.length} product(s)`}
         secondaryActions={
           canAdjust && branches.length > 1 ? (
@@ -152,10 +154,13 @@ export default async function InventoryPage({
                       </TableCell>
                       <TableCell>{p.reorderLevel}</TableCell>
                       <TableCell>
+                        {/* P4.10 Stage 2 §26/§48 — low stock now reads amber
+                            (StatusBadge's "low_stock" tone), not the same
+                            flat gray as a perfectly healthy line. */}
                         {p.isOutOfStock ? (
-                          <Badge variant="destructive">out of stock</Badge>
+                          <StatusBadge status="expired" label="out of stock" />
                         ) : p.isLowStock ? (
-                          <Badge variant="secondary">low stock</Badge>
+                          <StatusBadge status="low_stock" />
                         ) : (
                           <Badge variant="outline">ok</Badge>
                         )}
@@ -214,7 +219,7 @@ export default async function InventoryPage({
                   <span>
                     Batch {batch.batchNumber} · {balance.toString()} units
                   </span>
-                  <Badge variant="secondary">Expires {formatDate(batch.expiryDate!)}</Badge>
+                  <StatusBadge status="near_expiry" label={`Expires ${formatDate(batch.expiryDate!)}`} />
                 </div>
               ))}
             </CardContent>
@@ -230,7 +235,7 @@ export default async function InventoryPage({
                   <span>
                     Batch {batch.batchNumber} · {balance.toString()} units — write off via Adjust stock (Stock out) on the Stock tab
                   </span>
-                  <Badge variant="destructive">Expired {formatDate(batch.expiryDate!)}</Badge>
+                  <StatusBadge status="expired" label={`Expired ${formatDate(batch.expiryDate!)}`} />
                 </div>
               ))}
             </CardContent>
@@ -279,9 +284,7 @@ export default async function InventoryPage({
                       <TableCell>{t.toBranch.name}</TableCell>
                       <TableCell>{Number(t.quantity)}</TableCell>
                       <TableCell>
-                        <Badge variant={t.status === "completed" ? "default" : t.status === "cancelled" ? "destructive" : "outline"}>
-                          {t.status.replace("_", " ")}
-                        </Badge>
+                        <StatusBadge status={t.status} />
                       </TableCell>
                       <TableCell>{formatDateTime(t.requestedAt)}</TableCell>
                       <TableCell>

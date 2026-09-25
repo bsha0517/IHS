@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
+import { assertModuleEnabled } from "@/lib/platform/entitlements"
 import { createLabTest, updateLabTest, createLabPanel } from "@/lib/domains/laboratory/catalog"
 import { assignTests, collectSpecimen, rejectSpecimen, receiveSpecimen } from "@/lib/domains/laboratory/orders"
 import { enterNumericResult, enterTextResult, verifyResult, amendLabResult } from "@/lib/domains/laboratory/results"
@@ -12,6 +13,7 @@ export type ActionState = { error?: string; success?: boolean }
 async function requireSession() {
   const session = await getCurrentSession()
   if (!session) throw new Error("Not authenticated.")
+  await assertModuleEnabled(session.user.organizationId, "laboratory")
   return session
 }
 
@@ -32,10 +34,10 @@ function readTestForm(formData: FormData) {
 }
 
 export async function createLabTestAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = readTestForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await createLabTest(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to create lab test." }
@@ -45,11 +47,11 @@ export async function createLabTestAction(_prev: ActionState, formData: FormData
 }
 
 export async function updateLabTestAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const id = String(formData.get("labTestId") ?? "")
   const parsed = readTestForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await updateLabTest(session, id, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to update lab test." }
@@ -59,7 +61,6 @@ export async function updateLabTestAction(_prev: ActionState, formData: FormData
 }
 
 export async function createLabPanelAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = labPanelSchema.safeParse({
     code: formData.get("code"),
     name: formData.get("name"),
@@ -68,6 +69,7 @@ export async function createLabPanelAction(_prev: ActionState, formData: FormDat
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await createLabPanel(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to create panel." }
@@ -77,7 +79,6 @@ export async function createLabPanelAction(_prev: ActionState, formData: FormDat
 }
 
 export async function assignTestsAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const clinicalOrderId = String(formData.get("clinicalOrderId") ?? "")
 
   let lines: unknown
@@ -91,6 +92,7 @@ export async function assignTestsAction(_prev: ActionState, formData: FormData):
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await assignTests(session, clinicalOrderId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to assign tests." }
@@ -119,7 +121,6 @@ export async function rejectSpecimenAction(specimenId: string, clinicalOrderId: 
 }
 
 export async function enterNumericResultAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const labOrderTestId = String(formData.get("labOrderTestId") ?? "")
   const clinicalOrderId = String(formData.get("clinicalOrderId") ?? "")
   const parsed = enterNumericResultSchema.safeParse({
@@ -128,6 +129,7 @@ export async function enterNumericResultAction(_prev: ActionState, formData: For
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await enterNumericResult(session, labOrderTestId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to enter result." }
@@ -137,7 +139,6 @@ export async function enterNumericResultAction(_prev: ActionState, formData: For
 }
 
 export async function enterTextResultAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const labOrderTestId = String(formData.get("labOrderTestId") ?? "")
   const clinicalOrderId = String(formData.get("clinicalOrderId") ?? "")
   const parsed = enterTextResultSchema.safeParse({
@@ -146,6 +147,7 @@ export async function enterTextResultAction(_prev: ActionState, formData: FormDa
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await enterTextResult(session, labOrderTestId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to enter result." }
@@ -162,7 +164,6 @@ export async function verifyResultAction(labOrderTestId: string, clinicalOrderId
 
 /** P1 §21: corrects an already-verified result via a new, isCurrent row — never edits the original in place. */
 export async function amendNumericResultAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const labOrderTestId = String(formData.get("labOrderTestId") ?? "")
   const clinicalOrderId = String(formData.get("clinicalOrderId") ?? "")
   const parsed = enterNumericResultSchema.safeParse({
@@ -171,6 +172,7 @@ export async function amendNumericResultAction(_prev: ActionState, formData: For
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await amendLabResult(session, labOrderTestId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to amend result." }
@@ -180,7 +182,6 @@ export async function amendNumericResultAction(_prev: ActionState, formData: For
 }
 
 export async function amendTextResultAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const labOrderTestId = String(formData.get("labOrderTestId") ?? "")
   const clinicalOrderId = String(formData.get("clinicalOrderId") ?? "")
   const parsed = enterTextResultSchema.safeParse({
@@ -189,6 +190,7 @@ export async function amendTextResultAction(_prev: ActionState, formData: FormDa
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await amendLabResult(session, labOrderTestId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to amend result." }

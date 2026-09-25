@@ -74,6 +74,7 @@ export default async function OrdersPage({
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Orders"
+        module="clinical"
         description={`${total} clinical order(s) — every order type placed across the practice. Lab and imaging orders also have their own dedicated queues under Laboratory and Radiology.`}
       />
 

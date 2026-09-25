@@ -25,6 +25,7 @@ export default async function RolesPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Roles & Permissions"
+        module="admin"
         description="System roles ship with a fixed baseline. Create a custom role to grant a different mix."
         primaryAction={<NewRoleDialog permissionsByCategory={permissionsByCategory} />}
       />

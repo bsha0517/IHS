@@ -5,6 +5,7 @@ import { hashPassword } from "@/lib/auth/password"
 import { assertCan } from "@/lib/platform/permissions-core"
 import { auditFromSession } from "@/lib/platform/audit"
 import { revokeAllUserSessions } from "@/lib/auth/session"
+import { assertWithinUserLimit } from "@/lib/domains/commercial/organizations"
 import type { SessionContext } from "@/lib/auth/session"
 import type { CreateUserInput, UpdateUserInput } from "@/lib/domains/identity/schemas"
 
@@ -102,6 +103,9 @@ export async function createUser(session: SessionContext, input: CreateUserInput
   const branchIds = Array.from(new Set(input.branchIds))
   await assertRolesInOrganization(session.user.organizationId, roleIds)
   await assertBranchesInOrganization(session.user.organizationId, branchIds)
+  // P5.1 §17: a new user is created `active` (User's own schema default) —
+  // same centralized subscription limit check as branch creation.
+  await assertWithinUserLimit(session.user.organizationId)
 
   const passwordHash = await hashPassword(input.password)
 
@@ -158,6 +162,14 @@ export async function updateUser(session: SessionContext, userId: string, input:
     where: { id: userId, organizationId: session.user.organizationId },
     include: { roles: { select: { roleId: true } } },
   })
+
+  // P5.1 §17/§65: reactivating a user grows the active-user count exactly
+  // like creating one — only checked on an actual inactive/locked -> active
+  // transition, never on an update that leaves status unchanged or
+  // deactivates.
+  if (input.status === "active" && before.status !== "active") {
+    await assertWithinUserLimit(session.user.organizationId)
+  }
 
   // P3.12 §28: the concrete, named self-escalation case — a user changing
   // their OWN role assignment (granting themselves a more powerful role,

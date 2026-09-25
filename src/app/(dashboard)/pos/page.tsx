@@ -30,7 +30,7 @@ import { PendingCharges } from "@/app/(dashboard)/pos/pending-charges"
 function PosShell({ meta, action, children }: { meta?: ReactNode; action?: ReactNode; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-6">
-      <WorkspaceHeader title="Point of Sale" meta={meta} actions={action} />
+      <WorkspaceHeader title="Point of Sale" module="billing" meta={meta} actions={action} />
       {children}
     </div>
   )

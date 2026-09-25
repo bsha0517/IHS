@@ -26,6 +26,7 @@ export default async function ProvidersPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Providers"
+        module="clinical"
         description={`${providers.length} provider(s)`}
         primaryAction={can(session, "provider.manage") && <NewProviderDialog branches={branches} departments={departments} users={users} />}
       />

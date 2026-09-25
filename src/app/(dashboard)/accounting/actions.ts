@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
+import { assertModuleEnabled } from "@/lib/platform/entitlements"
 import { createAccount, updateAccount } from "@/lib/domains/accounting/chart-of-accounts"
 import { setMapping } from "@/lib/domains/accounting/account-mappings"
 import { createManualJournal, reverseJournal } from "@/lib/domains/accounting/journals"
@@ -16,6 +17,7 @@ export type ActionState = { error?: string; success?: boolean }
 async function requireSession() {
   const session = await getCurrentSession()
   if (!session) throw new Error("Not authenticated.")
+  await assertModuleEnabled(session.user.organizationId, "finance")
   return session
 }
 
@@ -29,11 +31,11 @@ function readAccountForm(formData: FormData) {
 }
 
 export async function createAccountAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = readAccountForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await createAccount(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to create account." }
@@ -43,12 +45,12 @@ export async function createAccountAction(_prev: ActionState, formData: FormData
 }
 
 export async function updateAccountAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const accountId = String(formData.get("accountId") ?? "")
   const parsed = readAccountForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await updateAccount(session, accountId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to update account." }
@@ -58,7 +60,6 @@ export async function updateAccountAction(_prev: ActionState, formData: FormData
 }
 
 export async function setMappingAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = accountMappingSchema.safeParse({
     branchId: formData.get("branchId"),
     intent: formData.get("intent"),
@@ -67,6 +68,7 @@ export async function setMappingAction(_prev: ActionState, formData: FormData): 
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await setMapping(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to save mapping." }
@@ -76,8 +78,6 @@ export async function setMappingAction(_prev: ActionState, formData: FormData): 
 }
 
 export async function createManualJournalAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
-
   let lines: unknown
   try {
     lines = JSON.parse(String(formData.get("lines") ?? "[]"))
@@ -94,6 +94,7 @@ export async function createManualJournalAction(_prev: ActionState, formData: Fo
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await createManualJournal(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to post journal." }
@@ -103,8 +104,8 @@ export async function createManualJournalAction(_prev: ActionState, formData: Fo
 }
 
 export async function reverseJournalAction(journalId: string, reason: string): Promise<ActionState> {
-  const session = await requireSession()
   try {
+    const session = await requireSession()
     await reverseJournal(session, journalId, reason)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to reverse journal." }
@@ -115,8 +116,8 @@ export async function reverseJournalAction(journalId: string, reason: string): P
 
 /** P1 §31. `year`/`month` identify the calendar month (1-12); see periods.ts's own doc comment for why closing never accepts an override. */
 export async function closePeriodAction(year: number, month: number, reason: string): Promise<ActionState> {
-  const session = await requireSession()
   try {
+    const session = await requireSession()
     await closePeriod(session, { year, month, reason })
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to close period." }
@@ -126,8 +127,8 @@ export async function closePeriodAction(year: number, month: number, reason: str
 }
 
 export async function reopenPeriodAction(periodId: string, reason: string): Promise<ActionState> {
-  const session = await requireSession()
   try {
+    const session = await requireSession()
     await reopenPeriod(session, periodId, reason)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to reopen period." }
@@ -137,9 +138,9 @@ export async function reopenPeriodAction(periodId: string, reason: string): Prom
 }
 
 export async function retryAccountingExceptionAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const eventId = String(formData.get("eventId") ?? "")
   try {
+    const session = await requireSession()
     await retryAccountingException(session, eventId)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to retry." }
@@ -149,8 +150,8 @@ export async function retryAccountingExceptionAction(_prev: ActionState, formDat
 }
 
 export async function sweepAccountingExceptionsAction(): Promise<ActionState & { recovered?: number; processed?: number }> {
-  const session = await requireSession()
   try {
+    const session = await requireSession()
     const result = await sweepAccountingExceptions(session)
     revalidatePath("/accounting")
     return { success: true, ...result }

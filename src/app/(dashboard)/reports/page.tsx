@@ -96,7 +96,11 @@ export default async function ReportsPage({
   const canExport = can(session, "reports.export")
 
   const [branches, providers, ...results] = await Promise.all([
-    listBranches(session),
+    // Not every role that can view a report category holds branch.view
+    // (e.g. Accountant: reports.export without branch.view) — this list only
+    // populates the filter bar's Branch dropdown, so it degrades to no
+    // filter options rather than crashing the whole page for those roles.
+    can(session, "branch.view") ? listBranches(session) : Promise.resolve([]),
     can(session, "appointment.view") ? listProviders(session) : Promise.resolve([]),
     ...visible.map((category) => loadReport(session, category, filters)),
   ])
@@ -119,6 +123,7 @@ export default async function ReportsPage({
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Reports"
+        module="reports"
         description="Operational and financial reporting, filterable by date, branch, and provider — export any category as CSV."
       />
 

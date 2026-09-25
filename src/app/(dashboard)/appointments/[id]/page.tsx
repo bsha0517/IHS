@@ -7,10 +7,11 @@ import { getAppointment } from "@/lib/domains/appointments/service"
 import { listProviders } from "@/lib/domains/providers/service"
 import { loadOrNotFound } from "@/lib/platform/not-found"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
 import { Button } from "@/components/ui/button"
+import { DetailHeader } from "@/components/ui/page-header"
 import { formatDateTime, formatWaitingMinutes } from "@/lib/utils/dates"
-import { APPOINTMENT_STATUS_LABEL, APPOINTMENT_STATUS_VARIANT } from "@/lib/utils/appointment-status"
+import { APPOINTMENT_STATUS_LABEL } from "@/lib/utils/appointment-status"
 import { AppointmentStatusActions } from "@/app/(dashboard)/appointments/status-actions"
 
 /**
@@ -52,21 +53,24 @@ export default async function AppointmentDetailPage({ params }: { params: Promis
             <ArrowLeft /> Back to appointments
           </Link>
         </Button>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">{appointment.appointmentNumber}</h1>
-            <p className="text-sm text-muted-foreground">
+        <DetailHeader
+          module="appointments"
+          title={appointment.appointmentNumber}
+          meta={
+            <>
               <Link href={`/patients/${appointment.patientId}`} className="hover:underline">
                 {appointment.patient.firstName} {appointment.patient.lastName}
               </Link>{" "}
               ({appointment.patient.mrn}) · {appointment.provider.firstName} {appointment.provider.lastName}
-            </p>
-          </div>
-          <Badge variant={APPOINTMENT_STATUS_VARIANT[appointment.status]} className="text-sm">
-            {APPOINTMENT_STATUS_LABEL[appointment.status]}
-            {appointment.queueEntry ? ` · ${appointment.queueEntry.tokenNumber}` : ""}
-          </Badge>
-        </div>
+            </>
+          }
+          badge={
+            <StatusBadge
+              status={appointment.status}
+              label={`${APPOINTMENT_STATUS_LABEL[appointment.status]}${appointment.queueEntry ? ` · ${appointment.queueEntry.tokenNumber}` : ""}`}
+            />
+          }
+        />
       </div>
 
       {(appointment.rescheduledFrom || rescheduledTo) && (

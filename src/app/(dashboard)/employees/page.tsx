@@ -48,6 +48,7 @@ export default async function EmployeesPage({
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Employees"
+        module="hr"
         description={`${total} employee(s)`}
         primaryAction={canManage && <EmployeeDialog branches={branchOptions} departments={departmentOptions} managers={managerOptions} />}
       />

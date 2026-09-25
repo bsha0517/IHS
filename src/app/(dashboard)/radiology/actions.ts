@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
+import { assertModuleEnabled } from "@/lib/platform/entitlements"
 import { createImagingService, updateImagingService } from "@/lib/domains/radiology/catalog"
 import { assignImagingService, scheduleImaging, markPerformed } from "@/lib/domains/radiology/orders"
 import { writeReport, verifyImagingResult, amendImagingReport } from "@/lib/domains/radiology/results"
@@ -12,6 +13,7 @@ export type ActionState = { error?: string; success?: boolean }
 async function requireSession() {
   const session = await getCurrentSession()
   if (!session) throw new Error("Not authenticated.")
+  await assertModuleEnabled(session.user.organizationId, "radiology")
   return session
 }
 
@@ -27,10 +29,10 @@ function readServiceForm(formData: FormData) {
 }
 
 export async function createImagingServiceAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = readServiceForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await createImagingService(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to create imaging service." }
@@ -40,11 +42,11 @@ export async function createImagingServiceAction(_prev: ActionState, formData: F
 }
 
 export async function updateImagingServiceAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const id = String(formData.get("imagingServiceId") ?? "")
   const parsed = readServiceForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await updateImagingService(session, id, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to update imaging service." }
@@ -54,11 +56,11 @@ export async function updateImagingServiceAction(_prev: ActionState, formData: F
 }
 
 export async function assignImagingServiceAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const clinicalOrderId = String(formData.get("clinicalOrderId") ?? "")
   const parsed = assignImagingServiceSchema.safeParse({ imagingServiceId: formData.get("imagingServiceId") })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await assignImagingService(session, clinicalOrderId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to assign imaging service." }
@@ -69,7 +71,6 @@ export async function assignImagingServiceAction(_prev: ActionState, formData: F
 }
 
 export async function scheduleImagingAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const imagingOrderId = String(formData.get("imagingOrderId") ?? "")
   const clinicalOrderId = String(formData.get("clinicalOrderId") ?? "")
   const parsed = scheduleImagingSchema.safeParse({
@@ -78,6 +79,7 @@ export async function scheduleImagingAction(_prev: ActionState, formData: FormDa
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await scheduleImaging(session, imagingOrderId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to schedule." }
@@ -93,7 +95,6 @@ export async function markPerformedAction(imagingOrderId: string, clinicalOrderI
 }
 
 export async function writeReportAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const imagingOrderId = String(formData.get("imagingOrderId") ?? "")
   const clinicalOrderId = String(formData.get("clinicalOrderId") ?? "")
   const parsed = writeReportSchema.safeParse({
@@ -102,6 +103,7 @@ export async function writeReportAction(_prev: ActionState, formData: FormData):
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await writeReport(session, imagingOrderId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to save report." }
@@ -118,7 +120,6 @@ export async function verifyImagingResultAction(imagingOrderId: string, clinical
 
 // Targeted backlog closure, item 7.
 export async function amendReportAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const imagingOrderId = String(formData.get("imagingOrderId") ?? "")
   const clinicalOrderId = String(formData.get("clinicalOrderId") ?? "")
   const parsed = amendReportSchema.safeParse({
@@ -128,6 +129,7 @@ export async function amendReportAction(_prev: ActionState, formData: FormData):
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await amendImagingReport(session, imagingOrderId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to save amendment." }

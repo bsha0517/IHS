@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
 import { getCurrentSession } from "@/lib/auth/session"
+import { assertModuleEnabled } from "@/lib/platform/entitlements"
 import { createPurchaseRequest, approvePurchaseRequest, rejectPurchaseRequest } from "@/lib/domains/procurement/purchase-requests"
 import { createPurchaseOrder, cancelPurchaseOrder } from "@/lib/domains/procurement/purchase-orders"
 import { createGoodsReceipt } from "@/lib/domains/procurement/goods-receipts"
@@ -20,11 +21,11 @@ export type ActionState = { error?: string; success?: boolean }
 async function requireSession() {
   const session = await getCurrentSession()
   if (!session) throw new Error("Not authenticated.")
+  await assertModuleEnabled(session.user.organizationId, "procurement")
   return session
 }
 
 export async function createPurchaseRequestAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   let rawLines: unknown
   try {
     rawLines = JSON.parse(String(formData.get("lines") ?? "[]"))
@@ -39,6 +40,7 @@ export async function createPurchaseRequestAction(_prev: ActionState, formData: 
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await createPurchaseRequest(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to create purchase request." }
@@ -48,8 +50,8 @@ export async function createPurchaseRequestAction(_prev: ActionState, formData: 
 }
 
 export async function approvePurchaseRequestAction(id: string): Promise<ActionState> {
-  const session = await requireSession()
   try {
+    const session = await requireSession()
     await approvePurchaseRequest(session, id)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to approve purchase request." }
@@ -59,8 +61,8 @@ export async function approvePurchaseRequestAction(id: string): Promise<ActionSt
 }
 
 export async function rejectPurchaseRequestAction(id: string, reason: string): Promise<ActionState> {
-  const session = await requireSession()
   try {
+    const session = await requireSession()
     await rejectPurchaseRequest(session, id, reason)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to reject purchase request." }
@@ -70,7 +72,6 @@ export async function rejectPurchaseRequestAction(id: string, reason: string): P
 }
 
 export async function createPurchaseOrderAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   let rawLines: unknown
   try {
     rawLines = JSON.parse(String(formData.get("lines") ?? "[]"))
@@ -89,6 +90,7 @@ export async function createPurchaseOrderAction(_prev: ActionState, formData: Fo
 
   let po
   try {
+    const session = await requireSession()
     po = await createPurchaseOrder(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to create purchase order." }
@@ -97,8 +99,8 @@ export async function createPurchaseOrderAction(_prev: ActionState, formData: Fo
 }
 
 export async function cancelPurchaseOrderAction(id: string, reason: string): Promise<ActionState> {
-  const session = await requireSession()
   try {
+    const session = await requireSession()
     await cancelPurchaseOrder(session, id, reason)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to cancel purchase order." }
@@ -109,7 +111,6 @@ export async function cancelPurchaseOrderAction(id: string, reason: string): Pro
 }
 
 export async function createGoodsReceiptAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const purchaseOrderId = String(formData.get("purchaseOrderId") ?? "")
   let rawLines: unknown
   try {
@@ -131,6 +132,7 @@ export async function createGoodsReceiptAction(_prev: ActionState, formData: For
   const idempotencyKey = String(formData.get("idempotencyKey") ?? "") || undefined
 
   try {
+    const session = await requireSession()
     await createGoodsReceipt(session, { ...parsed.data, idempotencyKey })
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to record goods receipt." }
@@ -141,7 +143,6 @@ export async function createGoodsReceiptAction(_prev: ActionState, formData: For
 }
 
 export async function createSupplierInvoiceAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const purchaseOrderId = String(formData.get("purchaseOrderId") ?? "") || undefined
   const parsed = supplierInvoiceSchema.safeParse({
     supplierId: formData.get("supplierId"),
@@ -161,6 +162,7 @@ export async function createSupplierInvoiceAction(_prev: ActionState, formData: 
   const idempotencyKey = String(formData.get("idempotencyKey") ?? "") || undefined
 
   try {
+    const session = await requireSession()
     await createSupplierInvoice(session, { ...parsed.data, idempotencyKey })
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to record supplier invoice." }
@@ -171,7 +173,6 @@ export async function createSupplierInvoiceAction(_prev: ActionState, formData: 
 }
 
 export async function recordSupplierPaymentAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = supplierPaymentSchema.safeParse({
     supplierInvoiceId: formData.get("supplierInvoiceId"),
     method: formData.get("method"),
@@ -181,6 +182,7 @@ export async function recordSupplierPaymentAction(_prev: ActionState, formData: 
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await recordSupplierPayment(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to record payment." }

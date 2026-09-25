@@ -44,7 +44,7 @@ export default async function PharmacyPage({ searchParams }: { searchParams: Pro
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Pharmacy" />
+      <PageHeader title="Pharmacy" module="pharmacy" />
 
       {!enabled && (
         <Alert variant="destructive">

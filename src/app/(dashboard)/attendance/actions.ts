@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
+import { assertModuleEnabled } from "@/lib/platform/entitlements"
 import { createShift, checkIn, checkOut, adjustAttendance } from "@/lib/domains/hr/attendance"
 import { shiftSchema, checkInSchema, attendanceAdjustSchema } from "@/lib/domains/hr/schemas"
 
@@ -10,11 +11,11 @@ export type ActionState = { error?: string; success?: boolean }
 async function requireSession() {
   const session = await getCurrentSession()
   if (!session) throw new Error("Not authenticated.")
+  await assertModuleEnabled(session.user.organizationId, "hr")
   return session
 }
 
 export async function createShiftAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = shiftSchema.safeParse({
     name: formData.get("name"),
     startTime: formData.get("startTime"),
@@ -23,6 +24,7 @@ export async function createShiftAction(_prev: ActionState, formData: FormData):
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await createShift(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to create shift." }
@@ -46,7 +48,6 @@ export async function checkOutSimpleAction(attendanceRecordId: string) {
 }
 
 export async function adjustAttendanceAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const attendanceRecordId = String(formData.get("attendanceRecordId") ?? "")
   const parsed = attendanceAdjustSchema.safeParse({
     checkInAt: formData.get("checkInAt"),
@@ -58,6 +59,7 @@ export async function adjustAttendanceAction(_prev: ActionState, formData: FormD
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await adjustAttendance(session, attendanceRecordId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to adjust attendance." }

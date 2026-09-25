@@ -36,6 +36,7 @@ export default async function ServicesPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Services"
+        module="clinical"
         description={`${services.length} service(s)`}
         primaryAction={canManage && <ServiceDialog departments={departments} providers={providers} />}
       />

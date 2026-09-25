@@ -2,6 +2,7 @@ import "dotenv/config"
 import { db } from "../src/lib/db"
 import { hashPassword } from "../src/lib/auth/password"
 import { generateRawToken } from "../src/lib/auth/tokens"
+import { bootstrapSystemRoles } from "../src/lib/domains/identity/system-roles"
 import type { $Enums } from "../src/generated/prisma/client"
 
 // Permission catalog: capability-based, resource.action (spec.md §7). This is the
@@ -28,6 +29,14 @@ const PERMISSIONS: { code: string; category: string; description: string }[] = [
   // can be granted onboarding/import ability without also getting user
   // management or full settings edit, and vice versa.
   { code: "data_import.manage", category: "administration", description: "Run clinic onboarding data imports (patients, products, suppliers, services, opening inventory, ...)" },
+  // P5.2 §7/§8: the clinic-side half of the support-ticket foundation — a
+  // narrow permission, same reasoning as data_import.manage's own comment,
+  // so it can be granted independently of full settings/user management.
+  // Never grants access to another organization's tickets or to a
+  // platform-internal note — those boundaries are enforced in
+  // support-tickets.ts regardless of this permission (see that file's own
+  // doc comment).
+  { code: "support_ticket.manage", category: "administration", description: "View and create this organization's own support tickets, and read customer-visible replies" },
 
   // Practice management
   { code: "patient.view", category: "practice", description: "View patient records" },
@@ -123,112 +132,10 @@ const PERMISSIONS: { code: string; category: string; description: string }[] = [
   { code: "asset.manage", category: "workforce", description: "Create/edit assets, maintenance, and calibration records" },
 ]
 
-const SYSTEM_ROLES: { name: string; permissions: string[] }[] = [
-  { name: "Super Admin", permissions: PERMISSIONS.map((p) => p.code) }, // also gets the implicit can() bypass
-  { name: "Organization Administrator", permissions: PERMISSIONS.map((p) => p.code) },
-  {
-    name: "Clinic Manager",
-    permissions: [
-      "settings.view", "branch.view", "department.view", "room.view",
-      "patient.view", "provider.view", "service.view",
-      "appointment.view", "appointment.reschedule", "appointment.cancel",
-      "clinical_notes.view",
-      "charge.void", "invoice.view", "invoice.discount", "invoice.void",
-      "payment.view", "refund.authorize", "cashier.view", "package.manage", "tax.manage",
-      "inventory.view", "supplier.view", "purchase_request.approve",
-      "accounting.view", "expense.create", "reports.export",
-      "payroll.view", "leave.approve", "asset.manage",
-    ],
-  },
-  {
-    name: "Receptionist",
-    permissions: [
-      "patient.view", "patient.create", "patient.edit",
-      "provider.view", "service.view",
-      "appointment.view", "appointment.create", "appointment.reschedule", "appointment.cancel", "appointment.checkin",
-      "charge.create", "invoice.view", "invoice.create",
-      "payment.view", "payment.create", "refund.request", "cashier.open", "package.sell",
-      "coverage.manage", "communication.send",
-    ],
-  },
-  {
-    name: "Doctor",
-    permissions: [
-      "patient.view", "patient.edit", "provider.view", "appointment.view", "appointment.checkin",
-      "encounter.view", "encounter.create", "encounter.finalize",
-      "clinical_notes.view", "clinical_notes.edit", "vitals.record",
-      "prescription.create", "lab_order.create", "order.create", "package.consume",
-    ],
-  },
-  {
-    name: "Nurse",
-    permissions: [
-      "patient.view", "appointment.view", "appointment.checkin",
-      "encounter.view", "encounter.create", "clinical_notes.view", "vitals.record", "package.consume",
-    ],
-  },
-  {
-    name: "Laboratory Technician",
-    permissions: ["patient.view", "lab_result.enter", "lab_result.verify", "lab_test.manage"],
-  },
-  {
-    name: "Pharmacist",
-    permissions: ["patient.view", "inventory.view", "inventory.adjust", "product.manage", "prescription.verify", "prescription.dispense"],
-  },
-  {
-    name: "Radiology Technician",
-    permissions: ["patient.view", "room.view", "imaging_order.perform", "imaging_result.verify", "imaging_service.manage"],
-  },
-  {
-    name: "Cashier",
-    permissions: [
-      "patient.view", "service.view",
-      "charge.create", "invoice.view", "invoice.create",
-      "payment.view", "payment.create", "refund.request", "cashier.open", "package.sell",
-      "coverage.manage", "communication.send",
-    ],
-  },
-  {
-    name: "Accountant",
-    permissions: [
-      "accounting.view", "accounting.post", "accounting.period.manage", "chart_of_account.manage", "account_mapping.manage",
-      "expense.create", "supplier_invoice.manage", "reports.export",
-      "payor.manage", "coverage.manage", "claim.create", "claim.adjudicate",
-      // P3.9 §25/§30: found live during this batch's own browser walkthrough
-      // — Receivables (/receivables) and the Accounting overview both
-      // already called `listOutstandingInvoices`, which requires
-      // `invoice.view`, a permission Accountant never held; the page's own
-      // gate (`accounting.view`) let the role reach the page and then crash
-      // on the very first read. `payment.view` closes the matching gap for
-      // inspecting payments (§30's explicit "Accountant can inspect
-      // invoice/payment journals... Cashier collections"). Deliberately
-      // READ-ONLY — no `invoice.create`/`invoice.void`/`invoice.discount`/
-      // `payment.create`/`refund.*`, which stay Cashier/Clinic-Manager-only
-      // operational controls per §30's own "never give Accountant cashier
-      // operational controls they don't need."
-      "invoice.view", "payment.view",
-    ],
-  },
-  {
-    name: "HR Manager",
-    permissions: [
-      "payroll.view", "payroll.process", "reports.export", "department.view",
-      "provider.view", "service.view",
-      "employee.manage", "attendance.record", "leave.request", "leave.approve",
-      "commission.manage", "commission.view",
-    ],
-  },
-  {
-    name: "Inventory Manager",
-    permissions: [
-      "inventory.view", "inventory.adjust", "product.manage",
-      "supplier.view", "supplier.manage",
-      "purchase_request.create", "purchase_request.approve",
-      "purchase_order.create", "goods_receipt.create",
-      "supplier_invoice.manage", "stock.transfer", "asset.manage",
-    ],
-  },
-]
+// SYSTEM_ROLES moved to src/lib/domains/identity/system-roles.ts (P5.1) so
+// clinic provisioning (commercial/provisioning.ts) can bootstrap the exact
+// same role/permission catalog for a newly created organization, from one
+// definition instead of two that could drift apart.
 
 // A small common-outpatient subset, not the full ICD-10 terminology hardcoded
 // into the app (spec.md §24 / BLUEPRINT.md §43) — admins add more via the
@@ -611,27 +518,7 @@ async function main() {
   }
 
   console.log("Seeding system roles...")
-  const allPermissions = await db.permission.findMany()
-  const permissionByCode = new Map(allPermissions.map((p) => [p.code, p.id]))
-
-  for (const roleDef of SYSTEM_ROLES) {
-    const role = await db.role.upsert({
-      where: { organizationId_name: { organizationId: organization.id, name: roleDef.name } },
-      update: { isSystemRole: true },
-      create: { organizationId: organization.id, name: roleDef.name, isSystemRole: true },
-    })
-
-    await db.rolePermission.deleteMany({ where: { roleId: role.id } })
-    const permissionIds = roleDef.permissions
-      .map((code) => permissionByCode.get(code))
-      .filter((id): id is string => Boolean(id))
-    if (permissionIds.length > 0) {
-      await db.rolePermission.createMany({
-        data: permissionIds.map((permissionId) => ({ roleId: role.id, permissionId })),
-        skipDuplicates: true,
-      })
-    }
-  }
+  await bootstrapSystemRoles(db, organization.id)
 
   const superAdminRole = await db.role.findFirstOrThrow({
     where: { organizationId: organization.id, name: "Super Admin" },
@@ -676,6 +563,76 @@ async function main() {
     })
     await db.userRole.create({ data: { userId: user.id, roleId: superAdminRole.id } })
     await db.userBranchAccess.create({ data: { userId: user.id, branchId: branch.id } })
+  }
+
+  // P5.1 §19/§59: the platform operator's own bootstrap — same "documented
+  // production bootstrap mechanism" reasoning as the clinic Super Admin
+  // above, against `PlatformOperator` instead of `User` (a completely
+  // separate identity plane — see that model's own doc comment). This is
+  // the ONLY place a PlatformOperator row is ever created outside the
+  // platform's own (not-yet-built-in-V1) operator-management UI — there is
+  // no self-service platform signup anywhere in this codebase.
+  console.log("Seeding platform operator bootstrap account...")
+  const existingOperator = await db.platformOperator.findFirst({ where: { email: "operator@avant.local" } })
+  if (!existingOperator) {
+    const isProduction = process.env.NODE_ENV === "production"
+    const operatorBootstrapPassword = process.env.PLATFORM_OPERATOR_BOOTSTRAP_PASSWORD ?? (isProduction ? generateRawToken() : "ChangeMe123!")
+    if (isProduction && !process.env.PLATFORM_OPERATOR_BOOTSTRAP_PASSWORD) {
+      console.log(`\n${"=".repeat(70)}`)
+      console.log(`Creating platform operator: operator@avant.local`)
+      console.log(`Generated password (shown once — capture this now): ${operatorBootstrapPassword}`)
+      console.log(`${"=".repeat(70)}\n`)
+    } else {
+      console.log(`Creating platform operator (operator@avant.local / ${operatorBootstrapPassword}) — change this password immediately.`)
+    }
+    await db.platformOperator.create({
+      data: {
+        email: "operator@avant.local",
+        firstName: "Platform",
+        lastName: "Operator",
+        passwordHash: await hashPassword(operatorBootstrapPassword),
+      },
+    })
+  }
+
+  // P5.1 §9: seed examples only — an operator can add/edit plans from
+  // `/platform/plans`. Not hard-coded into any application logic; these
+  // three rows have no special meaning beyond being a reasonable starting
+  // catalog for a first commercial customer.
+  console.log("Seeding example commercial plans...")
+  const CORE_MODULES = ["reception", "patients", "appointments", "clinical", "nursing"] as const
+  const DEFAULT_PLANS: { code: string; name: string; description: string; userLimit: number | null; branchLimit: number | null; defaultModuleKeys: string[] }[] = [
+    {
+      code: "starter",
+      name: "Starter",
+      description: "Single-branch outpatient clinic — core clinical + billing, no inventory/finance/HR modules.",
+      userLimit: 10,
+      branchLimit: 1,
+      defaultModuleKeys: [...CORE_MODULES, "pos_billing", "reports"],
+    },
+    {
+      code: "professional",
+      name: "Professional",
+      description: "Multi-branch clinic with pharmacy, lab, imaging, inventory, and finance.",
+      userLimit: 50,
+      branchLimit: 5,
+      defaultModuleKeys: [...CORE_MODULES, "laboratory", "radiology", "pharmacy", "pos_billing", "inventory", "procurement", "finance", "reports", "imports_onboarding"],
+    },
+    {
+      code: "enterprise",
+      name: "Enterprise",
+      description: "Full module set, no user/branch limit.",
+      userLimit: null,
+      branchLimit: null,
+      defaultModuleKeys: [...CORE_MODULES, "laboratory", "radiology", "pharmacy", "pos_billing", "inventory", "procurement", "finance", "hr", "payroll", "assets", "reports", "imports_onboarding"],
+    },
+  ]
+  for (const plan of DEFAULT_PLANS) {
+    await db.commercialPlan.upsert({
+      where: { code: plan.code },
+      update: {},
+      create: plan,
+    })
   }
 
   console.log("Seed complete.")

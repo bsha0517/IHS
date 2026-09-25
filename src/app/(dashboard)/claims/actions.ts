@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
+import { assertModuleEnabled } from "@/lib/platform/entitlements"
 import { createClaim, submitClaim, adjudicateClaim, recordRemittance, resubmitClaimAsIs } from "@/lib/domains/claims/service"
 import { addPatientCoverage, deactivatePatientCoverage, requestAuthorization, approveAuthorization, denyAuthorization } from "@/lib/domains/claims/coverage"
 import {
@@ -18,6 +19,7 @@ export type ActionState = { error?: string; success?: boolean; claimId?: string 
 async function requireSession() {
   const session = await getCurrentSession()
   if (!session) throw new Error("Not authenticated.")
+  await assertModuleEnabled(session.user.organizationId, "pos_billing")
   return session
 }
 
@@ -32,7 +34,6 @@ function readClaimItems(formData: FormData) {
 }
 
 export async function createClaimAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const items = readClaimItems(formData)
   if (items === null) return { error: "Invalid line selection." }
   const parsed = createClaimSchema.safeParse({
@@ -42,6 +43,7 @@ export async function createClaimAction(_prev: ActionState, formData: FormData):
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     const claim = await createClaim(session, parsed.data)
     revalidatePath("/claims")
     revalidatePath(`/invoices/${parsed.data.invoiceId}`)
@@ -59,13 +61,13 @@ export async function submitClaimAction(claimId: string) {
 }
 
 export async function adjudicateClaimAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const claimId = String(formData.get("claimId") ?? "")
   const items = readClaimItems(formData)
   if (items === null) return { error: "Invalid item adjudication data." }
   const parsed = adjudicateClaimSchema.safeParse({ items, rejectionReason: formData.get("rejectionReason") })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await adjudicateClaim(session, claimId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to record adjudication." }
@@ -76,11 +78,11 @@ export async function adjudicateClaimAction(_prev: ActionState, formData: FormDa
 }
 
 export async function recordRemittanceAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const claimId = String(formData.get("claimId") ?? "")
   const parsed = recordRemittanceSchema.safeParse({ amount: formData.get("amount"), reference: formData.get("reference") })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await recordRemittance(session, claimId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to record remittance." }
@@ -104,7 +106,6 @@ export async function deactivatePatientCoverageAction(id: string, patientId: str
 }
 
 export async function addPatientCoverageAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const patientId = String(formData.get("patientId") ?? "")
   const parsed = patientCoverageSchema.safeParse({
     policyId: formData.get("policyId"),
@@ -121,6 +122,7 @@ export async function addPatientCoverageAction(_prev: ActionState, formData: For
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await addPatientCoverage(session, patientId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to add coverage." }
@@ -130,7 +132,6 @@ export async function addPatientCoverageAction(_prev: ActionState, formData: For
 }
 
 export async function requestAuthorizationAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const patientId = String(formData.get("patientId") ?? "")
   const parsed = requestAuthorizationSchema.safeParse({
     patientCoverageId: formData.get("patientCoverageId"),
@@ -139,6 +140,7 @@ export async function requestAuthorizationAction(_prev: ActionState, formData: F
   })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await requestAuthorization(session, patientId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to request authorization." }
@@ -157,12 +159,12 @@ function readDecideAuthorizationForm(formData: FormData) {
 }
 
 export async function approveAuthorizationAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const id = String(formData.get("authorizationId") ?? "")
   const patientId = String(formData.get("patientId") ?? "")
   const parsed = readDecideAuthorizationForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await approveAuthorization(session, id, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to approve authorization." }
@@ -172,12 +174,12 @@ export async function approveAuthorizationAction(_prev: ActionState, formData: F
 }
 
 export async function denyAuthorizationAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const id = String(formData.get("authorizationId") ?? "")
   const patientId = String(formData.get("patientId") ?? "")
   const parsed = readDecideAuthorizationForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
   try {
+    const session = await requireSession()
     await denyAuthorization(session, id, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to deny authorization." }

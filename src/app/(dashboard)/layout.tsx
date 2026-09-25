@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { getCurrentSession } from "@/lib/auth/session"
 import { getUnreadCount } from "@/lib/domains/notifications/service"
 import { listSwitchableBranches } from "@/lib/domains/identity/org-structure"
+import { getModuleEntitlements } from "@/lib/platform/entitlements"
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar"
 import { AppSidebar } from "@/components/layout/app-sidebar"
 import { Topbar } from "@/components/layout/topbar"
@@ -23,14 +24,15 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   // badge is the only thing this layout needs from the notification
   // system. P3.12 §63: same discipline for the branch switcher — one small
   // query for the whole layout, not a query per nav item.
-  const [unreadNotificationCount, switchableBranches] = await Promise.all([
+  const [unreadNotificationCount, switchableBranches, entitlements] = await Promise.all([
     getUnreadCount(session),
     listSwitchableBranches(session),
+    getModuleEntitlements(session.user.organizationId),
   ])
 
   return (
     <SidebarProvider>
-      <AppSidebar permissions={Array.from(session.permissions)} />
+      <AppSidebar permissions={Array.from(session.permissions)} entitlements={entitlements} />
       <SidebarInset>
         <Topbar
           user={session.user}

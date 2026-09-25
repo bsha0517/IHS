@@ -88,6 +88,7 @@ export default async function AppointmentsPage({
     <div className="flex flex-col gap-6">
       <WorkspaceHeader
         title="Appointments"
+        module="appointments"
         meta={day.toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
         actions={
           <>

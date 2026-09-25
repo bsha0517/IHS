@@ -6,19 +6,11 @@ import { getClaim } from "@/lib/domains/claims/service"
 import { formatDate, formatDateTime } from "@/lib/utils/dates"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
+import { DetailHeader } from "@/components/ui/page-header"
 import { SubmitButton, ResubmitButton } from "@/app/(dashboard)/claims/[id]/claim-actions"
 import { AdjudicateDialog } from "@/app/(dashboard)/claims/[id]/adjudicate-dialog"
 import { RemittanceDialog } from "@/app/(dashboard)/claims/[id]/remittance-dialog"
-
-const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
-  draft: "outline",
-  submitted: "secondary",
-  adjudicated: "secondary",
-  rejected: "destructive",
-  remitted: "default",
-  void: "destructive",
-}
 
 export default async function ClaimDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await getCurrentSession()
@@ -36,23 +28,26 @@ export default async function ClaimDetailPage({ params }: { params: Promise<{ id
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{claim.claimNumber}</h1>
-          <p className="text-sm text-muted-foreground">
+      <DetailHeader
+        module="billing"
+        title={claim.claimNumber}
+        meta={
+          <>
             {claim.patient.firstName} {claim.patient.lastName} ({claim.patient.mrn}) · {claim.payor.name}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Badge variant={STATUS_VARIANT[claim.status] ?? "outline"}>{claim.status}</Badge>
-          {claim.status === "draft" && can(session, "claim.create") && <SubmitButton claimId={claim.id} />}
-          {claim.status === "submitted" && canAdjudicate && <AdjudicateDialog claimId={claim.id} items={itemRows} />}
-          {claim.status === "adjudicated" && canAdjudicate && (
-            <RemittanceDialog claimId={claim.id} approvedAmount={Number(claim.approvedAmount ?? 0)} />
-          )}
-          {claim.status === "rejected" && !claim.resubmittedBy && can(session, "claim.create") && <ResubmitButton claimId={claim.id} />}
-        </div>
-      </div>
+          </>
+        }
+        badge={<StatusBadge status={claim.status} />}
+        actions={
+          <>
+            {claim.status === "draft" && can(session, "claim.create") && <SubmitButton claimId={claim.id} />}
+            {claim.status === "submitted" && canAdjudicate && <AdjudicateDialog claimId={claim.id} items={itemRows} />}
+            {claim.status === "adjudicated" && canAdjudicate && (
+              <RemittanceDialog claimId={claim.id} approvedAmount={Number(claim.approvedAmount ?? 0)} />
+            )}
+            {claim.status === "rejected" && !claim.resubmittedBy && can(session, "claim.create") && <ResubmitButton claimId={claim.id} />}
+          </>
+        }
+      />
 
       {claim.resubmissionOf && (
         <p className="text-sm text-muted-foreground">

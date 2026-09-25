@@ -7,23 +7,18 @@ import { loadOrNotFound } from "@/lib/platform/not-found"
 import { getMyOpenSession } from "@/lib/domains/billing/cashier"
 import { listPatientCoverage } from "@/lib/domains/claims/coverage"
 import { formatDateTime } from "@/lib/utils/dates"
+import { cn } from "@/lib/utils"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
 import { Button } from "@/components/ui/button"
+import { DetailHeader } from "@/components/ui/page-header"
 import { RecordPaymentDialog } from "@/app/(dashboard)/invoices/[id]/record-payment-dialog"
 import { RequestRefundDialog } from "@/app/(dashboard)/invoices/[id]/request-refund-dialog"
 import { RefundActions } from "@/app/(dashboard)/invoices/[id]/refund-actions"
 import { ReasonDialog } from "@/app/(dashboard)/invoices/[id]/reason-dialog"
 import { CreateClaimDialog } from "@/app/(dashboard)/invoices/[id]/create-claim-dialog"
 import { voidInvoiceAction } from "@/app/(dashboard)/invoices/actions"
-
-const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
-  issued: "outline",
-  partially_paid: "secondary",
-  paid: "default",
-  void: "destructive",
-}
 
 export default async function InvoiceDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await getCurrentSession()
@@ -50,10 +45,11 @@ export default async function InvoiceDetailPage({ params }: { params: Promise<{ 
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{invoice.invoiceNumber}</h1>
-          <p className="text-sm text-muted-foreground">
+      <DetailHeader
+        module="billing"
+        title={invoice.invoiceNumber}
+        meta={
+          <>
             <Link href={`/patients/${invoice.patientId}`} className="hover:underline">
               {invoice.patient.firstName} {invoice.patient.lastName}
             </Link>{" "}
@@ -64,19 +60,17 @@ export default async function InvoiceDetailPage({ params }: { params: Promise<{ 
                 · Dr. {invoice.provider.firstName} {invoice.provider.lastName}
               </>
             )}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Badge variant={STATUS_VARIANT[invoice.status] ?? "outline"} className="capitalize">
-            {invoice.status.replace("_", " ")}
-          </Badge>
+          </>
+        }
+        badge={<StatusBadge status={invoice.status} />}
+        actions={
           <Button asChild size="sm" variant="outline">
             <Link href={`/invoices/${invoice.id}/print`} target="_blank">
               Print
             </Link>
           </Button>
-        </div>
-      </div>
+        }
+      />
 
       <Card>
         <CardHeader>
@@ -106,30 +100,34 @@ export default async function InvoiceDetailPage({ params }: { params: Promise<{ 
             </TableBody>
           </Table>
 
+          {/* P4.10 Stage 2 §24/§50 — the figures a cashier actually needs to
+              scan fast (total/paid/outstanding) now use tabular numerals,
+              and Outstanding — the one number that decides what happens
+              next on this invoice — is visually the strongest line here. */}
           <div className="mt-4 ml-auto grid w-full max-w-xs gap-1 text-sm">
             <div className="flex justify-between">
               <span className="text-muted-foreground">Subtotal</span>
-              <span>{Number(invoice.subtotal).toFixed(2)}</span>
+              <span className="tabular-nums">{Number(invoice.subtotal).toFixed(2)}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Discount</span>
-              <span>-{Number(invoice.discountAmount).toFixed(2)}</span>
+              <span className="tabular-nums">-{Number(invoice.discountAmount).toFixed(2)}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Tax</span>
-              <span>{Number(invoice.taxAmount).toFixed(2)}</span>
+              <span className="tabular-nums">{Number(invoice.taxAmount).toFixed(2)}</span>
             </div>
             <div className="flex justify-between font-medium">
               <span>Total</span>
-              <span>{Number(invoice.totalAmount).toFixed(2)}</span>
+              <span className="tabular-nums">{Number(invoice.totalAmount).toFixed(2)}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Paid</span>
-              <span>{Number(invoice.paidAmount).toFixed(2)}</span>
+              <span className="tabular-nums">{Number(invoice.paidAmount).toFixed(2)}</span>
             </div>
-            <div className="flex justify-between font-medium">
+            <div className="flex justify-between border-t border-border pt-1 text-base font-semibold">
               <span>Outstanding</span>
-              <span>{outstanding.toFixed(2)}</span>
+              <span className={cn("tabular-nums", outstanding > 0 ? "text-warning" : "text-success")}>{outstanding.toFixed(2)}</span>
             </div>
           </div>
 
@@ -227,9 +225,7 @@ export default async function InvoiceDetailPage({ params }: { params: Promise<{ 
                     <span>{c.claimNumber}</span>
                     <span className="flex items-center gap-2">
                       {Number(c.submittedAmount).toFixed(2)}
-                      <Badge variant={c.status === "remitted" ? "default" : c.status === "rejected" ? "destructive" : "outline"}>
-                        {c.status}
-                      </Badge>
+                      <StatusBadge status={c.status} />
                     </span>
                   </Link>
                 ))}
@@ -255,9 +251,7 @@ export default async function InvoiceDetailPage({ params }: { params: Promise<{ 
                   <p className="text-xs text-muted-foreground">Requested {formatDateTime(r.requestedAt)}</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Badge variant={r.status === "completed" ? "default" : r.status === "rejected" ? "destructive" : "outline"}>
-                    {r.status}
-                  </Badge>
+                  <StatusBadge status={r.status} />
                   {can(session, "refund.authorize") && (
                     <RefundActions
                       invoiceId={invoice.id}

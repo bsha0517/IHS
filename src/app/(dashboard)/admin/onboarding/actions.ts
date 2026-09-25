@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
+import { assertModuleEnabled } from "@/lib/platform/entitlements"
 import { runDryRun, runCommit, cancelImportJob, ImportValidationError } from "@/lib/platform/import/engine"
 import { getImporter, isImportType } from "@/lib/domains/onboarding/imports/registry"
 import type { DryRunSummary } from "@/lib/platform/import/types"
@@ -10,6 +11,7 @@ import type { CommitResult } from "@/lib/platform/import/engine"
 async function requireSession() {
   const session = await getCurrentSession()
   if (!session) throw new Error("Not authenticated.")
+  await assertModuleEnabled(session.user.organizationId, "imports_onboarding")
   return session
 }
 
@@ -23,7 +25,6 @@ async function readFileText(formData: FormData, field = "file"): Promise<string>
 }
 
 export async function dryRunImportAction(formData: FormData): Promise<DryRunActionState> {
-  const session = await requireSession()
   const type = String(formData.get("type") ?? "")
   if (!isImportType(type)) return { error: "Unknown import type." }
   const file = formData.get("file")
@@ -31,6 +32,7 @@ export async function dryRunImportAction(formData: FormData): Promise<DryRunActi
   if (!file.name.toLowerCase().endsWith(".csv")) return { error: "Only .csv files are accepted." }
 
   try {
+    const session = await requireSession()
     const fileText = await readFileText(formData)
     const importer = await getImporter(session, type)
     const { jobId, summary } = await runDryRun(session, importer, { fileText, fileName: file.name })
@@ -41,7 +43,6 @@ export async function dryRunImportAction(formData: FormData): Promise<DryRunActi
 }
 
 export async function commitImportAction(formData: FormData): Promise<CommitActionState> {
-  const session = await requireSession()
   const type = String(formData.get("type") ?? "")
   const jobId = String(formData.get("jobId") ?? "")
   if (!isImportType(type) || !jobId) return { error: "Missing import job." }
@@ -49,6 +50,7 @@ export async function commitImportAction(formData: FormData): Promise<CommitActi
   if (!(file instanceof File)) return { error: "Re-select the same CSV file to commit." }
 
   try {
+    const session = await requireSession()
     const fileText = await readFileText(formData)
     const importer = await getImporter(session, type)
     const result = await runCommit(session, importer, { jobId, fileText })

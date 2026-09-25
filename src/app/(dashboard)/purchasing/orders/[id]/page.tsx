@@ -7,19 +7,12 @@ import { listAccessibleBranches } from "@/lib/domains/billing/cashier"
 import { formatDate, formatDateTime } from "@/lib/utils/dates"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
+import { DetailHeader } from "@/components/ui/page-header"
 import { ReceiveDialog } from "@/app/(dashboard)/purchasing/orders/[id]/receive-dialog"
 import { SupplierInvoiceDialog } from "@/app/(dashboard)/purchasing/supplier-invoice-dialog"
 import { ReasonDialog } from "@/app/(dashboard)/invoices/[id]/reason-dialog"
 import { cancelPurchaseOrderAction } from "@/app/(dashboard)/purchasing/actions"
-
-const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
-  draft: "outline",
-  issued: "outline",
-  partially_received: "secondary",
-  received: "default",
-  cancelled: "destructive",
-}
 
 export default async function PurchaseOrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await getCurrentSession()
@@ -47,27 +40,28 @@ export default async function PurchaseOrderDetailPage({ params }: { params: Prom
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{po.poNumber}</h1>
-          <p className="text-sm text-muted-foreground">
+      <DetailHeader
+        module="procurement"
+        title={po.poNumber}
+        meta={
+          <>
             {po.supplier.companyName} · {po.branch.name} · {formatDateTime(po.createdAt)}
             {po.expectedDeliveryDate && ` · Expected ${formatDate(po.expectedDeliveryDate)}`}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Badge variant={STATUS_VARIANT[po.status] ?? "outline"} className="capitalize">
-            {po.status.replace("_", " ")}
-          </Badge>
-          {outstandingLines.length > 0 && po.status !== "cancelled" && (
-            <ReceiveDialog purchaseOrderId={po.id} outstandingLines={outstandingLines} />
-          )}
-          <SupplierInvoiceDialog branches={branches} suppliers={[{ id: po.supplierId, companyName: po.supplier.companyName }]} purchaseOrderId={po.id} />
-          {po.status !== "received" && po.status !== "cancelled" && (
-            <ReasonDialog triggerLabel="Cancel" title="Cancel purchase order" variant="destructive" action={cancelPurchaseOrderAction} args={[po.id]} />
-          )}
-        </div>
-      </div>
+          </>
+        }
+        badge={<StatusBadge status={po.status} />}
+        actions={
+          <>
+            {outstandingLines.length > 0 && po.status !== "cancelled" && (
+              <ReceiveDialog purchaseOrderId={po.id} outstandingLines={outstandingLines} />
+            )}
+            <SupplierInvoiceDialog branches={branches} suppliers={[{ id: po.supplierId, companyName: po.supplier.companyName }]} purchaseOrderId={po.id} />
+            {po.status !== "received" && po.status !== "cancelled" && (
+              <ReasonDialog triggerLabel="Cancel" title="Cancel purchase order" variant="destructive" action={cancelPurchaseOrderAction} args={[po.id]} />
+            )}
+          </>
+        }
+      />
 
       <Card>
         <CardHeader>

@@ -2,29 +2,12 @@ import { redirect } from "next/navigation"
 import Link from "next/link"
 import { getCurrentSession } from "@/lib/auth/session"
 import { can } from "@/lib/platform/permissions-core"
-import { getOperationalHealth, type StatusLevel } from "@/lib/platform/operational-health"
+import { getOperationalHealth } from "@/lib/platform/operational-health"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/ui/status-badge"
+import { DetailHeader } from "@/components/ui/page-header"
 
 export const dynamic = "force-dynamic"
-
-const STATUS_LABEL: Record<StatusLevel, string> = {
-  healthy: "Healthy",
-  warning: "Warning",
-  critical: "Critical",
-  unknown: "Unknown",
-}
-
-const STATUS_VARIANT: Record<StatusLevel, "default" | "secondary" | "destructive" | "outline"> = {
-  healthy: "outline",
-  warning: "secondary",
-  critical: "destructive",
-  unknown: "secondary",
-}
-
-function StatusBadge({ status }: { status: StatusLevel }) {
-  return <Badge variant={STATUS_VARIANT[status]}>{STATUS_LABEL[status]}</Badge>
-}
 
 function formatAge(ageMs: number | null): string {
   if (ageMs === null) return "never"
@@ -58,18 +41,12 @@ export default async function OperationsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Operations</h1>
-          <p className="text-sm text-muted-foreground">
-            Platform-wide infrastructure status — application, database, the shared Outbox scheduler, backup, and
-            authentication-abuse signals. Business-level queues (this organization&apos;s own outbox events, accounting
-            exceptions) are linked below for detail; this page shows only safe aggregate counts, never patient or
-            financial content.
-          </p>
-        </div>
-        <StatusBadge status={health.overallStatus} />
-      </div>
+      <DetailHeader
+        module="admin"
+        title="Operations"
+        meta="Platform-wide infrastructure status — application, database, the shared Outbox scheduler, backup, and authentication-abuse signals. Business-level queues (this organization's own outbox events, accounting exceptions) are linked below for detail; this page shows only safe aggregate counts, never patient or financial content."
+        badge={<StatusBadge status={health.overallStatus} />}
+      />
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Card>

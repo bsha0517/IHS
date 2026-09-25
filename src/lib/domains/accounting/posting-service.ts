@@ -4,7 +4,10 @@ import { db } from "@/lib/db"
 import { nextNumber } from "@/lib/platform/sequences"
 import { log } from "@/lib/platform/logger"
 import { assertPeriodOpen } from "@/lib/domains/accounting/periods"
+import { isModuleEnabled } from "@/lib/platform/entitlements"
+import { POSTING_INTENT_LABELS } from "@/lib/domains/accounting/schemas"
 import type { Prisma, $Enums } from "@/generated/prisma/client"
+import type { ModuleKey } from "@/lib/platform/entitlements-shared"
 
 type Db = Prisma.TransactionClient | typeof db
 
@@ -797,4 +800,114 @@ export async function postManualJournal(input: {
       }),
     POSTING_TRANSACTION_OPTIONS
   )
+}
+
+// ---------------------------------------------------------------------------
+// P5.4 §4 — Financial Configuration Readiness
+// ---------------------------------------------------------------------------
+
+const TENDER_INTENTS: PostingIntent[] = ["cash", "card", "bank", "online", "insurance", "credit", "other"]
+
+/**
+ * Which posting intents an enabled module can actually cause `resolveAccountId`
+ * to look up, traced directly from this file's own real call sites (not
+ * guessed) — every entry here is grounded in a specific posting function this
+ * file already defines:
+ *
+ * - pos_billing: `postInvoiceIssued`/`postPaymentReceived`/`postRefundCompleted`/
+ *   `postPackageSessionConsumed` — accounts_receivable, revenue, tax_payable,
+ *   unearned_revenue, plus every tender intent (any payment/refund method a
+ *   cashier could select).
+ * - inventory: `postProductSaleCogs`/`postInventoryAdjustment` — inventory_asset,
+ *   cogs, inventory_write_off, inventory_adjustment_gain.
+ * - procurement: `postGoodsReceiptCompleted`/`postSupplierInvoiceCreated`/
+ *   `postSupplierPaymentRecorded` — accounts_payable, goods_received_not_invoiced,
+ *   recoverable_tax, inventory_asset, plus every tender intent (supplier
+ *   payment method).
+ * - payroll: `postPayrollApproved`/`postPayrollPaid` — salary_expense,
+ *   payroll_payable, plus every tender intent (paidVia).
+ * - assets: `postAssetAcquired` — fixed_asset, accounts_payable, plus every
+ *   tender intent (paidVia).
+ *
+ * `expense_default` is deliberately absent from every module here —
+ * `postExpense` takes an explicit, user-chosen `expenseAccountId` at
+ * entry time rather than resolving this intent (confirmed by inspection);
+ * flagging it as "required" would be a false positive no configuration step
+ * could ever actually satisfy through the product.
+ *
+ * Deliberately conservative, not exhaustive-per-condition: e.g. `tax_payable`
+ * is only actually resolved when an invoice has tax, but is still listed as
+ * required whenever pos_billing is enabled, because the alternative — a
+ * mapping that's missing only shows up as a blocker the first time a real
+ * clinic day happens to include a taxed invoice — is exactly the silent,
+ * post-go-live failure mode P5.3 found and P5.4 exists to prevent.
+ */
+const MODULE_FINANCIAL_REQUIREMENTS: { moduleKey: ModuleKey; intents: PostingIntent[]; reason: string }[] = [
+  {
+    moduleKey: "pos_billing",
+    intents: ["accounts_receivable", "revenue", "tax_payable", "unearned_revenue", ...TENDER_INTENTS],
+    reason: "Invoicing, payments, refunds, and package sales all post through these accounts.",
+  },
+  {
+    moduleKey: "inventory",
+    intents: ["inventory_asset", "cogs", "inventory_write_off", "inventory_adjustment_gain"],
+    reason: "Stock consumption and manual stock adjustments post through these accounts.",
+  },
+  {
+    moduleKey: "procurement",
+    intents: ["accounts_payable", "goods_received_not_invoiced", "recoverable_tax", "inventory_asset", ...TENDER_INTENTS],
+    reason: "Goods receipts, supplier invoices, and supplier payments post through these accounts.",
+  },
+  {
+    moduleKey: "payroll",
+    intents: ["salary_expense", "payroll_payable", ...TENDER_INTENTS],
+    reason: "Approving and paying a payroll run posts through these accounts.",
+  },
+  {
+    moduleKey: "assets",
+    intents: ["fixed_asset", "accounts_payable", ...TENDER_INTENTS],
+    reason: "Recording an asset acquisition posts through these accounts.",
+  },
+]
+
+export type FinancialReadinessGap = {
+  intent: PostingIntent
+  label: string
+  requiredByModules: string[]
+  reason: string
+}
+
+/**
+ * Detects, rather than auto-fixes (P5.4 §4's own explicit instruction: never
+ * guess which account a missing mapping should resolve to) — every
+ * enabled-module's required posting intent that has no org-wide (branchId
+ * null) `AccountMapping` row. `resolveAccountId`'s own fallback (this file,
+ * above) means a branch-level override is optional, never a substitute for
+ * the org-wide default — so an org-wide mapping's presence is both necessary
+ * and sufficient for readiness, matching what a real go-live actually needs.
+ */
+export async function getFinancialReadinessGaps(organizationId: string): Promise<FinancialReadinessGap[]> {
+  const relevantModules = await Promise.all(MODULE_FINANCIAL_REQUIREMENTS.map(async (r) => ({ ...r, enabled: await isModuleEnabled(organizationId, r.moduleKey) })))
+  const active = relevantModules.filter((r) => r.enabled)
+  if (active.length === 0) return []
+
+  const requiredByIntent = new Map<PostingIntent, { requiredByModules: string[]; reason: string }>()
+  for (const mod of active) {
+    for (const intent of mod.intents) {
+      const existing = requiredByIntent.get(intent)
+      if (existing) existing.requiredByModules.push(mod.moduleKey)
+      else requiredByIntent.set(intent, { requiredByModules: [mod.moduleKey], reason: mod.reason })
+    }
+  }
+  if (requiredByIntent.size === 0) return []
+
+  const existingMappings = await db.accountMapping.findMany({
+    where: { organizationId, branchId: null, intent: { in: [...requiredByIntent.keys()] } },
+    select: { intent: true },
+  })
+  const configuredIntents = new Set(existingMappings.map((m) => m.intent))
+
+  return [...requiredByIntent.entries()]
+    .filter(([intent]) => !configuredIntents.has(intent))
+    .map(([intent, info]) => ({ intent, label: POSTING_INTENT_LABELS[intent], requiredByModules: info.requiredByModules, reason: info.reason }))
 }

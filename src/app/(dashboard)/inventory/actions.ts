@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { getCurrentSession } from "@/lib/auth/session"
+import { assertModuleEnabled } from "@/lib/platform/entitlements"
 import { createProduct, updateProduct } from "@/lib/domains/inventory/products"
 import { recordAdjustment, listAvailableBatches } from "@/lib/domains/inventory/stock"
 import { createTransfer, completeTransfer, cancelTransfer } from "@/lib/domains/inventory/transfers"
@@ -12,6 +13,7 @@ export type ActionState = { error?: string; success?: boolean }
 async function requireSession() {
   const session = await getCurrentSession()
   if (!session) throw new Error("Not authenticated.")
+  await assertModuleEnabled(session.user.organizationId, "inventory")
   return session
 }
 
@@ -32,11 +34,11 @@ function readProductForm(formData: FormData) {
 }
 
 export async function createProductAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = readProductForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await createProduct(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to create product." }
@@ -47,12 +49,12 @@ export async function createProductAction(_prev: ActionState, formData: FormData
 }
 
 export async function updateProductAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const productId = String(formData.get("productId") ?? "")
   const parsed = readProductForm(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await updateProduct(session, productId, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to update product." }
@@ -62,7 +64,6 @@ export async function updateProductAction(_prev: ActionState, formData: FormData
 }
 
 export async function recordAdjustmentAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = stockAdjustmentSchema.safeParse({
     branchId: formData.get("branchId"),
     productId: formData.get("productId"),
@@ -80,6 +81,7 @@ export async function recordAdjustmentAction(_prev: ActionState, formData: FormD
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await recordAdjustment(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to record adjustment." }
@@ -89,7 +91,6 @@ export async function recordAdjustmentAction(_prev: ActionState, formData: FormD
 }
 
 export async function createTransferAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const session = await requireSession()
   const parsed = stockTransferSchema.safeParse({
     fromBranchId: formData.get("fromBranchId"),
     toBranchId: formData.get("toBranchId"),
@@ -101,6 +102,7 @@ export async function createTransferAction(_prev: ActionState, formData: FormDat
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input." }
 
   try {
+    const session = await requireSession()
     await createTransfer(session, parsed.data)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to create transfer." }
@@ -110,8 +112,8 @@ export async function createTransferAction(_prev: ActionState, formData: FormDat
 }
 
 export async function completeTransferAction(transferId: string): Promise<ActionState> {
-  const session = await requireSession()
   try {
+    const session = await requireSession()
     await completeTransfer(session, transferId)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to complete transfer." }
@@ -121,8 +123,8 @@ export async function completeTransferAction(transferId: string): Promise<Action
 }
 
 export async function cancelTransferAction(transferId: string, reason: string): Promise<ActionState> {
-  const session = await requireSession()
   try {
+    const session = await requireSession()
     await cancelTransfer(session, transferId, reason)
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Failed to cancel transfer." }

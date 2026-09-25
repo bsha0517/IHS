@@ -47,7 +47,7 @@ export default async function EpisodesPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Episodes" description={`${total} episode(s) of care`} />
+      <PageHeader title="Episodes" module="clinical" description={`${total} episode(s) of care`} />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <form className="flex max-w-md items-center gap-2">

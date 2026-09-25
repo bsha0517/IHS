@@ -52,11 +52,16 @@ export async function BillingTabs({
   statement: Awaited<ReturnType<typeof getPatientStatement>> | null
   canViewStatement: boolean
 }) {
-  const canViewPackages = can(session, "service.view")
+  const canConsume = can(session, "package.consume")
+  // Doctor/Nurse hold package.consume (system-roles.ts) but not
+  // service.view — without this, the only UI entry point for consuming a
+  // package session (UseSessionDialog below) is unreachable by the sole
+  // roles authorized to use it, since the whole Packages tab content was
+  // gated behind service.view alone.
+  const canViewPackages = can(session, "service.view") || canConsume
   const canViewInvoices = can(session, "invoice.view")
   const canViewPayments = can(session, "payment.view")
   const canSell = can(session, "package.sell")
-  const canConsume = can(session, "package.consume")
   const canCollectPayment = can(session, "invoice.create")
 
   const [patientPackages, invoices, payments, catalogPackages] = await Promise.all([

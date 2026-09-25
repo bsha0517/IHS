@@ -162,22 +162,25 @@ export async function listPatients(session: SessionContext, params: { search?: s
     AND: [
       { organizationId: session.user.organizationId },
       ...(visibility ? [visibility] : []),
+      // Each whitespace-separated term must match some field on its own —
+      // firstName/lastName are separate columns, so a full "First Last"
+      // search (the name as it's displayed everywhere in the UI) needs an
+      // AND-of-ORs across terms rather than one OR testing the whole query
+      // string against each field, which would never match a two-word name.
       ...(search
-        ? [
-            {
-              OR: [
-                { firstName: { contains: search, mode: "insensitive" as const } },
-                { lastName: { contains: search, mode: "insensitive" as const } },
-                { mrn: { contains: search, mode: "insensitive" as const } },
-                { mobile: { contains: search } },
-                // P3.1 §10: reception search should also find a patient by
-                // national ID — the field already exists and is already
-                // used for duplicate detection (findPotentialDuplicates
-                // above); it just wasn't wired into ordinary search.
-                { nationalId: { contains: search, mode: "insensitive" as const } },
-              ],
-            },
-          ]
+        ? search.split(/\s+/).filter(Boolean).map((term) => ({
+            OR: [
+              { firstName: { contains: term, mode: "insensitive" as const } },
+              { lastName: { contains: term, mode: "insensitive" as const } },
+              { mrn: { contains: term, mode: "insensitive" as const } },
+              { mobile: { contains: term } },
+              // P3.1 §10: reception search should also find a patient by
+              // national ID — the field already exists and is already
+              // used for duplicate detection (findPotentialDuplicates
+              // above); it just wasn't wired into ordinary search.
+              { nationalId: { contains: term, mode: "insensitive" as const } },
+            ],
+          }))
         : []),
     ],
   }

@@ -21,6 +21,7 @@ export default async function PackagesPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Packages"
+        module="clinical"
         description={`${packages.length} package(s)`}
         primaryAction={canManage && <NewPackageDialog services={serviceOptions} />}
       />

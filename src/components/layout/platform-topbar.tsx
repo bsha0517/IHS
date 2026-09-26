@@ -22,8 +22,16 @@ const NAV = [
  * P5.1 §20/§44: deliberately its own component, not a reuse of the clinic
  * `Topbar`/`AppSidebar` — no branch switcher, no notification bell, no
  * module-color sidebar (§44's own "do not make them look like clinical
- * screens"). Neutral slate + the Avant teal brand mark, a flat top nav
- * (four destinations total — a sidebar would be over-built for this many).
+ * screens"). Neutral slate + the Avant teal brand mark, a flat top nav.
+ *
+ * P5.8 release: the nav grew to 7 destinations, which no longer fits this
+ * row's fixed `h-14` height at the `sm` breakpoint (~640-900px, e.g. a
+ * 768px tablet) without pushing the whole page wider than the viewport —
+ * `min-w-0` (flex children default to `min-width: auto`, which blocks
+ * shrinking below content size) plus `overflow-x-auto` on the nav itself
+ * fixes it by letting the nav scroll horizontally within its own row,
+ * mirroring the mobile nav below's own already-proven pattern, rather than
+ * forcing every ancestor wider.
  */
 export function PlatformTopbar({ operator }: { operator: { firstName: string; lastName: string; email: string } }) {
   const pathname = usePathname()
@@ -32,14 +40,14 @@ export function PlatformTopbar({ operator }: { operator: { firstName: string; la
   return (
     <header className="border-b border-border bg-card">
       <div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-between px-4 md:px-6">
-        <div className="flex items-center gap-6">
-          <Link href="/platform" className="flex items-center gap-2">
+        <div className="flex min-w-0 items-center gap-6">
+          <Link href="/platform" className="flex shrink-0 items-center gap-2">
             <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-slate-100">
               <Building2 className="size-4 text-slate-600" />
             </span>
             <span className="text-sm font-semibold">Avant Platform</span>
           </Link>
-          <nav className="hidden items-center gap-1 sm:flex">
+          <nav className="hidden min-w-0 items-center gap-1 overflow-x-auto sm:flex">
             {NAV.map((item) => {
               const isActive = pathname === item.href || (item.href !== "/platform" && pathname.startsWith(`${item.href}/`))
               return (

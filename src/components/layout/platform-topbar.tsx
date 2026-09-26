@@ -11,6 +11,7 @@ import { platformLogoutAction } from "@/app/platform/actions"
 const NAV = [
   { label: "Dashboard", href: "/platform" },
   { label: "Organizations", href: "/platform/organizations" },
+  { label: "Implementations", href: "/platform/implementations" },
   { label: "Provision Clinic", href: "/platform/provision" },
   { label: "Plans", href: "/platform/plans" },
   { label: "Country Packs", href: "/platform/country-packs" },

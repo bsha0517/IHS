@@ -159,3 +159,20 @@ export const completePilotUatSchema = z.object({
   notes: z.string().max(2000).optional().nullable(),
   signOff: z.coerce.boolean().default(false),
 })
+
+// P5.8 — implementation workspace
+
+export const updateImplementationTrainingSchema = z.object({
+  status: z.enum(["not_scheduled", "scheduled", "completed", "not_applicable"]),
+  scheduledAt: z.coerce.date().optional().nullable(),
+  notes: z.string().max(2000).optional().nullable(),
+})
+export type UpdateImplementationTrainingSchemaInput = z.infer<typeof updateImplementationTrainingSchema>
+
+export const addImplementationNoteSchema = z.object({
+  body: z.string().min(1).max(2000),
+})
+
+export const updateTargetGoLiveDateSchema = z.object({
+  targetGoLiveDate: z.coerce.date().optional().nullable(),
+})

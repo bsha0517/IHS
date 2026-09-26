@@ -126,6 +126,9 @@ export default async function PlatformOrganizationDetailPage({ params }: { param
             <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
               <CardTitle className="text-base">Operations</CardTitle>
               <div className="flex flex-wrap gap-2">
+                <Button asChild size="sm">
+                  <Link href={`/platform/organizations/${organization.id}/implementation`}>Implementation workspace</Link>
+                </Button>
                 <Button asChild size="sm" variant="outline">
                   <Link href={`/platform/organizations/${organization.id}/onboarding`}>Onboarding workspace</Link>
                 </Button>

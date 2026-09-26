@@ -129,6 +129,10 @@ model Organization {
   supportTickets           SupportTicket[]
   pilotUats                PilotUat[]
 
+  // P5.8 — implementation workspace orchestration layer, same reasoning.
+  implementationTrainings ImplementationTraining[]
+  implementationNotes     ImplementationNote[]
+
   @@map("organization")
 }
 
@@ -4589,6 +4593,20 @@ model OrganizationCommercialProfile {
   goLiveApprovedAt           DateTime? @map("go_live_approved_at") @db.Timestamptz(3)
   goLiveNotes                String?   @map("go_live_notes")
 
+  // P5.8 §27: a PLANNED date, distinct from `goLiveApprovedAt` (the actual
+  // approval-event timestamp, already authoritative for "when did this org
+  // actually go live" — never duplicated into a second column). Plain,
+  // operator-editable; never auto-derived or validated against readiness.
+  targetGoLiveDate DateTime? @map("target_go_live_date") @db.Date
+
+  // P5.8 §30: handover is recorded only by `completeHandover()`
+  // (commercial/implementation.ts) after re-checking the same authoritative
+  // `getGoLiveBlockers()` this profile's own go-live approval already uses —
+  // never set directly by any other mutation, same discipline as
+  // `goLiveApprovedAt` above.
+  handoverCompletedAt           DateTime? @map("handover_completed_at") @db.Timestamptz(3)
+  handoverCompletedByOperatorId String?   @map("handover_completed_by_operator_id")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
@@ -4764,7 +4782,6 @@ enum OnboardingChecklistStatus {
  * (`ONBOARDING_CHECKLIST_ITEMS` in `onboarding-checklist.ts`), filtered by
  * that org's real module entitlements at seed time — never an operator
  * inventing a requirement Avant HIS doesn't actually support.
- *
  * `category`/`key` are plain validated strings, not DB enums — the same
  * "extensible-but-bounded set is cheaper to grow as a validated string"
  * choice this codebase already made for `NumberSequence.sequenceType` and
@@ -4822,7 +4839,6 @@ enum SupportTicketPriority {
  * concurrency limitation) — support tickets are a much higher-frequency,
  * multi-actor-driven path than clinic provisioning, so the race this avoids
  * is genuinely plausible here.
- *
  * `createdByOperatorId`/`createdByUserId` are both nullable and mutually
  * exclusive by convention (enforced in `support-tickets.ts`, not the
  * schema) — a ticket is filed either by a platform operator (on the
@@ -4943,14 +4959,16 @@ model PilotUat {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  organization Organization      @relation(fields: [organizationId], references: [id])
+  organization Organization       @relation(fields: [organizationId], references: [id])
   scenarios    PilotUatScenario[]
 
   @@index([organizationId, createdAt])
   @@map("pilot_uat")
 }
 
-/** One pass/fail row per pilot checklist scenario (§11's Reception/Doctor/Inventory/Billing/Finance/clinical/multi-user/multi-branch/security areas) — `area`/`scenario` are free validated strings, not an enum (the pilot checklist's own scenario list is expected to evolve). */
+/**
+ * One pass/fail row per pilot checklist scenario (§11's Reception/Doctor/Inventory/Billing/Finance/clinical/multi-user/multi-branch/security areas) — `area`/`scenario` are free validated strings, not an enum (the pilot checklist's own scenario list is expected to evolve).
+ */
 model PilotUatScenario {
   id    String @id @default(uuid())
   uatId String @map("uat_id")
@@ -5042,4 +5060,87 @@ model EInvoiceSubmission {
   @@unique([organizationId, icv])
   @@index([organizationId, status])
   @@map("e_invoice_submission")
+}
+
+// ---------------------------------------------------------------------------
+// P5.8 — Customer Implementation Workspace & Go-Live Management
+//
+// Orchestration only: every readiness signal (onboarding checklist, UAT,
+// financial readiness, go-live conditions/approval, support tickets, module
+// entitlements) is read from its own existing, untouched P5.1/P5.2/P5.4
+// domain — nothing here duplicates that data or those rules. The two
+// genuinely new persistence needs, confirmed absent anywhere else in this
+// schema: (1) a lightweight per-area training tracker, and (2) a freeform
+// implementation-notes timeline. Both follow the exact modeling precedent
+// already established by OnboardingChecklistItem/PilotUat/SupportTicket in
+// the P5.2 section above (organization-scoped, operator ids as bare
+// scalars — never a Prisma relation to PlatformOperator, matching
+// `implementationOwner`'s own documented reasoning).
+// ---------------------------------------------------------------------------
+
+enum ImplementationTrainingStatus {
+  not_scheduled
+  scheduled
+  completed
+  not_applicable
+}
+
+/**
+ * P5.8 §15-17: implementation training only — never an LMS. One row per
+ * (organization, area), `area` a plain validated string (module key or a
+ * fixed non-module area like "administration"), matching
+ * `OnboardingChecklistItem.category`/`key`'s own "validated string, not a
+ * DB enum" precedent. Seeded lazily, module-aware, by
+ * `ensureImplementationTraining()` (commercial/implementation.ts) — an area
+ * whose module is disabled is never created as a row at all, not created
+ * and marked `not_applicable` (mirrors how a disabled module's onboarding
+ * checklist item is never seeded either).
+ */
+model ImplementationTraining {
+  id             String @id @default(uuid())
+  organizationId String @map("organization_id")
+
+  area   String
+  status ImplementationTrainingStatus @default(not_scheduled)
+
+  scheduledAt DateTime? @map("scheduled_at") @db.Timestamptz(3)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(3)
+  notes       String?
+
+  recordedByOperatorId String? @map("recorded_by_operator_id")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, area])
+  @@index([organizationId])
+  @@map("implementation_training")
+}
+
+/**
+ * P5.8 §29: the smallest sensible freeform implementation-notes timeline —
+ * `SupportTicketNote` requires a specific ticket to attach to (wrong shape
+ * for general implementation commentary not tied to any one ticket), and
+ * `AuditLog`/`OrganizationCommercialProfile.internalNotes` are respectively
+ * a structured system-action log and a single free-text field, not a
+ * growing timeline. Never stores PHI/clinical data — `body` is
+ * implementation/commercial commentary only (e.g. "Customer requested
+ * Saturday training"), the same discipline `SupportTicket.description`
+ * already follows.
+ */
+model ImplementationNote {
+  id             String @id @default(uuid())
+  organizationId String @map("organization_id")
+
+  body             String
+  authorOperatorId String? @map("author_operator_id")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId, createdAt])
+  @@map("implementation_note")
 }

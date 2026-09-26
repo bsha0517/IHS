@@ -61,6 +61,11 @@ export type ProvisionClinicResult = {
  */
 export async function provisionClinic(operator: PlatformSessionContext, input: ProvisionClinicInput): Promise<ProvisionClinicResult> {
   const plan = await db.commercialPlan.findUniqueOrThrow({ where: { id: input.planId } })
+  // P5.7 Part 5/26: an inactive plan is retained for historical subscriptions
+  // (plans.ts never hard-deletes one) but must never be usable for a NEW
+  // provisioning request — enforced here, server-side, not just by the
+  // provisioning form omitting it from its dropdown.
+  if (!plan.active) throw new Error("This plan is no longer active and cannot be used to provision a new organization.")
 
   const adminBootstrapSecret = generateRawToken()
   const adminPasswordHash = await hashPassword(adminBootstrapSecret)

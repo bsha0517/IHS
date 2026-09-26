@@ -12,6 +12,8 @@ import {
   updateModuleEntitlement,
   resetEntitlementsToPlanDefaults,
   approveGoLive,
+  getPlanChangeImpact,
+  type PlanChangeImpact,
 } from "@/lib/domains/commercial/organizations"
 import { updateCommercialProfileSchema, updateSubscriptionSchema } from "@/lib/domains/commercial/schemas"
 import { requirePlatformOperator } from "@/lib/platform/operator-guard"
@@ -93,6 +95,21 @@ export async function updateSubscriptionAction(organizationId: string, _prev: Ac
   }
   revalidate(organizationId)
   return ok
+}
+
+/** P5.7 Part 12/13: read-only preview for the SubscriptionDialog — never mutates anything; `updateSubscriptionAction` above independently re-checks and enforces the same block server-side regardless of what this returns. */
+export async function getPlanChangeImpactAction(
+  organizationId: string,
+  planId: string,
+  agreedUserLimit: number | null,
+  agreedBranchLimit: number | null
+): Promise<{ impact?: PlanChangeImpact; error?: string }> {
+  try {
+    const impact = await getPlanChangeImpact(organizationId, planId, { agreedUserLimit, agreedBranchLimit })
+    return { impact }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to compute plan-change impact." }
+  }
 }
 
 export async function updateOnboardingStatusAction(organizationId: string, status: $Enums.CommercialOnboardingStatus): Promise<ActionState> {

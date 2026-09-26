@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { FormSection, FormFieldFull } from "@/components/ui/form-section"
 import { MODULE_KEYS, MODULE_LABELS } from "@/lib/platform/entitlements-shared"
 import { REGULATORY_LABELS, COUNTRY_INTEGRATIONS, ALL_REGULATORY_CODES } from "@/lib/domains/commercial/regulatory-shared"
+import { getCountryPack } from "@/lib/domains/commercial/country-packs-shared"
 import { provisionClinicAction, type ProvisionState } from "@/app/platform/provision/actions"
 
 const initialState: ProvisionState = {}
@@ -52,6 +53,18 @@ export function ProvisionForm({ plans }: { plans: { id: string; code: string; na
   const [step, setStep] = useState<"form" | "review">("form")
   const [summary, setSummary] = useState<ReviewSummary | null>(null)
   const formRef = useRef<HTMLFormElement>(null)
+  const currencyRef = useRef<HTMLInputElement>(null)
+  const timezoneRef = useRef<HTMLInputElement>(null)
+
+  // P5.7 Part 22: typing a recognized country auto-suggests that Country
+  // Pack's currency/timezone — a suggestion only (both fields stay plain,
+  // editable inputs the operator can override for a specific contract).
+  function handleCountryChange(value: string) {
+    const pack = getCountryPack(value)
+    if (!pack) return
+    if (currencyRef.current) currencyRef.current.value = pack.currency
+    if (timezoneRef.current) timezoneRef.current.value = pack.defaultTimezone
+  }
 
   const selectedPlan = useMemo(() => plans.find((p) => p.id === planId), [plans, planId])
 
@@ -76,6 +89,7 @@ export function ProvisionForm({ plans }: { plans: { id: string; code: string; na
     setStep("review")
   }
 
+  const countryPack = summary ? getCountryPack(summary.country) : null
   const regulatoryPreview = summary
     ? ALL_REGULATORY_CODES.map((code) => ({
         code,
@@ -135,18 +149,25 @@ export function ProvisionForm({ plans }: { plans: { id: string; code: string; na
         </div>
         <div className="grid gap-1.5">
           <Label htmlFor="defaultCurrency">Default currency (ISO-3)</Label>
-          <Input id="defaultCurrency" name="defaultCurrency" maxLength={3} defaultValue="USD" required />
+          <Input ref={currencyRef} id="defaultCurrency" name="defaultCurrency" maxLength={3} defaultValue="USD" required />
         </div>
         <div className="grid gap-1.5">
           <Label htmlFor="defaultTimezone">Default timezone</Label>
-          <Input id="defaultTimezone" name="defaultTimezone" defaultValue="Asia/Karachi" required />
+          <Input ref={timezoneRef} id="defaultTimezone" name="defaultTimezone" defaultValue="Asia/Karachi" required />
         </div>
       </FormSection>
 
       <FormSection title="Commercial details">
         <div className="grid gap-1.5">
           <Label htmlFor="country">Country (ISO-2)</Label>
-          <Input id="country" name="country" maxLength={2} placeholder="PK, AE, SA..." required />
+          <Input
+            id="country"
+            name="country"
+            maxLength={2}
+            placeholder="PK, AE, SA..."
+            required
+            onChange={(e) => handleCountryChange(e.target.value)}
+          />
         </div>
         <div className="grid gap-1.5">
           <Label htmlFor="legalBusinessName">Legal business name (if distinct)</Label>
@@ -319,7 +340,7 @@ export function ProvisionForm({ plans }: { plans: { id: string; code: string; na
             <SummarySection title="Modules" full>
               <p>{selectedModules.length > 0 ? selectedModules.map((k) => MODULE_LABELS[k as keyof typeof MODULE_LABELS]).join(", ") : "None selected"}</p>
             </SummarySection>
-            <SummarySection title="Regulatory (based on country)" full>
+            <SummarySection title={countryPack ? `Country Pack — ${countryPack.countryName}` : "Regulatory (based on country)"} full>
               <p className="text-xs text-muted-foreground">Configuration surface only — nothing is enabled or certified by provisioning itself.</p>
               <ul className="grid gap-1">
                 {regulatoryPreview.map((r) => (

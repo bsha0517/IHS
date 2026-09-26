@@ -13,6 +13,7 @@ const NAV = [
   { label: "Organizations", href: "/platform/organizations" },
   { label: "Provision Clinic", href: "/platform/provision" },
   { label: "Plans", href: "/platform/plans" },
+  { label: "Country Packs", href: "/platform/country-packs" },
   { label: "Support Tickets", href: "/platform/tickets" },
 ]
 

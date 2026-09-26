@@ -19,6 +19,8 @@ import { GoLiveApprovalCard } from "@/app/platform/organizations/[id]/go-live-ap
 import { RegulatoryCard } from "@/app/platform/organizations/[id]/regulatory-card"
 import { LifecycleActions } from "@/app/platform/organizations/[id]/lifecycle-actions"
 import { PlatformPageShell } from "@/components/layout/platform-page-shell"
+import { getCountryPack } from "@/lib/domains/commercial/country-packs-shared"
+import type { ModuleKey } from "@/lib/platform/entitlements-shared"
 
 export default async function PlatformOrganizationDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
@@ -30,6 +32,7 @@ export default async function PlatformOrganizationDetailPage({ params }: { param
   const profile = organization.commercialProfile
   const currentSubscription = profile?.subscriptions[0] ?? null
   const regulatoryIntegrations = await getRegulatoryIntegrations(organization.id, profile?.country ?? null)
+  const countryPack = getCountryPack(profile?.country ?? null)
 
   return (
     <PlatformPageShell>
@@ -67,6 +70,7 @@ export default async function PlatformOrganizationDetailPage({ params }: { param
                 <Row label="Billing contact" value={profile.billingContactName} />
                 <Row label="Billing contact email" value={profile.billingContactEmail} />
                 <Row label="Implementation owner" value={profile.implementationOwner} />
+                <Row label="Country Pack" value={countryPack ? `${countryPack.countryName} — ${countryPack.currency}` : "No pack defined for this country"} />
                 <Row label="Internal notes" value={profile.internalNotes} />
               </CardContent>
             </Card>
@@ -141,7 +145,11 @@ export default async function PlatformOrganizationDetailPage({ params }: { param
             </CardContent>
           </Card>
 
-          <EntitlementsCard organizationId={organization.id} entitlements={entitlements} />
+          <EntitlementsCard
+            organizationId={organization.id}
+            entitlements={entitlements}
+            planDefaultModuleKeys={(currentSubscription?.plan.defaultModuleKeys as ModuleKey[] | undefined) ?? null}
+          />
 
           <RegulatoryCard integrations={regulatoryIntegrations} />
 

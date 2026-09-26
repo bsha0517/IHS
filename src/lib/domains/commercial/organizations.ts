@@ -299,6 +299,82 @@ export async function updateCommercialProfile(organizationId: string, input: Upd
   return updated
 }
 
+// ---------------------------------------------------------------------------
+// P5.7 Part 12/13: plan-change comparison and downgrade safety. Computed
+// from the SAME `getEffectiveLimits`/`getModuleEntitlements` this file
+// already uses for ordinary limit enforcement — no second usage-counting
+// mechanism. Never touches any row itself; `updateSubscription` below is
+// the one place that acts on `blocked`.
+// ---------------------------------------------------------------------------
+
+export type PlanChangeImpact = {
+  currentPlan: { id: string; name: string; code: string } | null
+  newPlan: { id: string; name: string; code: string; userLimit: number | null; branchLimit: number | null }
+  currentUserCount: number
+  currentBranchCount: number
+  effectiveNewUserLimit: number | null
+  effectiveNewBranchLimit: number | null
+  blocked: boolean
+  blockReasons: string[]
+  modulesToBeAdded: ModuleKey[]
+  modulesToBeRemoved: ModuleKey[]
+}
+
+/**
+ * Read-only preview of what changing to `newPlanId` (with optional
+ * per-organization limit overrides, same as `updateSubscription`'s own
+ * `agreedUserLimit`/`agreedBranchLimit`) would mean for this organization —
+ * used both by `updateSubscription`'s own server-side block and by the
+ * Platform Operator UI to show the comparison before confirming (§12).
+ * `modulesToBeAdded`/`modulesToBeRemoved` compare the new plan's own
+ * `defaultModuleKeys` against CURRENT entitlements — informational only;
+ * this function never changes entitlements itself (only "Reset to plan
+ * defaults" or an explicit override does that).
+ */
+export async function getPlanChangeImpact(
+  organizationId: string,
+  newPlanId: string,
+  overrides: { agreedUserLimit?: number | null; agreedBranchLimit?: number | null } = {}
+): Promise<PlanChangeImpact> {
+  await requirePlatformOperator()
+  const [newPlan, currentSubscription, activeUserCount, activeBranchCount, entitlements] = await Promise.all([
+    db.commercialPlan.findUniqueOrThrow({ where: { id: newPlanId } }),
+    db.organizationSubscription.findFirst({ where: { organizationId }, orderBy: { createdAt: "desc" }, include: { plan: true } }),
+    db.user.count({ where: { organizationId, status: "active" } }),
+    db.branch.count({ where: { organizationId, status: "active" } }),
+    getModuleEntitlements(organizationId),
+  ])
+
+  const effectiveNewUserLimit = overrides.agreedUserLimit ?? newPlan.userLimit
+  const effectiveNewBranchLimit = overrides.agreedBranchLimit ?? newPlan.branchLimit
+
+  const blockReasons: string[] = []
+  if (effectiveNewUserLimit !== null && activeUserCount > effectiveNewUserLimit) {
+    blockReasons.push(`Cannot apply this plan — current active users (${activeUserCount}) exceed the new limit (${effectiveNewUserLimit}). Reduce active users or select a higher limit before changing plans.`)
+  }
+  if (effectiveNewBranchLimit !== null && activeBranchCount > effectiveNewBranchLimit) {
+    blockReasons.push(`Cannot apply this plan — current active branches (${activeBranchCount}) exceed the new limit (${effectiveNewBranchLimit}). Reduce active branches or select a higher limit before changing plans.`)
+  }
+
+  const enabledModules = new Set(Object.entries(entitlements).filter(([, enabled]) => enabled).map(([key]) => key as ModuleKey))
+  const newDefaults = new Set(newPlan.defaultModuleKeys as ModuleKey[])
+  const modulesToBeAdded = [...newDefaults].filter((k) => !enabledModules.has(k))
+  const modulesToBeRemoved = [...enabledModules].filter((k) => !newDefaults.has(k))
+
+  return {
+    currentPlan: currentSubscription ? { id: currentSubscription.plan.id, name: currentSubscription.plan.name, code: currentSubscription.plan.code } : null,
+    newPlan: { id: newPlan.id, name: newPlan.name, code: newPlan.code, userLimit: newPlan.userLimit, branchLimit: newPlan.branchLimit },
+    currentUserCount: activeUserCount,
+    currentBranchCount: activeBranchCount,
+    effectiveNewUserLimit,
+    effectiveNewBranchLimit,
+    blocked: blockReasons.length > 0,
+    blockReasons,
+    modulesToBeAdded,
+    modulesToBeRemoved,
+  }
+}
+
 /**
  * §10/§18/§41: creates a NEW subscription row (history preserved, never
  * mutates a prior one in place) — the "current" subscription is simply the
@@ -306,10 +382,25 @@ export async function updateCommercialProfile(organizationId: string, input: Upd
  * module data regardless of how the new plan's limits compare to the old
  * one (§41 — an over-limit state is surfaced by the limit-check helpers
  * below as "cannot create MORE," never as "delete what already exists").
+ *
+ * P5.7 §13: before creating the row, checks `getPlanChangeImpact` and
+ * rejects the change outright if current active user/branch usage would
+ * exceed the new effective limit — the actual server-side downgrade-safety
+ * enforcement (never relies on the UI alone). Never deletes/deactivates a
+ * user or branch to "make room" — the operator must reduce usage or choose
+ * a different limit first.
  */
 export async function updateSubscription(organizationId: string, input: UpdateSubscriptionInput) {
   const operator = await requirePlatformOperator()
   const commercialProfile = await db.organizationCommercialProfile.findUniqueOrThrow({ where: { organizationId } })
+
+  const impact = await getPlanChangeImpact(organizationId, input.planId, {
+    agreedUserLimit: input.agreedUserLimit ?? null,
+    agreedBranchLimit: input.agreedBranchLimit ?? null,
+  })
+  if (impact.blocked) {
+    throw new SubscriptionLimitError(impact.blockReasons.join(" "))
+  }
 
   const created = await db.organizationSubscription.create({
     data: {

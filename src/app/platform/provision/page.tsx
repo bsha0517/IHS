@@ -8,7 +8,10 @@ import Link from "next/link"
 import { PlatformPageShell } from "@/components/layout/platform-page-shell"
 
 export default async function PlatformProvisionPage() {
-  const plans = await listPlans()
+  // P5.7 Part 5/31: an inactive plan is retained for historical subscriptions
+  // (plans.ts never hard-deletes one) but must not be offered for new
+  // provisioning.
+  const plans = (await listPlans()).filter((p) => p.active)
 
   return (
     <PlatformPageShell>

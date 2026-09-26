@@ -173,7 +173,7 @@ export async function provisionClinic(operator: PlatformSessionContext, input: P
         customerCode,
         activationToken: activationRawToken,
       }
-    })
+    }, { timeout: 20_000, maxWait: 10_000 }) // widened for the same reason posting-service.ts's POSTING_TRANSACTION_OPTIONS is — org/branch create, bootstrapSystemRoles' own per-role upsert loop, admin user + role/branch-access grants, activation token, customer-code count, commercial profile, subscription, and 4 go-live condition creates all add up under this environment's real Supabase pooler latency; a real production run caught this exact transaction exceeding Prisma's 5000ms default at ~5434ms (P5.6 release smoke test, P5.1.1 hotfix).
   } catch (e) {
     if (isPlatformIdempotencyKeyConflict(e)) {
       const resultId = await resolveDuplicatePlatformRequest({ operatorId: operator.operator.id, scope: "provision_clinic", key: input.idempotencyKey })

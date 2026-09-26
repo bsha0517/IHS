@@ -1,8 +1,6 @@
 import Link from "next/link"
-import { listOrganizationsForPlatform } from "@/lib/domains/commercial/organizations"
+import { listOrganizationsForPlatform, listOrganizationCountries } from "@/lib/domains/commercial/organizations"
 import { PageHeader } from "@/components/ui/page-header"
-import { FilterBar, FilterField } from "@/components/ui/filter-bar"
-import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -11,6 +9,8 @@ import { EmptyState } from "@/components/ui/empty-state"
 import { PaginationControls } from "@/components/domain/pagination-controls"
 import { formatDate } from "@/lib/utils/dates"
 import { PlatformPageShell } from "@/components/layout/platform-page-shell"
+import { OrganizationFilters } from "@/app/platform/organizations/organization-filters"
+import type { $Enums } from "@/generated/prisma/client"
 
 /**
  * P5.1 §20/§22/§46/§86: operational metadata only — organization name,
@@ -18,36 +18,52 @@ import { PlatformPageShell } from "@/components/layout/platform-page-shell"
  * OrgStatus. No patient name, no diagnosis, no clinical content of any kind
  * — nothing on this page could even display PHI, since nothing here queries
  * a Patient/clinical table at all.
+ *
+ * P5.6 Part 2: adds country/subscription/onboarding/go-live filters and a
+ * Go-live column (commercialLifecycle, already fetched by
+ * listOrganizationsForPlatform — no extra per-row query) on top of the
+ * existing search-only list.
  */
 export default async function PlatformOrganizationsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; page?: string }>
+  searchParams: Promise<{
+    q?: string
+    page?: string
+    country?: string
+    subscriptionStatus?: string
+    onboardingStatus?: string
+    goLive?: string
+  }>
 }) {
   const sp = await searchParams
-  const { organizations, total, page, totalPages } = await listOrganizationsForPlatform({
-    search: sp.q,
-    page: sp.page ? Number(sp.page) : undefined,
-  })
+  const [{ organizations, total, page, totalPages }, countries] = await Promise.all([
+    listOrganizationsForPlatform({
+      search: sp.q,
+      page: sp.page ? Number(sp.page) : undefined,
+      country: sp.country,
+      subscriptionStatus: sp.subscriptionStatus as $Enums.SubscriptionStatus | undefined,
+      onboardingStatus: sp.onboardingStatus as $Enums.CommercialOnboardingStatus | undefined,
+      commercialLifecycle: sp.goLive as $Enums.CommercialLifecycle | undefined,
+    }),
+    listOrganizationCountries(),
+  ])
 
   return (
     <PlatformPageShell>
     <div className="flex flex-col gap-6">
-      <PageHeader title="Organizations" module="platform" description={`${total} organization(s)`} />
-
-      <FilterBar method="get">
-        <FilterField label="Search" htmlFor="q" className="min-w-[240px]">
-          <Input id="q" name="q" defaultValue={sp.q ?? ""} placeholder="Name, customer code, contact..." />
-        </FilterField>
-        <Button type="submit" size="sm">
-          Filter
-        </Button>
-        {sp.q && (
-          <Button asChild type="button" variant="ghost" size="sm">
-            <Link href="/platform/organizations">Reset</Link>
+      <PageHeader
+        title="Organizations"
+        module="platform"
+        description={`${total} organization(s)`}
+        primaryAction={
+          <Button asChild size="sm">
+            <Link href="/platform/provision">+ Provision Clinic</Link>
           </Button>
-        )}
-      </FilterBar>
+        }
+      />
+
+      <OrganizationFilters countries={countries} sp={sp} />
 
       <Card>
         <CardContent className="pt-6">
@@ -59,6 +75,7 @@ export default async function PlatformOrganizationsPage({
                 <TableHead>Plan</TableHead>
                 <TableHead>Subscription</TableHead>
                 <TableHead>Onboarding</TableHead>
+                <TableHead>Go-live</TableHead>
                 <TableHead className="text-right">Branches</TableHead>
                 <TableHead className="text-right">Users</TableHead>
                 <TableHead>Status</TableHead>
@@ -68,7 +85,7 @@ export default async function PlatformOrganizationsPage({
             <TableBody>
               {organizations.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={9} className="p-0">
+                  <TableCell colSpan={10} className="p-0">
                     <EmptyState title="No organizations found" description="Provision the first clinic to see it here." className="border-none" />
                   </TableCell>
                 </TableRow>
@@ -85,6 +102,7 @@ export default async function PlatformOrganizationsPage({
                   <TableCell>{o.currentSubscription?.plan.name ?? "—"}</TableCell>
                   <TableCell>{o.currentSubscription ? <StatusBadge status={o.currentSubscription.status} /> : "—"}</TableCell>
                   <TableCell>{o.onboardingStatus ? <StatusBadge status={o.onboardingStatus} /> : "—"}</TableCell>
+                  <TableCell>{o.commercialLifecycle ? <StatusBadge status={o.commercialLifecycle} /> : "—"}</TableCell>
                   <TableCell className="text-right tabular-nums">{o.activeBranchCount}</TableCell>
                   <TableCell className="text-right tabular-nums">{o.activeUserCount}</TableCell>
                   <TableCell>

@@ -1,6 +1,6 @@
 "use client"
 
-import { useActionState, useState, useMemo } from "react"
+import { useActionState, useState, useMemo, useRef } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -11,9 +11,24 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { FormSection, FormFieldFull } from "@/components/ui/form-section"
 import { MODULE_KEYS, MODULE_LABELS } from "@/lib/platform/entitlements-shared"
+import { REGULATORY_LABELS, COUNTRY_INTEGRATIONS, ALL_REGULATORY_CODES } from "@/lib/domains/commercial/regulatory-shared"
 import { provisionClinicAction, type ProvisionState } from "@/app/platform/provision/actions"
 
 const initialState: ProvisionState = {}
+
+type ReviewSummary = {
+  displayName: string
+  legalName: string
+  defaultCurrency: string
+  defaultTimezone: string
+  country: string
+  planName: string
+  subscriptionStatus: string
+  branchName: string
+  adminFirstName: string
+  adminLastName: string
+  adminEmail: string
+}
 
 /**
  * P5.1 §24/§60: one deliberate workflow (Commercial Details -> Plan ->
@@ -22,14 +37,52 @@ const initialState: ProvisionState = {}
  * every render/submit) and resubmitted unchanged on any retry of this same
  * attempt — a fresh key per click would defeat idempotency entirely (see
  * idempotency.ts's own doc comment, which this mirrors).
+ *
+ * P5.6 Part 10: a "Review" step gates the actual submit — clicking through
+ * the form alone never provisions anything. The field sections stay
+ * mounted (just visually `hidden`) while reviewing, so their values are
+ * still part of the one real `<form>` that finally submits; the review
+ * step only reads a snapshot via `FormData` to render the summary text.
  */
 export function ProvisionForm({ plans }: { plans: { id: string; code: string; name: string; defaultModuleKeys: string[] }[] }) {
   const [state, formAction, pending] = useActionState<ProvisionState, FormData>(provisionClinicAction, initialState)
   const [idempotencyKey] = useState(() => crypto.randomUUID())
   const [planId, setPlanId] = useState(plans[0]?.id ?? "")
   const [selectedModules, setSelectedModules] = useState<string[]>(plans[0]?.defaultModuleKeys ?? [])
+  const [step, setStep] = useState<"form" | "review">("form")
+  const [summary, setSummary] = useState<ReviewSummary | null>(null)
+  const formRef = useRef<HTMLFormElement>(null)
 
   const selectedPlan = useMemo(() => plans.find((p) => p.id === planId), [plans, planId])
+
+  function handleReviewClick() {
+    const form = formRef.current
+    if (!form) return
+    if (!form.reportValidity()) return // native validation UI for required/format fields — same fields, no duplicate rules
+    const data = new FormData(form)
+    setSummary({
+      displayName: String(data.get("displayName") ?? ""),
+      legalName: String(data.get("legalName") ?? ""),
+      defaultCurrency: String(data.get("defaultCurrency") ?? ""),
+      defaultTimezone: String(data.get("defaultTimezone") ?? ""),
+      country: String(data.get("country") ?? "").toUpperCase(),
+      planName: selectedPlan ? `${selectedPlan.name} (${selectedPlan.code})` : "—",
+      subscriptionStatus: String(data.get("subscriptionStatus") ?? ""),
+      branchName: String(data.get("branchName") ?? ""),
+      adminFirstName: String(data.get("adminFirstName") ?? ""),
+      adminLastName: String(data.get("adminLastName") ?? ""),
+      adminEmail: String(data.get("adminEmail") ?? ""),
+    })
+    setStep("review")
+  }
+
+  const regulatoryPreview = summary
+    ? ALL_REGULATORY_CODES.map((code) => ({
+        code,
+        label: REGULATORY_LABELS[code],
+        applicable: (COUNTRY_INTEGRATIONS[summary.country] ?? []).includes(code),
+      }))
+    : []
 
   if (state.success) {
     return (
@@ -43,16 +96,24 @@ export function ProvisionForm({ plans }: { plans: { id: string; code: string; na
           <code className="block break-all rounded-md border border-border bg-muted p-2 text-xs">
             {`/reset-password?token=${state.success.activationToken}`}
           </code>
-          <Button asChild size="sm" className="justify-self-start">
-            <Link href={`/platform/organizations/${state.success.organizationId}`}>Open organization</Link>
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button asChild size="sm">
+              <Link href={`/platform/organizations/${state.success.organizationId}`}>Open organization</Link>
+            </Button>
+            <Button asChild size="sm" variant="outline">
+              <Link href={`/platform/organizations/${state.success.organizationId}/onboarding`}>Open onboarding</Link>
+            </Button>
+            <Button asChild size="sm" variant="outline">
+              <Link href={`/platform/organizations/${state.success.organizationId}#go-live`}>View go-live conditions</Link>
+            </Button>
+          </div>
         </AlertDescription>
       </Alert>
     )
   }
 
   return (
-    <form action={formAction} className="grid gap-6">
+    <form ref={formRef} action={formAction} className="grid gap-6">
       <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
 
       {state.error && (
@@ -60,6 +121,8 @@ export function ProvisionForm({ plans }: { plans: { id: string; code: string; na
           <AlertDescription>{state.error}</AlertDescription>
         </Alert>
       )}
+
+      <div className={step === "review" ? "hidden" : "grid gap-6"}>
 
       <FormSection title="Organization">
         <div className="grid gap-1.5">
@@ -223,10 +286,78 @@ export function ProvisionForm({ plans }: { plans: { id: string; code: string; na
           ))}
         </div>
       </FormSection>
+      </div>
 
-      <Button type="submit" disabled={pending || !planId} className="justify-self-start">
-        {pending ? "Provisioning..." : "Provision clinic"}
-      </Button>
+      {step === "form" && (
+        <Button type="button" disabled={!planId} className="justify-self-start" onClick={handleReviewClick}>
+          Review
+        </Button>
+      )}
+
+      {step === "review" && summary && (
+        <div className="grid gap-4 rounded-md border border-border p-4">
+          <h3 className="text-sm font-semibold">Confirm before provisioning</h3>
+          <div className="grid gap-4 text-sm sm:grid-cols-2">
+            <SummarySection title="Organization">
+              <SummaryRow label="Name" value={summary.displayName} />
+              <SummaryRow label="Legal name" value={summary.legalName} />
+              <SummaryRow label="Country" value={summary.country} />
+              <SummaryRow label="Currency" value={summary.defaultCurrency} />
+              <SummaryRow label="Timezone" value={summary.defaultTimezone} />
+            </SummarySection>
+            <SummarySection title="Subscription">
+              <SummaryRow label="Plan" value={summary.planName} />
+              <SummaryRow label="Status" value={summary.subscriptionStatus} />
+            </SummarySection>
+            <SummarySection title="Initial branch">
+              <SummaryRow label="Name" value={summary.branchName} />
+            </SummarySection>
+            <SummarySection title="Administrator">
+              <SummaryRow label="Name" value={`${summary.adminFirstName} ${summary.adminLastName}`.trim()} />
+              <SummaryRow label="Email" value={summary.adminEmail} />
+            </SummarySection>
+            <SummarySection title="Modules" full>
+              <p>{selectedModules.length > 0 ? selectedModules.map((k) => MODULE_LABELS[k as keyof typeof MODULE_LABELS]).join(", ") : "None selected"}</p>
+            </SummarySection>
+            <SummarySection title="Regulatory (based on country)" full>
+              <p className="text-xs text-muted-foreground">Configuration surface only — nothing is enabled or certified by provisioning itself.</p>
+              <ul className="grid gap-1">
+                {regulatoryPreview.map((r) => (
+                  <li key={r.code}>
+                    {r.label}: {r.applicable ? "available — not yet configured" : "not applicable for this country"}
+                  </li>
+                ))}
+              </ul>
+            </SummarySection>
+          </div>
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" onClick={() => setStep("form")} disabled={pending}>
+              Back
+            </Button>
+            <Button type="submit" disabled={pending}>
+              {pending ? "Provisioning..." : "Provision Organization"}
+            </Button>
+          </div>
+        </div>
+      )}
     </form>
+  )
+}
+
+function SummarySection({ title, children, full }: { title: string; children: React.ReactNode; full?: boolean }) {
+  return (
+    <div className={full ? "grid gap-1 sm:col-span-2" : "grid gap-1"}>
+      <h4 className="text-xs font-semibold uppercase text-muted-foreground">{title}</h4>
+      {children}
+    </div>
+  )
+}
+
+function SummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between gap-4">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="text-right">{value || "—"}</span>
+    </div>
   )
 }

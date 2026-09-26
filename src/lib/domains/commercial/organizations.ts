@@ -21,23 +21,41 @@ import type { $Enums } from "@/generated/prisma/client"
 // organization (§74's own N+1 caution).
 // ---------------------------------------------------------------------------
 
-export async function listOrganizationsForPlatform(input: { page?: number; pageSize?: number; search?: string } = {}) {
+export async function listOrganizationsForPlatform(
+  input: {
+    page?: number
+    pageSize?: number
+    search?: string
+    country?: string
+    subscriptionStatus?: $Enums.SubscriptionStatus
+    onboardingStatus?: $Enums.CommercialOnboardingStatus
+    commercialLifecycle?: $Enums.CommercialLifecycle
+  } = {}
+) {
   await requirePlatformOperator()
   const page = Math.max(1, input.page ?? 1)
   const pageSize = Math.min(100, Math.max(1, input.pageSize ?? 25))
   const search = input.search?.trim()
 
-  const where: Prisma.OrganizationWhereInput = search
-    ? {
-        OR: [
-          { displayName: { contains: search, mode: "insensitive" } },
-          { legalName: { contains: search, mode: "insensitive" } },
-          { commercialProfile: { customerCode: { contains: search, mode: "insensitive" } } },
-          { commercialProfile: { primaryContactName: { contains: search, mode: "insensitive" } } },
-          { commercialProfile: { primaryContactEmail: { contains: search, mode: "insensitive" } } },
-        ],
-      }
-    : {}
+  const filters: Prisma.OrganizationWhereInput[] = []
+  if (search) {
+    filters.push({
+      OR: [
+        { displayName: { contains: search, mode: "insensitive" } },
+        { legalName: { contains: search, mode: "insensitive" } },
+        { commercialProfile: { customerCode: { contains: search, mode: "insensitive" } } },
+        { commercialProfile: { primaryContactName: { contains: search, mode: "insensitive" } } },
+        { commercialProfile: { primaryContactEmail: { contains: search, mode: "insensitive" } } },
+      ],
+    })
+  }
+  if (input.country) filters.push({ commercialProfile: { country: input.country.toUpperCase() } })
+  if (input.onboardingStatus) filters.push({ commercialProfile: { onboardingStatus: input.onboardingStatus } })
+  if (input.commercialLifecycle) filters.push({ commercialProfile: { commercialLifecycle: input.commercialLifecycle } })
+  if (input.subscriptionStatus) {
+    filters.push({ commercialProfile: { subscriptions: { some: { status: input.subscriptionStatus } } } })
+  }
+  const where: Prisma.OrganizationWhereInput = filters.length > 0 ? { AND: filters } : {}
 
   const [organizations, total] = await Promise.all([
     db.organization.findMany({
@@ -83,6 +101,18 @@ export async function listOrganizationsForPlatform(input: { page?: number; pageS
     pageSize,
     totalPages: Math.max(1, Math.ceil(total / pageSize)),
   }
+}
+
+/** P5.6 Part 2: distinct countries for the organizations list's filter dropdown — no new table, just the existing commercial-profile field grouped. */
+export async function listOrganizationCountries(): Promise<string[]> {
+  await requirePlatformOperator()
+  const rows = await db.organizationCommercialProfile.findMany({
+    where: { country: { not: "" } },
+    select: { country: true },
+    distinct: ["country"],
+    orderBy: { country: "asc" },
+  })
+  return rows.map((r) => r.country)
 }
 
 /**

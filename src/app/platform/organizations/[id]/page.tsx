@@ -1,6 +1,7 @@
 import Link from "next/link"
 import { getOrganizationCommercialDetail } from "@/lib/domains/commercial/organizations"
 import { listPlans } from "@/lib/domains/commercial/plans"
+import { getRegulatoryIntegrations } from "@/lib/domains/commercial/regulatory"
 import { loadOrNotFound } from "@/lib/platform/not-found"
 import { DetailHeader } from "@/components/ui/page-header"
 import { StatusBadge } from "@/components/ui/status-badge"
@@ -15,6 +16,7 @@ import { EntitlementsCard } from "@/app/platform/organizations/[id]/entitlements
 import { OnboardingCard } from "@/app/platform/organizations/[id]/onboarding-card"
 import { GoLiveConditionsCard } from "@/app/platform/organizations/[id]/go-live-conditions-card"
 import { GoLiveApprovalCard } from "@/app/platform/organizations/[id]/go-live-approval-card"
+import { RegulatoryCard } from "@/app/platform/organizations/[id]/regulatory-card"
 import { LifecycleActions } from "@/app/platform/organizations/[id]/lifecycle-actions"
 import { PlatformPageShell } from "@/components/layout/platform-page-shell"
 
@@ -27,6 +29,7 @@ export default async function PlatformOrganizationDetailPage({ params }: { param
 
   const profile = organization.commercialProfile
   const currentSubscription = profile?.subscriptions[0] ?? null
+  const regulatoryIntegrations = await getRegulatoryIntegrations(organization.id, profile?.country ?? null)
 
   return (
     <PlatformPageShell>
@@ -140,6 +143,8 @@ export default async function PlatformOrganizationDetailPage({ params }: { param
 
           <EntitlementsCard organizationId={organization.id} entitlements={entitlements} />
 
+          <RegulatoryCard integrations={regulatoryIntegrations} />
+
           <OnboardingCard
             organizationId={organization.id}
             onboardingStatus={profile.onboardingStatus}
@@ -147,7 +152,9 @@ export default async function PlatformOrganizationDetailPage({ params }: { param
             uatNote={profile.uatNote}
           />
 
-          <GoLiveConditionsCard organizationId={organization.id} conditions={profile.goLiveConditions} operatorEmails={operatorEmails} />
+          <div id="go-live">
+            <GoLiveConditionsCard organizationId={organization.id} conditions={profile.goLiveConditions} operatorEmails={operatorEmails} />
+          </div>
 
           <GoLiveApprovalCard organizationId={organization.id} blockers={goLiveBlockers} alreadyLive={profile.commercialLifecycle === "live"} />
         </>
